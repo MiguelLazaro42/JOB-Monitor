@@ -85,6 +85,17 @@ class DatabaseManager:
                         away_alerts_count INTEGER DEFAULT 0,
                         PRIMARY KEY (date, agent_id)
                     );
+
+                    CREATE TABLE IF NOT EXISTS chat_messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT NOT NULL,
+                        agent_id TEXT NOT NULL,
+                        sender TEXT NOT NULL,
+                        sender_name TEXT NOT NULL,
+                        message TEXT NOT NULL
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_chat_agent_id ON chat_messages(agent_id, id ASC);
                     """
                 )
                 # Al iniciar el servidor, todos los equipos inician marcados como desconectados hasta que se reporten
@@ -396,6 +407,57 @@ class DatabaseManager:
             finally:
                 conn.close()
 
+    def add_chat_message(
+        self,
+        agent_id: str,
+        sender: str,
+        sender_name: str,
+        message: str,
+    ) -> dict:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    """
+                    INSERT INTO chat_messages (timestamp, agent_id, sender, sender_name, message)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (now_str, agent_id, sender, sender_name, message),
+                )
+                msg_id = cur.lastrowid
+                conn.commit()
+                return {
+                    "id": msg_id,
+                    "timestamp": now_str,
+                    "agent_id": agent_id,
+                    "sender": sender,
+                    "sender_name": sender_name,
+                    "message": message,
+                }
+            finally:
+                conn.close()
+
+    def get_chat_history(self, agent_id: str, limit: int = 100) -> List[dict]:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM (
+                        SELECT * FROM chat_messages
+                        WHERE agent_id = ?
+                        ORDER BY id DESC
+                        LIMIT ?
+                    ) ORDER BY id ASC
+                    """,
+                    (agent_id, max(1, min(500, int(limit)))),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+
 
 db = DatabaseManager()
+
 

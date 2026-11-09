@@ -59,9 +59,47 @@
   const monitorSelect = document.getElementById('monitor-select');
   const qualitySelect = document.getElementById('quality-select');
   const toggleControlBtn = document.getElementById('toggle-control-btn');
+  const pttBtn = document.getElementById('ptt-btn');
+  const openClipboardBtn = document.getElementById('open-clipboard-btn');
+  const openFileBtn = document.getElementById('open-file-btn');
+  const toggleChatSidebarBtn = document.getElementById('toggle-chat-sidebar-btn');
+  const chatUnreadBadge = document.getElementById('chat-unread-badge');
   const viewerLogsBtn = document.getElementById('viewer-logs-btn');
   const fullscreenBtn = document.getElementById('fullscreen-btn');
   const viewerLoading = document.getElementById('viewer-loading');
+
+  // Fase 3: Panel Lateral de Chat
+  const chatSidebar = document.getElementById('chat-sidebar');
+  const closeChatSidebarBtn = document.getElementById('close-chat-sidebar-btn');
+  const chatMessagesList = document.getElementById('chat-messages-list');
+  const chatSendForm = document.getElementById('chat-send-form');
+  const chatInput = document.getElementById('chat-input');
+
+  // Fase 3: Modal de Portapapeles
+  const clipboardModal = document.getElementById('clipboard-modal');
+  const readRemoteClipBtn = document.getElementById('read-remote-clip-btn');
+  const copyLocalClipBtn = document.getElementById('copy-local-clip-btn');
+  const remoteClipOutput = document.getElementById('remote-clip-output');
+  const sendClipForm = document.getElementById('send-clip-form');
+  const sendClipInput = document.getElementById('send-clip-input');
+  const clipAutopasteCheck = document.getElementById('clip-autopaste-check');
+  const clipStatusMsg = document.getElementById('clip-status-msg');
+  const closeClipboardBtn = document.getElementById('close-clipboard-btn');
+
+  // Fase 3: Modal de Envío de Archivos
+  const fileModal = document.getElementById('file-modal');
+  const fileUploadForm = document.getElementById('file-upload-form');
+  const fileDropzone = document.getElementById('file-dropzone');
+  const fileInput = document.getElementById('file-input');
+  const fileDropzoneLabel = document.getElementById('file-dropzone-label');
+  const fileDestinationSelect = document.getElementById('file-destination-select');
+  const fileAutoopenCheck = document.getElementById('file-autoopen-check');
+  const fileStatusMsg = document.getElementById('file-status-msg');
+  const closeFileBtn = document.getElementById('close-file-btn');
+  const submitFileBtn = document.getElementById('submit-file-btn');
+
+  let selectedUploadFile = null;
+  let chatUnreadCount = 0;
 
   // Vista 3: Métricas
   const metricsDateInput = document.getElementById('metrics-date-input');
@@ -87,6 +125,30 @@
   const viewer = new RemoteCanvasViewer(canvasEl, stageEl, (payload) => {
     sendWsJson(payload);
   });
+
+  const pttController =
+    typeof PushToTalkController !== 'undefined'
+      ? new PushToTalkController(
+          pttBtn,
+          (wavB64) => {
+            if (state.selectedAgentId) {
+              sendWsJson({
+                type: 'audio_chunk',
+                agent_id: state.selectedAgentId,
+                wav_b64: wavB64,
+              });
+            }
+          },
+          () => {
+            if (state.selectedAgentId) {
+              sendWsJson({
+                type: 'audit_ptt_start',
+                agent_id: state.selectedAgentId,
+              });
+            }
+          }
+        )
+      : null;
 
   function setWsBadge(mode, text) {
     wsStatusPill.className = `status-pill status-${mode}`;
@@ -251,6 +313,12 @@
                   <circle cx="12" cy="12" r="3"/>
                 </svg>
                 <span>Conectar</span>
+              </button>
+              <button type="button" class="btn btn-secondary js-open-chat" data-agent-id="${escapeHtml(ag.agent_id)}" title="Abrir visor y enviar mensaje directo">
+                <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+                <span>Chat</span>
               </button>
               <button type="button" class="btn btn-secondary js-open-logs" data-agent-id="${escapeHtml(ag.agent_id)}" title="Ver bitácora de logs de este equipo">
                 <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -435,7 +503,83 @@
       .join('');
   }
 
-  function openViewerForAgent(agentId) {
+  function formatShortTime(ts) {
+    if (!ts) return '';
+    const str = String(ts);
+    return str.length >= 19 ? str.slice(11, 16) : str;
+  }
+
+  function renderChatMessageBubble(msg) {
+    const isAdmin = msg.sender === 'admin';
+    const bubbleClass = isAdmin ? 'chat-msg chat-msg-admin' : 'chat-msg chat-msg-agent';
+    const who = isAdmin ? 'Soporte (Tú)' : msg.sender_name || 'Empleado';
+    const hm = formatShortTime(msg.timestamp);
+    return `
+      <div class="${bubbleClass}">
+        <div class="chat-msg-meta">
+          <strong>${escapeHtml(who)}</strong>
+          <span>${escapeHtml(hm)}</span>
+        </div>
+        <div class="chat-msg-body">${escapeHtml(msg.message)}</div>
+      </div>
+    `;
+  }
+
+  async function loadChatHistoryForAgent(agentId) {
+    if (!chatMessagesList || !agentId) return;
+    try {
+      const res = await fetch(`/api/chat/${encodeURIComponent(agentId)}?limit=100`);
+      const data = await res.json();
+      const list = data.messages || [];
+      if (list.length === 0) {
+        chatMessagesList.innerHTML = `
+          <div class="chat-empty-state">
+            No hay mensajes en esta sesión. Mientras no envíes un mensaje, el empleado no verá ninguna ventana de chat.
+          </div>
+        `;
+        return;
+      }
+      chatMessagesList.innerHTML = list.map(renderChatMessageBubble).join('');
+      chatMessagesList.scrollTop = chatMessagesList.scrollHeight;
+    } catch (err) {
+      console.error('Error al cargar historial de chat:', err);
+    }
+  }
+
+  function appendLiveChatMessage(chatObj) {
+    if (!chatMessagesList || !chatObj) return;
+    const emptyEl = chatMessagesList.querySelector('.chat-empty-state');
+    if (emptyEl) {
+      emptyEl.remove();
+    }
+    chatMessagesList.insertAdjacentHTML('beforeend', renderChatMessageBubble(chatObj));
+    chatMessagesList.scrollTop = chatMessagesList.scrollHeight;
+  }
+
+  function setChatSidebarOpen(isOpen) {
+    if (!chatSidebar || !toggleChatSidebarBtn) return;
+    chatSidebar.classList.toggle('hidden', !isOpen);
+    toggleChatSidebarBtn.classList.toggle('active-tool', isOpen);
+    if (isOpen) {
+      chatUnreadCount = 0;
+      if (chatUnreadBadge) {
+        chatUnreadBadge.textContent = '0';
+        chatUnreadBadge.classList.add('hidden');
+      }
+    }
+  }
+
+  function sendDirectChatMessage(text) {
+    const clean = String(text || '').trim();
+    if (!clean || !state.selectedAgentId) return;
+    sendWsJson({
+      type: 'chat_send',
+      agent_id: state.selectedAgentId,
+      text: clean,
+    });
+  }
+
+  function openViewerForAgent(agentId, options = {}) {
     const agent = state.agents.get(agentId);
     if (!agent) return;
 
@@ -445,9 +589,17 @@
 
     updateViewerHeader(agent);
     populateMonitorsDropdown(agent);
+    loadChatHistoryForAgent(agentId);
 
     viewerLoading.classList.remove('hidden');
     switchView('viewer');
+
+    if (options.focusChat) {
+      setChatSidebarOpen(true);
+      setTimeout(() => {
+        if (chatInput) chatInput.focus();
+      }, 120);
+    }
 
     sendWsJson({
       type: 'subscribe',
@@ -457,6 +609,9 @@
 
   function stopStreamIfLeavingViewer(nextView) {
     if (state.currentView === 'viewer' && nextView !== 'viewer' && state.selectedAgentId) {
+      if (pttController && pttController.isRecording) {
+        pttController.stopRecording();
+      }
       sendWsJson({ type: 'unsubscribe' });
       viewer.setControlMode(false);
     }
@@ -598,6 +753,42 @@
         return;
       }
 
+      if (msg.type === 'chat_message' && msg.chat) {
+        if (state.selectedAgentId === msg.chat.agent_id) {
+          appendLiveChatMessage(msg.chat);
+          if (chatSidebar && chatSidebar.classList.contains('hidden') && msg.chat.sender === 'agent') {
+            chatUnreadCount += 1;
+            if (chatUnreadBadge) {
+              chatUnreadBadge.textContent = String(chatUnreadCount);
+              chatUnreadBadge.classList.remove('hidden');
+            }
+          }
+        }
+        return;
+      }
+
+      if (msg.type === 'clipboard_data') {
+        if (remoteClipOutput) {
+          remoteClipOutput.value = msg.text || '';
+        }
+        return;
+      }
+
+      if (msg.type === 'file_transfer_ack') {
+        if (fileStatusMsg) {
+          fileStatusMsg.classList.remove('hidden', 'status-error');
+          fileStatusMsg.classList.add('status-ok');
+          if (msg.ok) {
+            const openTxt = msg.auto_opened ? ' y fue ejecutado/abierto automáticamente' : '';
+            fileStatusMsg.textContent = `Archivo guardado en la PC: ${msg.saved_path}${openTxt}.`;
+          } else {
+            fileStatusMsg.classList.replace('status-ok', 'status-error');
+            fileStatusMsg.textContent = `Error al guardar archivo en la PC: ${msg.error || 'Error desconocido'}`;
+          }
+        }
+        return;
+      }
+
       if (msg.type === 'agent_disconnected') {
         state.agents.delete(msg.agent_id);
         updateCountersAndGrid();
@@ -648,6 +839,12 @@
     if (editBtn) {
       e.stopPropagation();
       openAliasEditor(editBtn.dataset.agentId);
+      return;
+    }
+    const chatBtn = e.target.closest('.js-open-chat');
+    if (chatBtn) {
+      e.stopPropagation();
+      openViewerForAgent(chatBtn.dataset.agentId, { focusChat: true });
       return;
     }
     const logsBtn = e.target.closest('.js-open-logs');
@@ -776,6 +973,205 @@
     const params = new URLSearchParams({ agent_id: dev, category: cat, q });
     window.location.href = `/api/logs/export-csv?${params.toString()}`;
   });
+
+  // Eventos de Fase 3: Chat Lateral y Mensajes Rápidos
+  if (toggleChatSidebarBtn && chatSidebar) {
+    toggleChatSidebarBtn.addEventListener('click', () => {
+      const nextOpen = chatSidebar.classList.contains('hidden');
+      setChatSidebarOpen(nextOpen);
+    });
+  }
+
+  if (closeChatSidebarBtn) {
+    closeChatSidebarBtn.addEventListener('click', () => {
+      setChatSidebarOpen(false);
+    });
+  }
+
+  document.querySelectorAll('.js-quick-chat').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const msgText = btn.dataset.msg;
+      if (msgText) {
+        sendDirectChatMessage(msgText);
+      }
+    });
+  });
+
+  if (chatSendForm) {
+    chatSendForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!chatInput) return;
+      const text = chatInput.value.trim();
+      if (text) {
+        sendDirectChatMessage(text);
+        chatInput.value = '';
+      }
+    });
+  }
+
+  // Eventos de Fase 3: Portapapeles Bidireccional
+  if (openClipboardBtn && clipboardModal) {
+    openClipboardBtn.addEventListener('click', () => {
+      if (clipStatusMsg) clipStatusMsg.classList.add('hidden');
+      clipboardModal.classList.remove('hidden');
+      if (state.selectedAgentId) {
+        sendWsJson({
+          type: 'clipboard_get',
+          agent_id: state.selectedAgentId,
+        });
+      }
+    });
+  }
+
+  if (closeClipboardBtn && clipboardModal) {
+    closeClipboardBtn.addEventListener('click', () => {
+      clipboardModal.classList.add('hidden');
+    });
+  }
+
+  if (readRemoteClipBtn) {
+    readRemoteClipBtn.addEventListener('click', () => {
+      if (state.selectedAgentId) {
+        sendWsJson({
+          type: 'clipboard_get',
+          agent_id: state.selectedAgentId,
+        });
+      }
+    });
+  }
+
+  if (copyLocalClipBtn && remoteClipOutput) {
+    copyLocalClipBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(remoteClipOutput.value || '');
+        if (clipStatusMsg) {
+          clipStatusMsg.className = 'status-feedback status-ok';
+          clipStatusMsg.textContent = 'Texto remoto copiado al portapapeles de tu Mac.';
+        }
+      } catch (err) {
+        remoteClipOutput.select();
+        document.execCommand('copy');
+      }
+    });
+  }
+
+  if (sendClipForm) {
+    sendClipForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!state.selectedAgentId || !sendClipInput) return;
+      const text = sendClipInput.value;
+      const autoPaste = Boolean(clipAutopasteCheck && clipAutopasteCheck.checked);
+      sendWsJson({
+        type: 'clipboard_set',
+        agent_id: state.selectedAgentId,
+        text,
+        auto_paste: autoPaste,
+      });
+      if (clipStatusMsg) {
+        clipStatusMsg.className = 'status-feedback status-ok';
+        clipStatusMsg.textContent = autoPaste
+          ? 'Texto enviado al portapapeles remoto y pegado (Ctrl+V).'
+          : 'Texto copiado al portapapeles de la PC remota.';
+      }
+    });
+  }
+
+  // Eventos de Fase 3: Envío de Archivos (Drag & Drop + Multipart)
+  function updateSelectedFileUI(file) {
+    selectedUploadFile = file || null;
+    if (!fileDropzoneLabel) return;
+    if (selectedUploadFile) {
+      const kb = Math.max(1, Math.round(selectedUploadFile.size / 1024));
+      fileDropzoneLabel.textContent = `Archivo seleccionado: ${selectedUploadFile.name} (${kb} KB)`;
+    } else {
+      fileDropzoneLabel.textContent = 'Arrastra un archivo aquí o haz clic para seleccionarlo';
+    }
+  }
+
+  if (openFileBtn && fileModal) {
+    openFileBtn.addEventListener('click', () => {
+      if (fileStatusMsg) fileStatusMsg.classList.add('hidden');
+      fileModal.classList.remove('hidden');
+    });
+  }
+
+  if (closeFileBtn && fileModal) {
+    closeFileBtn.addEventListener('click', () => {
+      fileModal.classList.add('hidden');
+    });
+  }
+
+  if (fileDropzone && fileInput) {
+    fileDropzone.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files && fileInput.files[0]) {
+        updateSelectedFileUI(fileInput.files[0]);
+      }
+    });
+    fileDropzone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      fileDropzone.classList.add('dragover');
+    });
+    fileDropzone.addEventListener('dragleave', () => {
+      fileDropzone.classList.remove('dragover');
+    });
+    fileDropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      fileDropzone.classList.remove('dragover');
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
+        updateSelectedFileUI(e.dataTransfer.files[0]);
+      }
+    });
+  }
+
+  if (fileUploadForm) {
+    fileUploadForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!state.selectedAgentId) return;
+      if (!selectedUploadFile) {
+        if (fileStatusMsg) {
+          fileStatusMsg.className = 'status-feedback status-error';
+          fileStatusMsg.textContent = 'Por favor selecciona o arrastra un archivo primero.';
+        }
+        return;
+      }
+
+      const fd = new FormData();
+      fd.append('file', selectedUploadFile);
+      fd.append('destination', fileDestinationSelect ? fileDestinationSelect.value : 'Desktop');
+      fd.append('auto_open', fileAutoopenCheck && fileAutoopenCheck.checked ? 'true' : 'false');
+
+      if (submitFileBtn) submitFileBtn.disabled = true;
+      if (fileStatusMsg) {
+        fileStatusMsg.className = 'status-feedback status-ok';
+        fileStatusMsg.textContent = 'Enviando archivo al equipo remoto...';
+      }
+
+      try {
+        const res = await fetch(`/api/send-file/${encodeURIComponent(state.selectedAgentId)}`, {
+          method: 'POST',
+          body: fd,
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || 'Error al transferir el archivo');
+        }
+        if (fileStatusMsg) {
+          fileStatusMsg.className = 'status-feedback status-ok';
+          fileStatusMsg.textContent = `Archivo '${data.filename}' transmitido a ${data.destination}. Esperando confirmación del agente...`;
+        }
+        updateSelectedFileUI(null);
+        if (fileInput) fileInput.value = '';
+      } catch (err) {
+        if (fileStatusMsg) {
+          fileStatusMsg.className = 'status-feedback status-error';
+          fileStatusMsg.textContent = err.message || 'No se pudo enviar el archivo.';
+        }
+      } finally {
+        if (submitFileBtn) submitFileBtn.disabled = false;
+      }
+    });
+  }
 
   connectAdminWebSocket();
 })();

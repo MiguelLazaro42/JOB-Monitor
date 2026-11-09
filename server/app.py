@@ -1,6 +1,8 @@
 import argparse
 import asyncio
+import base64
 import json
+import os
 import socket
 import threading
 import time
@@ -8,14 +10,14 @@ import webbrowser
 from typing import Dict, List, Optional, Set
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 import config
 from database import db
-from models import AgentConnection, AliasUpdateRequest
+from models import AgentConnection, AliasUpdateRequest, ChatSendRequest, ClipboardSetRequest
 
 app = FastAPI(title="JOB-Monitor — Centro de Monitoreo y Control Corporativo")
 app.mount("/static", StaticFiles(directory=str(config.BASE_DIR / "static")), name="static")
@@ -187,6 +189,9 @@ class HubManager:
             "type": "new_log",
             "log": log_entry,
         }
+        await self.broadcast_to_admins(payload)
+
+    async def broadcast_to_admins(self, payload: dict):
         dead = []
         for ws in list(self.admins):
             try:
@@ -255,10 +260,77 @@ async def index(request: Request):
 async def health():
     return {
         "ok": True,
-        "phase": 2,
+        "phase": 3,
         "agents_online": len(hub.agents),
         "lan_ip": get_local_lan_ip(),
         "port": config.PORT,
+    }
+
+
+@app.get("/api/chat/{agent_id}")
+async def get_agent_chat_history(agent_id: str, limit: int = Query(100)):
+    messages = db.get_chat_history(agent_id=agent_id, limit=limit)
+    return {
+        "ok": True,
+        "agent_id": agent_id,
+        "messages": messages,
+    }
+
+
+@app.post("/api/send-file/{agent_id}")
+async def send_file_to_agent(
+    agent_id: str,
+    file: UploadFile = File(...),
+    destination: str = Form("Desktop"),
+    auto_open: str = Form("false"),
+):
+    agent = hub.agents.get(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="El equipo seleccionado no está conectado en este momento")
+
+    raw_bytes = await file.read()
+    max_bytes = 20 * 1024 * 1024  # 20 MB límite seguro por WebSocket
+    if len(raw_bytes) > max_bytes:
+        raise HTTPException(status_code=413, detail="El archivo supera el límite de 20 MB para transferencia directa")
+
+    safe_filename = os.path.basename(file.filename or "archivo_soporte.bin").strip() or "archivo_soporte.bin"
+    dest_clean = "Downloads" if destination.strip().lower() in ("downloads", "descargas") else "Desktop"
+    dest_label = "Descargas (Downloads)" if dest_clean == "Downloads" else "Escritorio (Desktop)"
+    should_open = auto_open.strip().lower() in ("true", "1", "yes", "on")
+
+    b64_data = base64.b64encode(raw_bytes).decode("ascii")
+    sent = await hub.send_to_agent(
+        agent_id,
+        {
+            "type": "file_transfer",
+            "filename": safe_filename,
+            "destination": dest_clean,
+            "auto_open": should_open,
+            "data_b64": b64_data,
+        },
+    )
+    if not sent:
+        raise HTTPException(status_code=502, detail="No se pudo entregar el archivo al agente remoto")
+
+    size_kb = max(1, round(len(raw_bytes) / 1024))
+    open_note = "con apertura automática" if should_open else "sin abrir automáticamente"
+    log_entry = db.add_log(
+        agent_id=agent.agent_id,
+        alias=agent.alias,
+        hostname=agent.hostname,
+        username=agent.username,
+        category="AUDIT",
+        message=f"Archivo '{safe_filename}' ({size_kb} KB) enviado a {dest_label} ({open_note})",
+    )
+    await hub.broadcast_new_log(log_entry)
+
+    return {
+        "ok": True,
+        "agent_id": agent_id,
+        "filename": safe_filename,
+        "size_bytes": len(raw_bytes),
+        "destination": dest_clean,
+        "auto_open": should_open,
     }
 
 
@@ -393,6 +465,63 @@ async def ws_agent_endpoint(websocket: WebSocket):
 
                     await hub.broadcast_telemetry_update(agent)
 
+                elif msg_type == "chat_reply":
+                    text = str(data.get("text", "")).strip()
+                    if text:
+                        chat_entry = db.add_chat_message(
+                            agent_id=agent_id,
+                            sender="agent",
+                            sender_name=agent.alias,
+                            message=text,
+                        )
+                        log_entry = db.add_log(
+                            agent_id=agent_id,
+                            alias=agent.alias,
+                            hostname=agent.hostname,
+                            username=agent.username,
+                            category="AUDIT",
+                            message=f"Empleado respondió por chat: '{text[:120]}'",
+                        )
+                        await hub.broadcast_to_admins({
+                            "type": "chat_message",
+                            "chat": chat_entry,
+                        })
+                        await hub.broadcast_new_log(log_entry)
+
+                elif msg_type == "clipboard_content":
+                    clip_text = str(data.get("text", ""))
+                    await hub.broadcast_to_viewers(
+                        agent_id,
+                        {
+                            "type": "clipboard_data",
+                            "agent_id": agent_id,
+                            "text": clip_text,
+                        },
+                    )
+                    log_entry = db.add_log(
+                        agent_id=agent_id,
+                        alias=agent.alias,
+                        hostname=agent.hostname,
+                        username=agent.username,
+                        category="AUDIT",
+                        message="Administrador consultó el portapapeles del equipo remoto",
+                    )
+                    await hub.broadcast_new_log(log_entry)
+
+                elif msg_type == "file_received":
+                    await hub.broadcast_to_viewers(
+                        agent_id,
+                        {
+                            "type": "file_transfer_ack",
+                            "agent_id": agent_id,
+                            "filename": data.get("filename", ""),
+                            "saved_path": data.get("saved_path", ""),
+                            "auto_opened": bool(data.get("auto_opened", False)),
+                            "ok": bool(data.get("ok", True)),
+                            "error": data.get("error", ""),
+                        },
+                    )
+
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -467,6 +596,96 @@ async def ws_admin_endpoint(websocket: WebSocket):
                 elif msg_type == "request_all_thumbnails":
                     for ag_id in list(hub.agents.keys()):
                         await hub.send_to_agent(ag_id, {"type": "capture_thumbnail"})
+
+                elif msg_type == "chat_send":
+                    target_id = data.get("agent_id") or hub.subscriptions.get(websocket)
+                    text = str(data.get("text", "")).strip()
+                    if target_id and text and target_id in hub.agents:
+                        ag = hub.agents[target_id]
+                        chat_entry = db.add_chat_message(
+                            agent_id=target_id,
+                            sender="admin",
+                            sender_name="Soporte / Administrador",
+                            message=text,
+                        )
+                        await hub.send_to_agent(
+                            target_id,
+                            {
+                                "type": "chat_message",
+                                "sender": "Soporte / Administrador",
+                                "text": text,
+                                "timestamp": chat_entry["timestamp"],
+                            },
+                        )
+                        log_entry = db.add_log(
+                            agent_id=ag.agent_id,
+                            alias=ag.alias,
+                            hostname=ag.hostname,
+                            username=ag.username,
+                            category="AUDIT",
+                            message=f"Administrador envió mensaje directo: '{text[:120]}'",
+                        )
+                        await hub.broadcast_to_admins({
+                            "type": "chat_message",
+                            "chat": chat_entry,
+                        })
+                        await hub.broadcast_new_log(log_entry)
+
+                elif msg_type == "clipboard_get":
+                    target_id = data.get("agent_id") or hub.subscriptions.get(websocket)
+                    if target_id:
+                        await hub.send_to_agent(target_id, {"type": "clipboard_get"})
+
+                elif msg_type == "clipboard_set":
+                    target_id = data.get("agent_id") or hub.subscriptions.get(websocket)
+                    clip_text = str(data.get("text", ""))
+                    auto_paste = bool(data.get("auto_paste", False))
+                    if target_id and target_id in hub.agents:
+                        ag = hub.agents[target_id]
+                        await hub.send_to_agent(
+                            target_id,
+                            {
+                                "type": "clipboard_set",
+                                "text": clip_text,
+                                "auto_paste": auto_paste,
+                            },
+                        )
+                        paste_note = "con pegado automático (Ctrl+V)" if auto_paste else "copiado al portapapeles"
+                        log_entry = db.add_log(
+                            agent_id=ag.agent_id,
+                            alias=ag.alias,
+                            hostname=ag.hostname,
+                            username=ag.username,
+                            category="AUDIT",
+                            message=f"Administrador envió texto al portapapeles remoto ({paste_note})",
+                        )
+                        await hub.broadcast_new_log(log_entry)
+
+                elif msg_type == "audio_chunk":
+                    target_id = data.get("agent_id") or hub.subscriptions.get(websocket)
+                    wav_b64 = data.get("wav_b64", "")
+                    if target_id and wav_b64:
+                        await hub.send_to_agent(
+                            target_id,
+                            {
+                                "type": "play_audio",
+                                "wav_b64": wav_b64,
+                            },
+                        )
+
+                elif msg_type == "audit_ptt_start":
+                    target_id = data.get("agent_id") or hub.subscriptions.get(websocket)
+                    if target_id and target_id in hub.agents:
+                        ag = hub.agents[target_id]
+                        log_entry = db.add_log(
+                            agent_id=ag.agent_id,
+                            alias=ag.alias,
+                            hostname=ag.hostname,
+                            username=ag.username,
+                            category="AUDIT",
+                            message="Administrador transmitió voz en directo (Push-to-Talk) hacia el equipo",
+                        )
+                        await hub.broadcast_new_log(log_entry)
 
                 else:
                     target_id = data.get("agent_id") or hub.subscriptions.get(websocket)

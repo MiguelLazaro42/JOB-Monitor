@@ -8,19 +8,36 @@ import io
 import json
 import os
 import platform
+import queue
 import socket
 import struct
 import subprocess
+import tempfile
+import threading
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import mss
 import websockets
 from PIL import Image
 from pynput.keyboard import Controller as KeyboardController, Key, KeyCode
 from pynput.mouse import Button, Controller as MouseController
+
+try:
+    import pyperclip
+except Exception:
+    pyperclip = None
+
+if platform.system() == "Windows":
+    try:
+        import winsound
+    except Exception:
+        winsound = None
+else:
+    winsound = None
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config_agent.json"
@@ -218,6 +235,263 @@ def load_or_create_agent_config(cli_server: Optional[str], cli_token: Optional[s
     return cfg
 
 
+def read_system_clipboard() -> str:
+    if pyperclip is not None:
+        try:
+            val = pyperclip.paste()
+            if val is not None:
+                return str(val)
+        except Exception:
+            pass
+    if IS_MAC:
+        try:
+            return subprocess.check_output(["pbpaste"], timeout=1.5).decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+    elif IS_WINDOWS:
+        try:
+            return subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
+                stderr=subprocess.DEVNULL,
+                timeout=2.0,
+            ).decode("utf-8", errors="ignore").rstrip("\r\n")
+        except Exception:
+            pass
+    return ""
+
+
+def write_system_clipboard(text: str) -> bool:
+    if pyperclip is not None:
+        try:
+            pyperclip.copy(text)
+            return True
+        except Exception:
+            pass
+    if IS_MAC:
+        try:
+            p = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
+            p.communicate(input=text.encode("utf-8"), timeout=1.5)
+            return True
+        except Exception:
+            pass
+    elif IS_WINDOWS:
+        try:
+            p = subprocess.Popen(
+                ["clip"],
+                stdin=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            p.communicate(input=text.encode("utf-16le"), timeout=2.0)
+            return True
+        except Exception:
+            pass
+    return False
+
+
+class AudioPlayerWorker:
+    """Reproduce paquetes WAV recibidos por Push-to-Talk en orden secuencial sin bloquear el bucle principal."""
+
+    def __init__(self):
+        self._queue: "queue.Queue[bytes]" = queue.Queue(maxsize=30)
+        self._thread = threading.Thread(target=self._worker, daemon=True)
+        self._thread.start()
+
+    def enqueue_wav(self, wav_bytes: bytes):
+        if not wav_bytes:
+            return
+        try:
+            self._queue.put_nowait(wav_bytes)
+        except queue.Full:
+            try:
+                self._queue.get_nowait()
+                self._queue.put_nowait(wav_bytes)
+            except Exception:
+                pass
+
+    def _worker(self):
+        while True:
+            wav_bytes = self._queue.get()
+            try:
+                if IS_WINDOWS and winsound is not None:
+                    winsound.PlaySound(wav_bytes, winsound.SND_MEMORY)
+                elif IS_MAC:
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                        tmp.write(wav_bytes)
+                        tmp_path = tmp.name
+                    try:
+                        subprocess.run(["afplay", tmp_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+                    finally:
+                        try:
+                            os.unlink(tmp_path)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            finally:
+                self._queue.task_done()
+
+
+class PopupChatManager:
+    """
+    Ventana emergente de chat bajo demanda (tkinter topmost).
+    Permanece 100% inactiva e invisible mientras el administrador solo observa.
+    Solo se abre cuando el administrador envía un mensaje de chat al empleado.
+    """
+
+    def __init__(self, on_reply_callback: Callable[[str], None]):
+        self.on_reply = on_reply_callback
+        self._cmd_queue: "queue.Queue[dict]" = queue.Queue()
+        self._thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+
+    def show_incoming_message(self, sender: str, text: str, timestamp: str = ""):
+        if IS_WINDOWS and winsound is not None:
+            try:
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+            except Exception:
+                pass
+        with self._lock:
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._run_tk_loop, daemon=True)
+                self._thread.start()
+        self._cmd_queue.put({
+            "action": "incoming",
+            "sender": sender,
+            "text": text,
+            "timestamp": timestamp or datetime.now().strftime("%H:%M:%S"),
+        })
+
+    def _run_tk_loop(self):
+        try:
+            import tkinter as tk
+            from tkinter import scrolledtext
+        except Exception:
+            return
+
+        try:
+            root = tk.Tk()
+            root.title("Soporte Técnico Corporativo — Mensaje Directo")
+            root.geometry("430x380")
+            root.configure(bg="#0f172a")
+            root.attributes("-topmost", True)
+
+            header = tk.Frame(root, bg="#1e293b", padx=12, pady=10)
+            header.pack(fill=tk.X)
+
+            title_lbl = tk.Label(
+                header,
+                text="Asistencia y Soporte Corporativo",
+                bg="#1e293b",
+                fg="#f8fafc",
+                font=("Segoe UI", 11, "bold"),
+                anchor="w",
+            )
+            title_lbl.pack(fill=tk.X)
+
+            sub_lbl = tk.Label(
+                header,
+                text="El administrador te ha enviado un mensaje directo. Puedes responder abajo.",
+                bg="#1e293b",
+                fg="#94a3b8",
+                font=("Segoe UI", 8),
+                anchor="w",
+            )
+            sub_lbl.pack(fill=tk.X)
+
+            chat_area = scrolledtext.ScrolledText(
+                root,
+                wrap=tk.WORD,
+                state="disabled",
+                bg="#090d16",
+                fg="#e2e8f0",
+                font=("Segoe UI", 10),
+                padx=10,
+                pady=10,
+                relief=tk.FLAT,
+                height=13,
+            )
+            chat_area.pack(fill=tk.BOTH, expand=True, padx=12, pady=(10, 6))
+            chat_area.tag_config("admin_tag", foreground="#60a5fa", font=("Segoe UI", 9, "bold"))
+            chat_area.tag_config("user_tag", foreground="#34d399", font=("Segoe UI", 9, "bold"))
+            chat_area.tag_config("body_tag", foreground="#f8fafc", font=("Segoe UI", 10))
+
+            bottom_frame = tk.Frame(root, bg="#0f172a", padx=12, pady=10)
+            bottom_frame.pack(fill=tk.X, side=tk.BOTTOM)
+
+            entry = tk.Entry(
+                bottom_frame,
+                bg="#1e293b",
+                fg="#f8fafc",
+                insertbackground="#f8fafc",
+                font=("Segoe UI", 10),
+                relief=tk.FLAT,
+            )
+            entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=6, padx=(0, 8))
+
+            def append_line(who_label: str, body: str, is_admin: bool):
+                chat_area.configure(state="normal")
+                tag = "admin_tag" if is_admin else "user_tag"
+                chat_area.insert(tk.END, f"{who_label}:\n", tag)
+                chat_area.insert(tk.END, f"{body}\n\n", "body_tag")
+                chat_area.see(tk.END)
+                chat_area.configure(state="disabled")
+
+            def send_reply(event=None):
+                txt = entry.get().strip()
+                if not txt:
+                    return
+                entry.delete(0, tk.END)
+                now_hm = datetime.now().strftime("%H:%M")
+                append_line(f"Tú ({now_hm})", txt, is_admin=False)
+                try:
+                    self.on_reply(txt)
+                except Exception:
+                    pass
+
+            send_btn = tk.Button(
+                bottom_frame,
+                text="Enviar",
+                command=send_reply,
+                bg="#2563eb",
+                fg="#ffffff",
+                activebackground="#1d4ed8",
+                activeforeground="#ffffff",
+                font=("Segoe UI", 9, "bold"),
+                relief=tk.FLAT,
+                padx=14,
+                pady=5,
+                cursor="hand2",
+            )
+            send_btn.pack(side=tk.RIGHT)
+            entry.bind("<Return>", send_reply)
+
+            def on_close_window():
+                root.withdraw()
+
+            root.protocol("WM_DELETE_WINDOW", on_close_window)
+
+            def poll_queue():
+                try:
+                    while True:
+                        item = self._cmd_queue.get_nowait()
+                        if item.get("action") == "incoming":
+                            root.deiconify()
+                            root.attributes("-topmost", True)
+                            root.lift()
+                            ts = item.get("timestamp", "")[-8:-3] or datetime.now().strftime("%H:%M")
+                            sender = item.get("sender", "Soporte")
+                            append_line(f"{sender} ({ts})", item.get("text", ""), is_admin=True)
+                            entry.focus_set()
+                except queue.Empty:
+                    pass
+                root.after(200, poll_queue)
+
+            root.after(100, poll_queue)
+            root.mainloop()
+        except Exception:
+            pass
+
+
 class SilentRemoteAgent:
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -247,6 +521,74 @@ class SilentRemoteAgent:
         self.was_idle_3m: bool = False
         self.was_away_10m: bool = False
         self.max_idle_reached: int = 0
+
+        # Fase 3: Herramientas de Asistencia (Voz Push-to-Talk, Chat emergente, Portapapeles y Archivos)
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
+        self.audio_player = AudioPlayerWorker()
+        self.chat_popup = PopupChatManager(self._on_user_chat_reply)
+
+    def _on_user_chat_reply(self, text: str):
+        if self.loop and self.ws:
+            payload = json.dumps({"type": "chat_reply", "text": text})
+            asyncio.run_coroutine_threadsafe(self._safe_ws_send(payload), self.loop)
+
+    async def _safe_ws_send(self, payload_str: str):
+        try:
+            if self.ws:
+                await self.ws.send(payload_str)
+        except Exception:
+            pass
+
+    def handle_file_transfer(self, data: dict) -> dict:
+        filename = os.path.basename(str(data.get("filename") or "archivo_recibido.bin")).strip() or "archivo_recibido.bin"
+        dest_folder_name = "Downloads" if str(data.get("destination", "")).lower() == "downloads" else "Desktop"
+        auto_open = bool(data.get("auto_open", False))
+        b64_str = data.get("data_b64", "")
+
+        try:
+            raw_bytes = base64.b64decode(b64_str)
+            target_dir = Path.home() / dest_folder_name
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target_path = target_dir / filename
+
+            if target_path.exists():
+                stem = target_path.stem
+                suffix = target_path.suffix
+                counter = 1
+                while target_path.exists():
+                    target_path = target_dir / f"{stem}_{counter}{suffix}"
+                    counter += 1
+
+            target_path.write_bytes(raw_bytes)
+
+            opened = False
+            if auto_open:
+                try:
+                    if IS_WINDOWS and hasattr(os, "startfile"):
+                        os.startfile(str(target_path))  # type: ignore[attr-defined]
+                        opened = True
+                    elif IS_MAC:
+                        subprocess.Popen(["open", str(target_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        opened = True
+                except Exception:
+                    opened = False
+
+            return {
+                "type": "file_received",
+                "ok": True,
+                "filename": target_path.name,
+                "saved_path": str(target_path),
+                "auto_opened": opened,
+            }
+        except Exception as e:
+            return {
+                "type": "file_received",
+                "ok": False,
+                "filename": filename,
+                "saved_path": "",
+                "auto_opened": False,
+                "error": str(e),
+            }
 
     def save_alias_locally(self, new_alias: str):
         self.alias = new_alias
@@ -519,6 +861,7 @@ class SilentRemoteAgent:
                     break
 
     async def run_forever(self):
+        self.loop = asyncio.get_running_loop()
         while True:
             try:
                 async with websockets.connect(
@@ -598,6 +941,36 @@ class SilentRemoteAgent:
                                         self.keyboard.type(text_to_type)
                                 elif mtype == "shortcut":
                                     self.handle_shortcut(data.get("combo", ""))
+                                elif mtype == "chat_message":
+                                    sender = data.get("sender", "Soporte")
+                                    text = data.get("text", "")
+                                    ts = data.get("timestamp", "")
+                                    if text:
+                                        self.chat_popup.show_incoming_message(sender, text, ts)
+                                elif mtype == "play_audio":
+                                    wav_b64 = data.get("wav_b64", "")
+                                    if wav_b64:
+                                        try:
+                                            wav_bytes = base64.b64decode(wav_b64)
+                                            self.audio_player.enqueue_wav(wav_bytes)
+                                        except Exception:
+                                            pass
+                                elif mtype == "clipboard_get":
+                                    clip_val = read_system_clipboard()
+                                    await ws.send(json.dumps({
+                                        "type": "clipboard_content",
+                                        "text": clip_val,
+                                    }))
+                                elif mtype == "clipboard_set":
+                                    clip_text = str(data.get("text", ""))
+                                    auto_paste = bool(data.get("auto_paste", False))
+                                    write_system_clipboard(clip_text)
+                                    if auto_paste:
+                                        await asyncio.sleep(0.08)
+                                        self.handle_shortcut("paste")
+                                elif mtype == "file_transfer":
+                                    ack = self.handle_file_transfer(data)
+                                    await ws.send(json.dumps(ack))
                     finally:
                         stream_task.cancel()
                         telem_task.cancel()

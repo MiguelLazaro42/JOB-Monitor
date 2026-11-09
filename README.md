@@ -7,7 +7,7 @@ Toda la arquitectura detallada, esquemas de base de datos, contratos WebSocket y
 
 ---
 
-## Estado Actual: Fases 1 y 2 Completadas
+## Estado Actual: Fases 1, 2 y 3 Completadas
 
 ### Fase 1: Núcleo de Conexión Inversa, Visor Multi-Monitor y Control Remoto
 - **Servidor Central (`server/app.py`):** FastAPI + WebSockets (`/ws/agent` y `/ws/admin`) con gestión de streaming bajo demanda (0% consumo de ancho de banda continuo cuando nadie observa un equipo).
@@ -19,16 +19,27 @@ Toda la arquitectura detallada, esquemas de base de datos, contratos WebSocket y
 
 ### Fase 2: Monitoreo Tipo Teams, Base de Datos SQLite y Bitácora de Logs
 - **Persistencia en SQLite (`server/database.py`):**
-  - Tablas `devices`, `device_logs`, `window_usage_daily` y `daily_activity_summary` con modo `WAL`.
+  - Tablas `devices`, `device_logs`, `window_usage_daily`, `daily_activity_summary` y `chat_messages` con modo `WAL`.
   - Registro automático de inicio de jornada, segundos activos vs. inactivos, alertas de ausencia prolongada (+10 min) y tiempo en foco por aplicación.
 - **Detección de Eventos en el Agente y Servidor:**
   - Registro cronológico de cambios de ventana (`WINDOW`) con duración de permanencia en la aplicación anterior.
   - Registro automático de entradas en inactividad (`IDLE`), regresos a actividad (`RESUME`), conexiones/desconexiones (`NETWORK`) y auditoría de soporte (`AUDIT`).
 - **Panel de Administrador (4 Vistas con Iconografía 100% SVG, Cero Emojis):**
-  1. **Muro de Monitoreo:** Estado en vivo, contador de equipos desconectados, ventana activa y botón directo a Logs por equipo.
+  1. **Muro de Monitoreo:** Estado en vivo, contador de equipos desconectados, ventana activa y botones directos a `Conectar`, `Chat` y `Logs` por equipo.
   2. **Visor Remoto:** Selector de monitores, calidad/FPS, interruptor **Modo: Solo Observar** vs **Modo: Controlar** y auditoría automática.
   3. **Métricas del Día:** Tabla comparativa por fecha con horas activas/inactivas, alertas y porcentajes de uso por aplicación.
   4. **Logs de Equipos:** Bitácora en tiempo real con filtros por equipo, categoría (`IDLE`, `RESUME`, `WINDOW`, `NETWORK`, `AUDIT`), buscador por texto y exportación a **CSV**.
+
+### Fase 3: Herramientas de Asistencia (Voz Push-to-Talk, Chat Emergente, Portapapeles y Archivos)
+- **Voz en Directo Push-to-Talk (`server/static/js/audio.js` + `agent/agent.py`):**
+  - Captura de micrófono del administrador desde el navegador empaquetada en bloques `.wav` RIFF PCM 16 kHz y reproducida en tiempo real en la PC mediante `winsound.PlaySound(..., SND_MEMORY)`.
+- **Ventana de Chat Emergente Bajo Demanda (`tkinter` `topmost`) + Panel Lateral de Mensajes Directos:**
+  - Permanece 100% cerrada e invisible mientras el administrador solo observa.
+  - Se abre automáticamente con sonido de notificación únicamente cuando el administrador envía un mensaje directo o usa los **botones rápidos de 1 clic**, permitiendo respuesta bidireccional en vivo y persistencia en SQLite.
+- **Portapapeles Bidireccional (`pyperclip` + fallback nativo):**
+  - Lectura remota del portapapeles de la PC o inyección de texto desde la Mac con opción de pegado automático (`Ctrl+V`).
+- **Transferencia Directa de Archivos (`POST /api/send-file/{agent_id}`):**
+  - Envío por clic o *Drag & Drop* hacia el `Escritorio (Desktop)` o `Descargas (Downloads)` del empleado, con opción de abrir/ejecutar automáticamente (`os.startfile`) al terminar.
 
 ---
 

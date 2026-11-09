@@ -58,6 +58,128 @@
     </div>
   </div>
 
+  <!-- Modal / Cajón de Portapapeles Bidireccional (Fase 3) -->
+  <div id="clipboard-modal" class="modal-backdrop hidden">
+    <div class="modal-card modal-card-wide">
+      <div class="modal-header">
+        <div class="brand-badge">
+          <svg class="icon-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="2" width="6" height="4" rx="1"/>
+            <path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2"/>
+          </svg>
+        </div>
+        <div>
+          <h2>Portapapeles Bidireccional</h2>
+          <p class="muted-text">Lee el texto copiado por el empleado o envía texto directo a su portapapeles.</p>
+        </div>
+      </div>
+
+      <div class="modal-body">
+        <div class="drawer-section">
+          <div class="drawer-section-header">
+            <span class="input-label">1. Portapapeles actual en la PC remota</span>
+            <div style="display:flex; gap:6px;">
+              <button type="button" id="read-remote-clip-btn" class="btn btn-secondary btn-sm">
+                <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><polyline points="21 3 21 8 16 8"/>
+                </svg>
+                <span>Leer de PC</span>
+              </button>
+              <button type="button" id="copy-local-clip-btn" class="btn btn-secondary btn-sm">
+                <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                </svg>
+                <span>Copiar a mi Mac</span>
+              </button>
+            </div>
+          </div>
+          <textarea id="remote-clip-output" class="text-input textarea-input" rows="3" readonly placeholder="Haz clic en 'Leer de PC' para consultar lo que el empleado tiene copiado..."></textarea>
+        </div>
+
+        <form id="send-clip-form" class="drawer-section">
+          <label for="send-clip-input" class="input-label">2. Enviar texto desde esta Mac hacia la PC remota</label>
+          <textarea id="send-clip-input" class="text-input textarea-input" rows="3" placeholder="Escribe o pega aquí el texto, comando, enlace o contraseña a enviar..." required></textarea>
+          <label class="checkbox-row">
+            <input type="checkbox" id="clip-autopaste-check" checked />
+            <span>Pegar automáticamente en la ventana activa del empleado (enviar Ctrl+V)</span>
+          </label>
+          <p id="clip-status-msg" class="status-feedback hidden"></p>
+          <div class="modal-actions">
+            <button type="button" id="close-clipboard-btn" class="btn btn-secondary">Cerrar</button>
+            <button type="submit" class="btn btn-primary">
+              <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+              </svg>
+              <span>Enviar al Portapapeles</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal / Cajón de Envío de Archivos (Fase 3) -->
+  <div id="file-modal" class="modal-backdrop hidden">
+    <div class="modal-card modal-card-wide">
+      <div class="modal-header">
+        <div class="brand-badge">
+          <svg class="icon-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </div>
+        <div>
+          <h2>Enviar Archivo al Equipo Remoto</h2>
+          <p class="muted-text">Transfiere instaladores, reportes o documentos directamente a la PC del empleado.</p>
+        </div>
+      </div>
+
+      <form id="file-upload-form" class="modal-body">
+        <div id="file-dropzone" class="file-dropzone">
+          <input type="file" id="file-input" class="hidden" />
+          <svg class="icon-lg muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="12" y1="18" x2="12" y2="12"/>
+            <polyline points="9 15 12 12 15 15"/>
+          </svg>
+          <p id="file-dropzone-label" class="dropzone-title">Arrastra un archivo aquí o haz clic para seleccionarlo</p>
+          <span class="muted-text">Tamaño máximo por envío directo: 20 MB</span>
+        </div>
+
+        <div class="form-row-two">
+          <div>
+            <label for="file-destination-select" class="input-label">Carpeta de destino en la PC</label>
+            <select id="file-destination-select" class="text-input w-full" style="margin-top:4px;">
+              <option value="Desktop" selected>Escritorio (Desktop)</option>
+              <option value="Downloads">Descargas (Downloads)</option>
+            </select>
+          </div>
+        </div>
+
+        <label class="checkbox-row">
+          <input type="checkbox" id="file-autoopen-check" />
+          <span>Abrir / ejecutar el archivo automáticamente en la PC al terminar la descarga</span>
+        </label>
+
+        <p id="file-status-msg" class="status-feedback hidden"></p>
+
+        <div class="modal-actions">
+          <button type="button" id="close-file-btn" class="btn btn-secondary">Cerrar</button>
+          <button type="submit" id="submit-file-btn" class="btn btn-primary">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <span>Transferir Archivo</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- Barra Superior Principal -->
   <header class="topbar">
     <div class="topbar-left">
@@ -76,7 +198,7 @@
             <span id="ws-status-text">Conectando...</span>
           </span>
         </div>
-        <p class="muted-text">Servidor activo en <code>{{ lan_ip }}:{{ port }}</code> • Fase 2 (Monitoreo Tipo Teams + SQLite Logs)</p>
+        <p class="muted-text">Servidor activo en <code>{{ lan_ip }}:{{ port }}</code> • Fase 3 (Monitoreo + SQLite + Voz, Chat, Portapapeles y Archivos)</p>
       </div>
     </div>
 
@@ -277,6 +399,42 @@
           <span id="mode-btn-text">Modo: Solo Observar</span>
         </button>
 
+        <!-- Botón Push-to-Talk (Mantener para Hablar) -->
+        <button id="ptt-btn" type="button" class="btn btn-secondary btn-sm" title="Mantén presionado para hablar por las bocinas del empleado">
+          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/>
+          </svg>
+          <span class="js-ptt-label">Mantener para Hablar</span>
+        </button>
+
+        <!-- Cajón de Portapapeles -->
+        <button id="open-clipboard-btn" type="button" class="btn btn-secondary btn-sm" title="Sincronizar portapapeles con la PC remota">
+          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="2" width="6" height="4" rx="1"/>
+            <path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2"/>
+          </svg>
+          <span>Portapapeles</span>
+        </button>
+
+        <!-- Cajón de Envío de Archivos -->
+        <button id="open-file-btn" type="button" class="btn btn-secondary btn-sm" title="Enviar archivo al Escritorio o Descargas del empleado">
+          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <span>Archivos</span>
+        </button>
+
+        <!-- Alternar Panel Lateral de Chat -->
+        <button id="toggle-chat-sidebar-btn" type="button" class="btn btn-secondary btn-sm active-tool" title="Mostrar u ocultar panel de mensajes directos">
+          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+          <span>Chat</span>
+          <span id="chat-unread-badge" class="unread-pill hidden">0</span>
+        </button>
+
         <!-- Ver Logs de este equipo -->
         <button id="viewer-logs-btn" type="button" class="btn btn-secondary btn-sm" title="Ver bitácora de logs de este equipo">
           <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -309,12 +467,71 @@
       </div>
     </div>
 
-    <div id="canvas-stage" class="canvas-stage" tabindex="0">
-      <div id="viewer-loading" class="viewer-overlay">
-        <div class="spinner"></div>
-        <p>Iniciando transmisión en vivo desde el equipo remoto...</p>
+    <div class="viewer-workspace">
+      <div id="canvas-stage" class="canvas-stage" tabindex="0">
+        <div id="viewer-loading" class="viewer-overlay">
+          <div class="spinner"></div>
+          <p>Iniciando transmisión en vivo desde el equipo remoto...</p>
+        </div>
+        <canvas id="remote-canvas"></canvas>
       </div>
-      <canvas id="remote-canvas"></canvas>
+
+      <!-- Panel Lateral de Mensajes Directos (Fase 3) -->
+      <aside id="chat-sidebar" class="chat-sidebar">
+        <div class="chat-sidebar-header">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <svg class="icon-sm text-blue" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+            <div>
+              <h3>Mensajes Directos</h3>
+              <p class="muted-text">Abre ventana emergente en la PC al enviar</p>
+            </div>
+          </div>
+          <button type="button" id="close-chat-sidebar-btn" class="icon-btn" title="Ocultar panel de chat">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="quick-messages-box">
+          <span class="quick-box-label">Mensajes rápidos de 1 clic:</span>
+          <button type="button" class="quick-msg-btn js-quick-chat" data-msg="Hola, vi tu equipo sin actividad, ¿todo está bien?">
+            <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+            <span>"Hola, vi tu equipo sin actividad, ¿todo está bien?"</span>
+          </button>
+          <button type="button" class="quick-msg-btn js-quick-chat" data-msg="Hola, ¿requieres ayuda con el sistema o algún reporte?">
+            <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+            <span>"Hola, ¿requieres ayuda con el sistema o algún reporte?"</span>
+          </button>
+          <button type="button" class="quick-msg-btn js-quick-chat" data-msg="Voy a mover tu mouse un momento para ayudarte.">
+            <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+            <span>"Voy a mover tu mouse un momento para ayudarte."</span>
+          </button>
+        </div>
+
+        <div id="chat-messages-list" class="chat-messages-list">
+          <div class="chat-empty-state">
+            No hay mensajes en esta sesión. Mientras no envíes un mensaje, el empleado no verá ninguna ventana de chat.
+          </div>
+        </div>
+
+        <form id="chat-send-form" class="chat-input-bar">
+          <input id="chat-input" type="text" class="text-input" placeholder="Escribe un mensaje para el empleado..." autocomplete="off" />
+          <button type="submit" class="btn btn-primary btn-sm" title="Enviar mensaje">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+          </button>
+        </form>
+      </aside>
     </div>
   </section>
 
@@ -439,6 +656,7 @@
     </div>
   </section>
 
+  <script src="/static/js/audio.js"></script>
   <script src="/static/js/viewer.js"></script>
   <script src="/static/js/app.js"></script>
 </body>

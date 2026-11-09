@@ -8,6 +8,15 @@ class AliasUpdateRequest(BaseModel):
     alias: str
 
 
+class ChatSendRequest(BaseModel):
+    message: str
+
+
+class ClipboardSetRequest(BaseModel):
+    text: str
+    auto_paste: bool = False
+
+
 class AgentConnection:
     """Representa una PC conectada activamente al Hub Central."""
 
