@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+data/*.db
+data/*.json
+agent/config_agent.json
+*.log
