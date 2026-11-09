@@ -5,39 +5,21 @@ import socket
 import threading
 import time
 import webbrowser
-from pathlib import Path
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Set
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 import config
+from database import db
 from models import AgentConnection, AliasUpdateRequest
 
-app = FastAPI(title="RemoteAssist - Fase 1 MVP")
+app = FastAPI(title="JOB-Monitor — Centro de Monitoreo y Control Corporativo")
 app.mount("/static", StaticFiles(directory=str(config.BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(config.BASE_DIR / "templates"))
-
-
-def load_saved_aliases() -> Dict[str, str]:
-    if config.ALIASES_FILE.exists():
-        try:
-            return json.loads(config.ALIASES_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-    return {}
-
-
-def save_device_alias(agent_id: str, alias: str):
-    aliases = load_saved_aliases()
-    aliases[agent_id] = alias.strip()
-    config.ALIASES_FILE.write_text(
-        json.dumps(aliases, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
 
 
 class HubManager:
@@ -45,7 +27,6 @@ class HubManager:
         self.agents: Dict[str, AgentConnection] = {}
         self.admins: Set[WebSocket] = set()
         self.subscriptions: Dict[WebSocket, Optional[str]] = {}
-        self.saved_aliases: Dict[str, str] = load_saved_aliases()
 
     async def register_agent(self, agent_id: str, ws: WebSocket, info: dict) -> AgentConnection:
         old = self.agents.get(agent_id)
@@ -55,10 +36,32 @@ class HubManager:
             except Exception:
                 pass
 
-        saved_alias = self.saved_aliases.get(agent_id)
+        saved_alias = db.get_saved_alias(agent_id)
         conn = AgentConnection(agent_id, ws, info, saved_alias=saved_alias)
         self.agents[agent_id] = conn
+
+        db.upsert_device(
+            agent_id=agent_id,
+            alias=conn.alias,
+            hostname=conn.hostname,
+            username=conn.username,
+            os_version=conn.os_name,
+            local_ip=conn.local_ip,
+            is_online=True,
+        )
+
+        mon_count = max(1, len([m for m in conn.monitors if m.get("id", 0) > 0]))
+        log_entry = db.add_log(
+            agent_id=agent_id,
+            alias=conn.alias,
+            hostname=conn.hostname,
+            username=conn.username,
+            category="NETWORK",
+            message=f"Agente inició sesión correctamente ({conn.os_name} • IP {conn.local_ip} • {mon_count} monitor{'es' if mon_count > 1 else ''})",
+        )
+
         await self.broadcast_agents_list()
+        await self.broadcast_new_log(log_entry)
 
         if self.has_viewers(agent_id):
             await self.send_to_agent(agent_id, {"type": "start_stream"})
@@ -68,7 +71,17 @@ class HubManager:
         current = self.agents.get(agent_id)
         if current and current.websocket == ws:
             del self.agents[agent_id]
+            db.set_device_offline(agent_id)
+            log_entry = db.add_log(
+                agent_id=agent_id,
+                alias=current.alias,
+                hostname=current.hostname,
+                username=current.username,
+                category="NETWORK",
+                message="El equipo se desconectó del servidor central",
+            )
             await self.broadcast_agents_list()
+            await self.broadcast_new_log(log_entry)
             await self.broadcast_to_viewers(
                 agent_id,
                 {"type": "agent_disconnected", "agent_id": agent_id},
@@ -93,16 +106,35 @@ class HubManager:
             })
             await self.send_to_agent(new_agent_id, {"type": "start_stream"})
 
+            log_entry = db.add_log(
+                agent_id=agent.agent_id,
+                alias=agent.alias,
+                hostname=agent.hostname,
+                username=agent.username,
+                category="AUDIT",
+                message="Administrador inició sesión de visualización silenciosa",
+            )
+            await self.broadcast_new_log(log_entry)
+
     async def update_alias(self, agent_id: str, new_alias: str):
         alias_clean = new_alias.strip()
         if not alias_clean:
             return
-        self.saved_aliases[agent_id] = alias_clean
-        save_device_alias(agent_id, alias_clean)
+        db.update_device_alias(agent_id, alias_clean)
         agent = self.agents.get(agent_id)
         if agent:
+            old_alias = agent.alias
             agent.alias = alias_clean
             await self.send_to_agent(agent_id, {"type": "update_alias", "alias": alias_clean})
+            log_entry = db.add_log(
+                agent_id=agent.agent_id,
+                alias=agent.alias,
+                hostname=agent.hostname,
+                username=agent.username,
+                category="AUDIT",
+                message=f"Alias del equipo actualizado de '{old_alias}' a '{alias_clean}'",
+            )
+            await self.broadcast_new_log(log_entry)
         await self.broadcast_agents_list()
 
     async def send_to_agent(self, agent_id: str, payload: dict) -> bool:
@@ -115,11 +147,18 @@ class HubManager:
         except Exception:
             return False
 
-    async def broadcast_agents_list(self):
-        payload = {
+    def _build_agents_payload(self) -> dict:
+        known_devices = db.get_all_known_devices()
+        offline_count = sum(1 for d in known_devices if d["agent_id"] not in self.agents)
+        return {
             "type": "agents_list",
             "agents": [a.to_dict(include_thumbnail=True) for a in self.agents.values()],
+            "known_devices": known_devices,
+            "offline_count": offline_count,
         }
+
+    async def broadcast_agents_list(self):
+        payload = self._build_agents_payload()
         dead = []
         for ws in list(self.admins):
             try:
@@ -133,6 +172,20 @@ class HubManager:
         payload = {
             "type": "agent_telemetry",
             "agent": agent.to_dict(include_thumbnail=True),
+        }
+        dead = []
+        for ws in list(self.admins):
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            await self.remove_admin(ws)
+
+    async def broadcast_new_log(self, log_entry: dict):
+        payload = {
+            "type": "new_log",
+            "log": log_entry,
         }
         dead = []
         for ws in list(self.admins):
@@ -202,11 +255,65 @@ async def index(request: Request):
 async def health():
     return {
         "ok": True,
-        "phase": 1,
+        "phase": 2,
         "agents_online": len(hub.agents),
         "lan_ip": get_local_lan_ip(),
         "port": config.PORT,
     }
+
+
+@app.get("/api/metrics")
+async def get_metrics(date: Optional[str] = Query(None, description="Fecha YYYY-MM-DD")):
+    metrics = db.get_daily_metrics(date_str=date)
+    # Adjuntar estado en vivo de los agentes actualmente conectados
+    for item in metrics:
+        live_ag = hub.agents.get(item["agent_id"])
+        if live_ag:
+            item["is_online"] = True
+            item["activity_status"] = live_ag.activity_status
+            item["current_idle_seconds"] = live_ag.idle_seconds
+            item["active_window"] = live_ag.active_window
+        else:
+            item["is_online"] = False
+            item["activity_status"] = "offline"
+            item["current_idle_seconds"] = 0
+            item["active_window"] = "Desconectado"
+    return {
+        "ok": True,
+        "metrics": metrics,
+    }
+
+
+@app.get("/api/logs")
+async def get_logs(
+    agent_id: Optional[str] = Query("ALL"),
+    category: Optional[str] = Query("ALL"),
+    q: Optional[str] = Query(""),
+    limit: int = Query(250),
+):
+    logs = db.query_logs(agent_id=agent_id, category=category, search_q=q, limit=limit)
+    devices = db.get_all_known_devices()
+    return {
+        "ok": True,
+        "logs": logs,
+        "devices": devices,
+    }
+
+
+@app.get("/api/logs/export-csv")
+async def export_logs_csv(
+    agent_id: Optional[str] = Query("ALL"),
+    category: Optional[str] = Query("ALL"),
+    q: Optional[str] = Query(""),
+):
+    csv_text = db.export_logs_csv(agent_id=agent_id, category=category, search_q=q)
+    return Response(
+        content="\ufeff" + csv_text,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="bitacora_equipos_job_monitor.csv"'
+        },
+    )
 
 
 @app.post("/api/devices/{agent_id}/alias")
@@ -255,6 +362,35 @@ async def ws_agent_endpoint(websocket: WebSocket):
                         agent.current_monitor = int(data["current_monitor"])
                     if "thumbnail" in data and data["thumbnail"]:
                         agent.thumbnail_b64 = data["thumbnail"]
+
+                    delta_secs = int(data.get("delta_seconds", 4))
+                    app_name = data.get("app_name") or agent.active_window
+                    away_alert = bool(data.get("away_alert", False))
+
+                    db.record_telemetry_slice(
+                        agent_id=agent_id,
+                        delta_seconds=delta_secs,
+                        is_active=(agent.idle_seconds < 180),
+                        app_name=app_name,
+                        increment_away_alert=away_alert,
+                    )
+
+                    for ev in data.get("log_events", []):
+                        cat = ev.get("category", "WINDOW")
+                        msg_txt = ev.get("message", "")
+                        dur = ev.get("duration_seconds")
+                        if msg_txt:
+                            log_entry = db.add_log(
+                                agent_id=agent_id,
+                                alias=agent.alias,
+                                hostname=agent.hostname,
+                                username=agent.username,
+                                category=cat,
+                                message=msg_txt,
+                                duration_seconds=dur,
+                            )
+                            await hub.broadcast_new_log(log_entry)
+
                     await hub.broadcast_telemetry_update(agent)
 
     except WebSocketDisconnect:
@@ -282,10 +418,9 @@ async def ws_admin_endpoint(websocket: WebSocket):
         hub.admins.add(websocket)
         hub.subscriptions[websocket] = None
 
-        await websocket.send_json({
-            "type": "auth_ok",
-            "agents": [a.to_dict(include_thumbnail=True) for a in hub.agents.values()],
-        })
+        init_payload = hub._build_agents_payload()
+        init_payload["type"] = "auth_ok"
+        await websocket.send_json(init_payload)
 
         while True:
             message = await websocket.receive()
@@ -308,6 +443,26 @@ async def ws_admin_endpoint(websocket: WebSocket):
                     new_alias = data.get("alias", "")
                     if target_id and new_alias:
                         await hub.update_alias(target_id, new_alias)
+
+                elif msg_type == "audit_control_mode":
+                    target_id = hub.subscriptions.get(websocket)
+                    enabled = bool(data.get("enabled", False))
+                    if target_id and target_id in hub.agents:
+                        ag = hub.agents[target_id]
+                        action_text = (
+                            "Administrador activó el control remoto de mouse y teclado"
+                            if enabled
+                            else "Administrador cambió a modo Solo Observar"
+                        )
+                        log_entry = db.add_log(
+                            agent_id=ag.agent_id,
+                            alias=ag.alias,
+                            hostname=ag.hostname,
+                            username=ag.username,
+                            category="AUDIT",
+                            message=action_text,
+                        )
+                        await hub.broadcast_new_log(log_entry)
 
                 elif msg_type == "request_all_thumbnails":
                     for ag_id in list(hub.agents.keys()):
@@ -339,7 +494,7 @@ async def ws_admin_endpoint(websocket: WebSocket):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="RemoteAssist Server - Fase 1 MVP")
+    parser = argparse.ArgumentParser(description="JOB-Monitor Server - Fase 2")
     parser.add_argument("--port", type=int, default=config.PORT, help="Puerto HTTP/WS (por defecto 5060)")
     parser.add_argument("--host", type=str, default=config.HOST, help="Host de escucha (por defecto 0.0.0.0)")
     parser.add_argument("--no-browser", action="store_true", help="No abrir el navegador automáticamente")
@@ -357,4 +512,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

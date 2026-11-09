@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>RemoteAssist — Centro de Monitoreo y Control Corporativo</title>
+  <title>JOB-Monitor — Centro de Monitoreo y Control Corporativo</title>
   <link rel="stylesheet" href="/static/css/styles.css" />
 </head>
 <body>
@@ -43,7 +43,7 @@
         </div>
         <div>
           <h2>Asignar Nombre / Alias al Equipo</h2>
-          <p class="muted-text">Este nombre identificará a la PC sin importar si cambia de dirección IP.</p>
+          <p class="muted-text">Este nombre identificará a la PC en el muro, métricas y bitácora de logs.</p>
         </div>
       </div>
       <form id="alias-form" class="modal-body">
@@ -70,13 +70,13 @@
       </div>
       <div>
         <div class="title-row">
-          <h1>Centro de Monitoreo y Asistencia Corporativa</h1>
+          <h1>JOB-Monitor — Centro de Monitoreo y Asistencia</h1>
           <span id="ws-status-pill" class="status-pill status-connecting">
             <span class="status-dot"></span>
             <span id="ws-status-text">Conectando...</span>
           </span>
         </div>
-        <p class="muted-text">Servidor activo en <code>{{ lan_ip }}:{{ port }}</code> • Fase 1 (Núcleo Silencioso y Multi-Monitor)</p>
+        <p class="muted-text">Servidor activo en <code>{{ lan_ip }}:{{ port }}</code> • Fase 2 (Monitoreo Tipo Teams + SQLite Logs)</p>
       </div>
     </div>
 
@@ -87,14 +87,29 @@
             <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
             <rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>
           </svg>
-          <span>Muro de Equipos</span>
+          <span>Muro de Monitoreo</span>
         </button>
         <button id="tab-viewer" class="nav-tab" type="button" disabled>
           <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/>
             <circle cx="12" cy="12" r="3"/>
           </svg>
-          <span id="tab-viewer-label">Visor en Vivo</span>
+          <span id="tab-viewer-label">Visor Remoto</span>
+        </button>
+        <button id="tab-activity" class="nav-tab" type="button">
+          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+          <span>Métricas del Día</span>
+        </button>
+        <button id="tab-logs" class="nav-tab" type="button">
+          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="16" y1="13" x2="8" y2="13"/>
+            <line x1="16" y1="17" x2="8" y2="17"/>
+          </svg>
+          <span>Logs de Equipos</span>
         </button>
       </div>
     </div>
@@ -104,20 +119,7 @@
   <!-- VISTA 1: MURO DE MONITOREO EN VIVO                                      -->
   <!-- ======================================================================= -->
   <main id="view-wall" class="main-container">
-    <!-- Tarjetas de Resumen de Actividad -->
     <section class="stats-grid">
-      <div class="stat-card">
-        <div>
-          <span class="stat-label">Equipos en Línea</span>
-          <strong id="count-total" class="stat-value">0</strong>
-        </div>
-        <div class="stat-icon stat-icon-blue">
-          <svg class="icon-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
-          </svg>
-        </div>
-      </div>
-
       <div class="stat-card">
         <div>
           <span class="stat-label">Activos Ahora (&lt; 3m)</span>
@@ -141,13 +143,21 @@
         </div>
         <span class="indicator-dot dot-rose"></span>
       </div>
+
+      <div class="stat-card">
+        <div>
+          <span class="stat-label">Desconectados / Apagados</span>
+          <strong id="count-offline" class="stat-value text-muted">0</strong>
+        </div>
+        <span class="indicator-dot dot-slate"></span>
+      </div>
     </section>
 
     <!-- Barra de Filtros y Búsqueda -->
     <section class="toolbar-card">
       <div class="filter-group">
         <span class="filter-label">Filtrar:</span>
-        <button type="button" data-filter="all" class="filter-btn active">Todos</button>
+        <button type="button" data-filter="all" class="filter-btn active">Todos (<span id="count-total">0</span>)</button>
         <button type="button" data-filter="active" class="filter-btn">
           <span class="indicator-dot dot-emerald"></span> Activos
         </button>
@@ -164,7 +174,7 @@
           <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
           </svg>
-          <input id="search-input" type="text" placeholder="Buscar por nombre, usuario o hostname..." />
+          <input id="search-input" type="text" placeholder="Buscar por nombre, usuario, ventana o IP..." />
         </div>
         <button id="refresh-thumbs-btn" type="button" class="btn btn-secondary" title="Actualizar capturas de todos los equipos">
           <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -175,7 +185,7 @@
       </div>
     </section>
 
-    <!-- Estado Vacío cuando aún no hay agentes conectados -->
+    <!-- Estado Vacío -->
     <section id="empty-state" class="empty-card">
       <div class="empty-icon">
         <svg class="icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -202,14 +212,13 @@
   <!-- VISTA 2: VISOR Y CONTROL REMOTO SILENCIOSO                              -->
   <!-- ======================================================================= -->
   <section id="view-viewer" class="viewer-container hidden">
-    <!-- Barra de Control del Visor -->
     <div class="viewer-toolbar">
       <div class="viewer-toolbar-left">
         <button id="back-to-wall-btn" type="button" class="btn btn-secondary">
           <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
           </svg>
-          <span>Volver al Muro</span>
+          <span>Muro</span>
         </button>
 
         <div class="viewer-device-meta">
@@ -233,7 +242,6 @@
         </div>
       </div>
 
-      <!-- Herramientas de Monitores, Modo Observador/Control y Atajos -->
       <div class="viewer-toolbar-right">
         <!-- Selector de Monitor -->
         <div class="control-select-wrap" title="Seleccionar monitor del empleado">
@@ -269,15 +277,24 @@
           <span id="mode-btn-text">Modo: Solo Observar</span>
         </button>
 
+        <!-- Ver Logs de este equipo -->
+        <button id="viewer-logs-btn" type="button" class="btn btn-secondary btn-sm" title="Ver bitácora de logs de este equipo">
+          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+          </svg>
+          <span>Logs</span>
+        </button>
+
         <!-- Atajos Rápidos -->
         <div class="shortcut-group">
-          <button type="button" class="btn btn-secondary btn-sm" data-shortcut="alt_tab" title="Enviar Alt+Tab (Cambiar ventana)">
+          <button type="button" class="btn btn-secondary btn-sm" data-shortcut="alt_tab" title="Enviar Alt+Tab">
             Alt+Tab
           </button>
           <button type="button" class="btn btn-secondary btn-sm" data-shortcut="show_desktop" title="Mostrar Escritorio (Win+D)">
             Escritorio
           </button>
-          <button type="button" class="btn btn-secondary btn-sm" data-shortcut="task_mgr" title="Abrir Administrador de Tareas (Ctrl+Shift+Esc)">
+          <button type="button" class="btn btn-secondary btn-sm" data-shortcut="task_mgr" title="Abrir Administrador de Tareas">
             Admin. Tareas
           </button>
         </div>
@@ -292,7 +309,6 @@
       </div>
     </div>
 
-    <!-- Lienzo de Video en Tiempo Real -->
     <div id="canvas-stage" class="canvas-stage" tabindex="0">
       <div id="viewer-loading" class="viewer-overlay">
         <div class="spinner"></div>
@@ -302,8 +318,128 @@
     </div>
   </section>
 
+  <!-- ======================================================================= -->
+  <!-- VISTA 3: MÉTRICAS DE ACTIVIDAD E INACTIVIDAD DEL DÍA                    -->
+  <!-- ======================================================================= -->
+  <section id="view-activity" class="main-container hidden">
+    <div class="panel-card">
+      <div class="panel-card-header">
+        <div>
+          <h2>Resumen de Actividad e Inactividad Diaria (Estilo Teams)</h2>
+          <p class="muted-text">Tiempo efectivo frente al equipo, pausas acumuladas, alertas de ausencia (+10 min) y aplicaciones principales.</p>
+        </div>
+        <div class="panel-controls">
+          <div class="control-select-wrap">
+            <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect width="18" height="18" x="3" y="4" rx="2" ry="2"/>
+              <line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/>
+            </svg>
+            <input id="metrics-date-input" type="date" class="toolbar-select" />
+          </div>
+          <button id="refresh-metrics-btn" type="button" class="btn btn-secondary">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><polyline points="21 3 21 8 16 8"/>
+            </svg>
+            <span>Actualizar</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Empleado / Equipo</th>
+              <th>Estado Actual</th>
+              <th>Inicio de Jornada</th>
+              <th>Tiempo Activo Hoy</th>
+              <th>Tiempo Inactivo / Alertas</th>
+              <th>Aplicaciones Principales (Tiempo en Foco)</th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="metrics-tbody">
+            <tr>
+              <td colspan="7" class="empty-row">Cargando métricas del día...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================================================================= -->
+  <!-- VISTA 4: BITÁCORA Y LOGS DE EQUIPOS (SQLITE EN TIEMPO REAL)             -->
+  <!-- ======================================================================= -->
+  <section id="view-logs" class="main-container hidden">
+    <div class="panel-card">
+      <div class="panel-card-header">
+        <div>
+          <h2>Bitácora y Logs de Equipos</h2>
+          <p class="muted-text">Registro cronológico en SQLite de periodos de inactividad, regresos, cambios de ventana/aplicación, conexiones y soporte.</p>
+        </div>
+        <div class="panel-controls">
+          <div class="control-select-wrap">
+            <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+            </svg>
+            <select id="log-device-filter" class="toolbar-select">
+              <option value="ALL">Todos los equipos</option>
+            </select>
+          </div>
+
+          <div class="control-select-wrap">
+            <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+            </svg>
+            <select id="log-category-filter" class="toolbar-select">
+              <option value="ALL">Todas las categorías</option>
+              <option value="IDLE">Alertas de Inactividad (IDLE)</option>
+              <option value="RESUME">Regreso a Actividad (RESUME)</option>
+              <option value="WINDOW">Cambio de Ventana / App (WINDOW)</option>
+              <option value="NETWORK">Conexión / Encendido (NETWORK)</option>
+              <option value="AUDIT">Auditoría de Soporte (AUDIT)</option>
+            </select>
+          </div>
+
+          <div class="search-box">
+            <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input id="log-search-input" type="text" placeholder="Filtrar eventos (ej. Excel, Chrome, Inactivo)..." />
+          </div>
+
+          <button id="export-csv-btn" type="button" class="btn btn-secondary">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            <span>Exportar CSV</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="data-table logs-table">
+          <thead>
+            <tr>
+              <th style="width: 155px;">Fecha y Hora</th>
+              <th style="width: 210px;">Equipo / Usuario</th>
+              <th style="width: 135px;">Categoría</th>
+              <th>Detalle del Evento</th>
+            </tr>
+          </thead>
+          <tbody id="logs-tbody">
+            <tr>
+              <td colspan="4" class="empty-row">Cargando bitácora de eventos...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
   <script src="/static/js/viewer.js"></script>
   <script src="/static/js/app.js"></script>
 </body>
 </html>
-

@@ -6,3 +6,4 @@ data/*.db
 data/*.json
 agent/config_agent.json
 *.log
+

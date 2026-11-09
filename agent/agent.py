@@ -115,6 +115,30 @@ else:
         return platform.system()
 
 
+def extract_app_name(window_title: str) -> str:
+    title = (window_title or "Escritorio").strip()
+    if " - " in title:
+        parts = [p.strip() for p in title.split(" - ") if p.strip()]
+        if parts:
+            return parts[-1][:45]
+    if " — " in title:
+        parts = [p.strip() for p in title.split(" — ") if p.strip()]
+        if parts:
+            return parts[-1][:45]
+    return title[:45]
+
+
+def format_duration_es(seconds: int) -> str:
+    s = max(0, int(seconds))
+    if s < 60:
+        return f"{s}s"
+    mins, secs = divmod(s, 60)
+    if mins < 60:
+        return f"{mins}m {secs}s" if secs else f"{mins}m"
+    hrs, rem_mins = divmod(mins, 60)
+    return f"{hrs}h {rem_mins}m"
+
+
 SPECIAL_KEYS = {
     "Enter": Key.enter,
     "Backspace": Key.backspace,
@@ -216,6 +240,13 @@ class SilentRemoteAgent:
         self.target_fps: int = 18
         self.scale_factor: float = 1.0
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
+
+        # Estado de monitoreo para generación de logs (Fase 2)
+        self.last_window_title: str = get_active_window_title()
+        self.window_started_at: float = time.monotonic()
+        self.was_idle_3m: bool = False
+        self.was_away_10m: bool = False
+        self.max_idle_reached: int = 0
 
     def save_alias_locally(self, new_alias: str):
         self.alias = new_alias
@@ -412,18 +443,74 @@ class SilentRemoteAgent:
     async def telemetry_loop(self):
         with mss.mss() as sct:
             tick = 0
+            last_tick_time = time.monotonic()
             while True:
                 await asyncio.sleep(4.0)
                 if not self.ws:
                     break
                 tick += 1
+                now_mono = time.monotonic()
+                delta_secs = max(1, round(now_mono - last_tick_time))
+                last_tick_time = now_mono
+
+                idle_secs = get_idle_seconds()
+                current_win = get_active_window_title()
+                app_name = extract_app_name(current_win)
+
+                log_events = []
+                away_alert_triggered = False
+
+                # 1. Detectar cambio de ventana activa
+                if current_win != self.last_window_title:
+                    prev_duration = max(1, round(now_mono - self.window_started_at))
+                    if prev_duration >= 2:
+                        log_events.append({
+                            "category": "WINDOW",
+                            "message": f"Cambió a '{current_win}' (permanencia previa en '{self.last_window_title}': {format_duration_es(prev_duration)})",
+                            "duration_seconds": prev_duration,
+                        })
+                    self.last_window_title = current_win
+                    self.window_started_at = now_mono
+
+                # 2. Detectar transiciones de inactividad (Estilo Teams)
+                if idle_secs >= 180:
+                    self.max_idle_reached = max(self.max_idle_reached, idle_secs)
+                    if not self.was_idle_3m:
+                        self.was_idle_3m = True
+                        log_events.append({
+                            "category": "IDLE",
+                            "message": f"Equipo entró en estado inactivo tras 3 minutos sin entrada (Ventana: {current_win})",
+                            "duration_seconds": idle_secs,
+                        })
+                    if idle_secs >= 600 and not self.was_away_10m:
+                        self.was_away_10m = True
+                        away_alert_triggered = True
+                        log_events.append({
+                            "category": "IDLE",
+                            "message": f"Alerta de ausencia prolongada: superó 10 minutos sin movimiento de mouse ni teclado (Ventana: {current_win})",
+                            "duration_seconds": idle_secs,
+                        })
+                elif idle_secs < 15 and self.was_idle_3m:
+                    log_events.append({
+                        "category": "RESUME",
+                        "message": f"El usuario retomó actividad después de {format_duration_es(self.max_idle_reached)} de inactividad",
+                        "duration_seconds": self.max_idle_reached,
+                    })
+                    self.was_idle_3m = False
+                    self.was_away_10m = False
+                    self.max_idle_reached = 0
+
                 try:
                     payload = {
                         "type": "telemetry",
-                        "idle_seconds": get_idle_seconds(),
-                        "active_window": get_active_window_title(),
+                        "idle_seconds": idle_secs,
+                        "active_window": current_win,
+                        "app_name": app_name,
+                        "delta_seconds": delta_secs,
+                        "away_alert": away_alert_triggered,
                         "current_monitor": self.current_monitor,
                         "monitors": self.get_monitors_info(sct),
+                        "log_events": log_events,
                     }
                     if tick % 3 == 1:
                         payload["thumbnail"] = self.capture_thumbnail_b64(sct)
@@ -524,7 +611,7 @@ class SilentRemoteAgent:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Agente Silencioso RemoteAssist - Fase 1")
+    parser = argparse.ArgumentParser(description="Agente Silencioso RemoteAssist - Fase 2")
     parser.add_argument("--server", type=str, default=None, help="URL WebSocket del Servidor Central")
     parser.add_argument("--token", type=str, default=None, help="Token secreto del servidor")
     parser.add_argument("--alias", type=str, default=None, help="Alias amigable de esta PC (ej. 'PC de Miguel')")
@@ -540,4 +627,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

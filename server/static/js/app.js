@@ -3,13 +3,16 @@
     ws: null,
     password: localStorage.getItem('ra_admin_password') || 'admin123',
     agents: new Map(),
+    knownDevices: [],
+    offlineCount: 0,
     currentFilter: 'all',
     searchQuery: '',
     currentView: 'wall',
     selectedAgentId: null,
+    logsCache: [],
   };
 
-  // Referencias DOM
+  // Referencias DOM Generales
   const authModal = document.getElementById('auth-modal');
   const authForm = document.getElementById('auth-form');
   const passInput = document.getElementById('admin-pass-input');
@@ -24,23 +27,30 @@
   const wsStatusPill = document.getElementById('ws-status-pill');
   const wsStatusText = document.getElementById('ws-status-text');
 
+  // Pestañas y Vistas
   const tabWall = document.getElementById('tab-wall');
   const tabViewer = document.getElementById('tab-viewer');
+  const tabActivity = document.getElementById('tab-activity');
+  const tabLogs = document.getElementById('tab-logs');
   const tabViewerLabel = document.getElementById('tab-viewer-label');
 
   const viewWall = document.getElementById('view-wall');
   const viewViewer = document.getElementById('view-viewer');
+  const viewActivity = document.getElementById('view-activity');
+  const viewLogs = document.getElementById('view-logs');
+
+  // Vista 1: Muro
   const emptyState = document.getElementById('empty-state');
   const agentsGrid = document.getElementById('agents-grid');
-
   const countTotal = document.getElementById('count-total');
   const countActive = document.getElementById('count-active');
   const countIdle = document.getElementById('count-idle');
   const countAway = document.getElementById('count-away');
-
+  const countOffline = document.getElementById('count-offline');
   const searchInput = document.getElementById('search-input');
   const refreshThumbsBtn = document.getElementById('refresh-thumbs-btn');
 
+  // Vista 2: Visor
   const backToWallBtn = document.getElementById('back-to-wall-btn');
   const viewerStatusDot = document.getElementById('viewer-status-dot');
   const viewerDeviceAlias = document.getElementById('viewer-device-alias');
@@ -49,8 +59,27 @@
   const monitorSelect = document.getElementById('monitor-select');
   const qualitySelect = document.getElementById('quality-select');
   const toggleControlBtn = document.getElementById('toggle-control-btn');
+  const viewerLogsBtn = document.getElementById('viewer-logs-btn');
   const fullscreenBtn = document.getElementById('fullscreen-btn');
   const viewerLoading = document.getElementById('viewer-loading');
+
+  // Vista 3: Métricas
+  const metricsDateInput = document.getElementById('metrics-date-input');
+  const refreshMetricsBtn = document.getElementById('refresh-metrics-btn');
+  const metricsTbody = document.getElementById('metrics-tbody');
+
+  // Vista 4: Logs
+  const logDeviceFilter = document.getElementById('log-device-filter');
+  const logCategoryFilter = document.getElementById('log-category-filter');
+  const logSearchInput = document.getElementById('log-search-input');
+  const exportCsvBtn = document.getElementById('export-csv-btn');
+  const logsTbody = document.getElementById('logs-tbody');
+
+  // Inicializar fecha de métricas en hoy
+  const todayIso = new Date().toISOString().slice(0, 10);
+  if (metricsDateInput) {
+    metricsDateInput.value = todayIso;
+  }
 
   const canvasEl = document.getElementById('remote-canvas');
   const stageEl = document.getElementById('canvas-stage');
@@ -81,6 +110,17 @@
     return `Inactivo: ${hrs}h ${remMins}m`;
   }
 
+  function formatAccumulatedTime(seconds) {
+    const s = Math.max(0, Math.round(Number(seconds) || 0));
+    if (s < 60) return `${s}s`;
+    const mins = Math.floor(s / 60);
+    const secs = s % 60;
+    if (mins < 60) return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    return `${hrs}h ${remMins}m`;
+  }
+
   function getStatusMeta(status, idleSeconds) {
     if (status === 'active') {
       return {
@@ -95,6 +135,13 @@
         dotClass: 'dot-amber',
         badgeClass: 'badge-idle',
         label: `Inactivo ${m} min`,
+      };
+    }
+    if (status === 'offline') {
+      return {
+        dotClass: 'dot-slate',
+        badgeClass: 'cat-NETWORK',
+        label: 'Desconectado',
       };
     }
     const m = Math.max(1, Math.floor(idleSeconds / 60));
@@ -129,6 +176,9 @@
     countActive.textContent = String(activeCount);
     countIdle.textContent = String(idleCount);
     countAway.textContent = String(awayCount);
+    if (countOffline) {
+      countOffline.textContent = String(state.offlineCount || 0);
+    }
 
     if (all.length === 0) {
       emptyState.classList.remove('hidden');
@@ -195,18 +245,171 @@
             </div>
 
             <div class="card-footer">
-              <button type="button" class="btn btn-primary w-full js-open-viewer" data-agent-id="${escapeHtml(ag.agent_id)}">
+              <button type="button" class="btn btn-primary js-open-viewer" style="flex:1;" data-agent-id="${escapeHtml(ag.agent_id)}">
                 <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/>
                   <circle cx="12" cy="12" r="3"/>
                 </svg>
-                <span>Conectar en Silencio</span>
+                <span>Conectar</span>
+              </button>
+              <button type="button" class="btn btn-secondary js-open-logs" data-agent-id="${escapeHtml(ag.agent_id)}" title="Ver bitácora de logs de este equipo">
+                <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+                </svg>
+                <span>Logs</span>
               </button>
             </div>
           </article>
         `;
       })
       .join('');
+  }
+
+  function populateLogDeviceSelector() {
+    const currentVal = logDeviceFilter.value || 'ALL';
+    const mapDevs = new Map();
+    state.knownDevices.forEach((d) => mapDevs.set(d.agent_id, d.alias));
+    state.agents.forEach((a) => mapDevs.set(a.agent_id, a.alias));
+
+    let html = '<option value="ALL">Todos los equipos</option>';
+    mapDevs.forEach((alias, id) => {
+      const sel = id === currentVal ? 'selected' : '';
+      html += `<option value="${escapeHtml(id)}" ${sel}>${escapeHtml(alias)}</option>`;
+    });
+    logDeviceFilter.innerHTML = html;
+  }
+
+  async function loadDailyMetrics() {
+    const dateVal = metricsDateInput.value || todayIso;
+    try {
+      const res = await fetch(`/api/metrics?date=${encodeURIComponent(dateVal)}`);
+      const data = await res.json();
+      const rows = data.metrics || [];
+      if (rows.length === 0) {
+        metricsTbody.innerHTML = '<tr><td colspan="7" class="empty-row">No hay registros de actividad para la fecha seleccionada.</td></tr>';
+        return;
+      }
+
+      metricsTbody.innerHTML = rows
+        .map((m) => {
+          const meta = getStatusMeta(m.activity_status, m.current_idle_seconds || 0);
+          const appsHtml =
+            (m.top_apps || []).length > 0
+              ? `<div class="app-tags-wrap">${m.top_apps
+                  .map(
+                    (ap) =>
+                      `<span class="app-usage-pill"><span>${escapeHtml(ap.app_name)}</span><span class="app-usage-pct">${ap.percent}%</span></span>`
+                  )
+                  .join('')}</div>`
+              : '<span class="muted-text">Sin datos aún</span>';
+
+          const alertsBadge =
+            m.away_alerts_count > 0
+              ? `<span class="alert-count-badge">${m.away_alerts_count} alerta${m.away_alerts_count > 1 ? 's' : ''}</span>`
+              : '';
+
+          return `
+            <tr>
+              <td>
+                <strong>${escapeHtml(m.alias)}</strong>
+                <div class="muted-text">${escapeHtml(m.hostname)} (${escapeHtml(m.username)})</div>
+              </td>
+              <td>
+                <span class="badge-status ${meta.badgeClass}">${escapeHtml(meta.label)}</span>
+              </td>
+              <td>${escapeHtml(m.first_seen_at || '---')}</td>
+              <td><strong class="text-emerald">${escapeHtml(formatAccumulatedTime(m.active_seconds))}</strong></td>
+              <td>
+                <span>${escapeHtml(formatAccumulatedTime(m.idle_seconds))}</span>
+                ${alertsBadge}
+              </td>
+              <td>${appsHtml}</td>
+              <td>
+                <div style="display:flex; gap:6px;">
+                  ${
+                    m.is_online
+                      ? `<button type="button" class="btn btn-primary btn-sm js-metric-connect" data-agent-id="${escapeHtml(m.agent_id)}">Ver</button>`
+                      : ''
+                  }
+                  <button type="button" class="btn btn-secondary btn-sm js-metric-logs" data-agent-id="${escapeHtml(m.agent_id)}">Logs</button>
+                </div>
+              </td>
+            </tr>
+          `;
+        })
+        .join('');
+    } catch (err) {
+      console.error('Error al cargar métricas:', err);
+    }
+  }
+
+  function renderLogsTable() {
+    if (!state.logsCache || state.logsCache.length === 0) {
+      logsTbody.innerHTML = '<tr><td colspan="4" class="empty-row">No se encontraron eventos con los filtros seleccionados.</td></tr>';
+      return;
+    }
+
+    const categoryLabels = {
+      IDLE: 'INACTIVIDAD',
+      RESUME: 'REGRESO',
+      WINDOW: 'VENTANA ACTIVA',
+      NETWORK: 'CONEXIÓN',
+      AUDIT: 'SOPORTE',
+    };
+
+    logsTbody.innerHTML = state.logsCache
+      .map((row) => {
+        const cat = row.category || 'WINDOW';
+        const catText = categoryLabels[cat] || cat;
+        return `
+          <tr>
+            <td class="muted-text">${escapeHtml(row.timestamp)}</td>
+            <td>
+              <strong>${escapeHtml(row.alias)}</strong>
+              <div class="muted-text">${escapeHtml(row.hostname)}</div>
+            </td>
+            <td><span class="cat-badge cat-${escapeHtml(cat)}">${escapeHtml(catText)}</span></td>
+            <td>${escapeHtml(row.message)}</td>
+          </tr>
+        `;
+      })
+      .join('');
+  }
+
+  async function fetchLogsFromServer() {
+    const dev = logDeviceFilter.value || 'ALL';
+    const cat = logCategoryFilter.value || 'ALL';
+    const q = logSearchInput.value.trim();
+
+    const params = new URLSearchParams({
+      agent_id: dev,
+      category: cat,
+      q,
+      limit: '250',
+    });
+
+    try {
+      const res = await fetch(`/api/logs?${params.toString()}`);
+      const data = await res.json();
+      if (Array.isArray(data.devices)) {
+        state.knownDevices = data.devices;
+        populateLogDeviceSelector();
+      }
+      state.logsCache = data.logs || [];
+      renderLogsTable();
+    } catch (err) {
+      console.error('Error al consultar bitácora de logs:', err);
+    }
+  }
+
+  function openLogsForAgent(agentId) {
+    populateLogDeviceSelector();
+    if (agentId) {
+      logDeviceFilter.value = agentId;
+    }
+    switchView('logs');
+    fetchLogsFromServer();
   }
 
   function updateViewerHeader(agent) {
@@ -223,7 +426,6 @@
       monitorSelect.innerHTML = '<option value="1">Monitor 1</option>';
       return;
     }
-    // Ordenar mostrando primero Monitor 1..N y al final "Todos los monitores (0)"
     const indiv = agent.monitors.filter((m) => m.id > 0);
     const allCombined = agent.monitors.filter((m) => m.id === 0);
     const ordered = indiv.length > 1 ? [...indiv, ...allCombined] : indiv;
@@ -253,26 +455,39 @@
     });
   }
 
-  function closeViewerAndReturnToWall() {
-    if (state.selectedAgentId) {
+  function stopStreamIfLeavingViewer(nextView) {
+    if (state.currentView === 'viewer' && nextView !== 'viewer' && state.selectedAgentId) {
       sendWsJson({ type: 'unsubscribe' });
+      viewer.setControlMode(false);
     }
-    viewer.setControlMode(false);
-    switchView('wall');
   }
 
   function switchView(target) {
+    stopStreamIfLeavingViewer(target);
     state.currentView = target;
-    if (target === 'viewer') {
-      viewWall.classList.add('hidden');
-      viewViewer.classList.remove('hidden');
-      tabWall.classList.remove('active');
-      tabViewer.classList.add('active');
-    } else {
-      viewViewer.classList.add('hidden');
-      viewWall.classList.remove('hidden');
-      tabViewer.classList.remove('active');
-      tabWall.classList.add('active');
+
+    const views = {
+      wall: viewWall,
+      viewer: viewViewer,
+      activity: viewActivity,
+      logs: viewLogs,
+    };
+    const tabs = {
+      wall: tabWall,
+      viewer: tabViewer,
+      activity: tabActivity,
+      logs: tabLogs,
+    };
+
+    Object.keys(views).forEach((k) => {
+      views[k].classList.toggle('hidden', k !== target);
+      tabs[k].classList.toggle('active', k === target);
+    });
+
+    if (target === 'activity') {
+      loadDailyMetrics();
+    } else if (target === 'logs') {
+      fetchLogsFromServer();
     }
   }
 
@@ -318,28 +533,31 @@
         return;
       }
 
-      if (msg.type === 'auth_ok') {
-        localStorage.setItem('ra_admin_password', state.password);
-        authModal.classList.add('hidden');
-        authError.classList.add('hidden');
-        setWsBadge('connected', 'En línea');
+      if (msg.type === 'auth_ok' || msg.type === 'agents_list') {
+        if (msg.type === 'auth_ok') {
+          localStorage.setItem('ra_admin_password', state.password);
+          authModal.classList.add('hidden');
+          authError.classList.add('hidden');
+          setWsBadge('connected', 'En línea');
+        }
 
         state.agents.clear();
         (msg.agents || []).forEach((a) => state.agents.set(a.agent_id, a));
+        if (Array.isArray(msg.known_devices)) {
+          state.knownDevices = msg.known_devices;
+        }
+        if (typeof msg.offline_count === 'number') {
+          state.offlineCount = msg.offline_count;
+        }
+
+        populateLogDeviceSelector();
         updateCountersAndGrid();
 
         if (state.currentView === 'viewer' && state.selectedAgentId && state.agents.has(state.selectedAgentId)) {
-          sendWsJson({ type: 'subscribe', agent_id: state.selectedAgentId });
-        }
-        return;
-      }
-
-      if (msg.type === 'agents_list') {
-        state.agents.clear();
-        (msg.agents || []).forEach((a) => state.agents.set(a.agent_id, a));
-        updateCountersAndGrid();
-        if (state.selectedAgentId && state.agents.has(state.selectedAgentId)) {
           updateViewerHeader(state.agents.get(state.selectedAgentId));
+          if (msg.type === 'auth_ok') {
+            sendWsJson({ type: 'subscribe', agent_id: state.selectedAgentId });
+          }
         }
         return;
       }
@@ -358,6 +576,24 @@
         if (state.selectedAgentId === msg.agent.agent_id) {
           updateViewerHeader(msg.agent);
           populateMonitorsDropdown(msg.agent);
+        }
+        return;
+      }
+
+      if (msg.type === 'new_log' && msg.log) {
+        if (state.currentView === 'logs') {
+          const devFilter = logDeviceFilter.value || 'ALL';
+          const catFilter = logCategoryFilter.value || 'ALL';
+          const q = logSearchInput.value.trim().toLowerCase();
+          const l = msg.log;
+          const matchDev = devFilter === 'ALL' || l.agent_id === devFilter;
+          const matchCat = catFilter === 'ALL' || l.category === catFilter;
+          const matchQ = !q || `${l.message} ${l.alias} ${l.hostname}`.toLowerCase().includes(q);
+          if (matchDev && matchCat && matchQ) {
+            state.logsCache.unshift(l);
+            if (state.logsCache.length > 250) state.logsCache.pop();
+            renderLogsTable();
+          }
         }
         return;
       }
@@ -414,9 +650,27 @@
       openAliasEditor(editBtn.dataset.agentId);
       return;
     }
+    const logsBtn = e.target.closest('.js-open-logs');
+    if (logsBtn) {
+      e.stopPropagation();
+      openLogsForAgent(logsBtn.dataset.agentId);
+      return;
+    }
     const openTrigger = e.target.closest('.js-open-viewer');
     if (openTrigger) {
       openViewerForAgent(openTrigger.dataset.agentId);
+    }
+  });
+
+  metricsTbody.addEventListener('click', (e) => {
+    const connectBtn = e.target.closest('.js-metric-connect');
+    if (connectBtn) {
+      openViewerForAgent(connectBtn.dataset.agentId);
+      return;
+    }
+    const logsBtn = e.target.closest('.js-metric-logs');
+    if (logsBtn) {
+      openLogsForAgent(logsBtn.dataset.agentId);
     }
   });
 
@@ -438,19 +692,16 @@
     sendWsJson({ type: 'request_all_thumbnails' });
   });
 
-  tabWall.addEventListener('click', () => {
-    closeViewerAndReturnToWall();
-  });
-
+  tabWall.addEventListener('click', () => switchView('wall'));
   tabViewer.addEventListener('click', () => {
     if (state.selectedAgentId) {
       openViewerForAgent(state.selectedAgentId);
     }
   });
+  tabActivity.addEventListener('click', () => switchView('activity'));
+  tabLogs.addEventListener('click', () => switchView('logs'));
 
-  backToWallBtn.addEventListener('click', () => {
-    closeViewerAndReturnToWall();
-  });
+  backToWallBtn.addEventListener('click', () => switchView('wall'));
 
   viewerEditAliasBtn.addEventListener('click', () => {
     if (state.selectedAgentId) {
@@ -458,8 +709,18 @@
     }
   });
 
+  viewerLogsBtn.addEventListener('click', () => {
+    if (state.selectedAgentId) {
+      openLogsForAgent(state.selectedAgentId);
+    }
+  });
+
   toggleControlBtn.addEventListener('click', () => {
     viewer.toggleControlMode();
+    sendWsJson({
+      type: 'audit_control_mode',
+      enabled: viewer.controlEnabled,
+    });
   });
 
   monitorSelect.addEventListener('change', () => {
@@ -500,7 +761,21 @@
     }
   });
 
-  // Iniciar conexión WebSocket al cargar
+  // Eventos de Vista 3 (Métricas) y Vista 4 (Logs)
+  metricsDateInput.addEventListener('change', loadDailyMetrics);
+  refreshMetricsBtn.addEventListener('click', loadDailyMetrics);
+
+  logDeviceFilter.addEventListener('change', fetchLogsFromServer);
+  logCategoryFilter.addEventListener('change', fetchLogsFromServer);
+  logSearchInput.addEventListener('input', fetchLogsFromServer);
+
+  exportCsvBtn.addEventListener('click', () => {
+    const dev = logDeviceFilter.value || 'ALL';
+    const cat = logCategoryFilter.value || 'ALL';
+    const q = logSearchInput.value.trim();
+    const params = new URLSearchParams({ agent_id: dev, category: cat, q });
+    window.location.href = `/api/logs/export-csv?${params.toString()}`;
+  });
+
   connectAdminWebSocket();
 })();
-

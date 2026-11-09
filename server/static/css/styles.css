@@ -764,3 +764,142 @@ body {
 .w-full { width: 100%; }
 .error-text { color: var(--rose); font-size: 12px; }
 
+
+
+/* Fase 2: Tablas de Métricas y Bitácora de Logs */
+.text-muted { color: var(--text-secondary); }
+.dot-slate { background-color: #64748b; }
+
+.panel-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.panel-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.panel-card-header h2 {
+  font-size: 15.5px;
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+
+.panel-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.table-wrap {
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  overflow-x: auto;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 12.5px;
+}
+
+.data-table thead tr {
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-secondary);
+}
+
+.data-table th {
+  padding: 11px 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.data-table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid rgba(38, 51, 77, 0.65);
+  vertical-align: middle;
+}
+
+.data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.data-table tbody tr:hover {
+  background: rgba(30, 41, 59, 0.45);
+}
+
+.logs-table td {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.empty-row {
+  text-align: center;
+  padding: 32px !important;
+  color: var(--text-secondary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+}
+
+/* Pastillas de Categoría de Log */
+.cat-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.cat-IDLE { background: rgba(244, 63, 94, 0.16); color: var(--rose); }
+.cat-RESUME { background: rgba(16, 185, 129, 0.16); color: var(--emerald); }
+.cat-WINDOW { background: rgba(59, 130, 246, 0.16); color: #60a5fa; }
+.cat-NETWORK { background: rgba(148, 163, 184, 0.16); color: #cbd5e1; }
+.cat-AUDIT { background: rgba(168, 85, 247, 0.18); color: #c084fc; }
+
+/* Etiquetas de Uso de Aplicaciones en Métricas */
+.app-tags-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.app-usage-pill {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 11.5px;
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.app-usage-pct {
+  color: #60a5fa;
+  font-weight: 600;
+}
+
+.alert-count-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(244, 63, 94, 0.16);
+  color: var(--rose);
+  font-weight: 600;
+}
