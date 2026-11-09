@@ -1,4 +1,4 @@
-# RemoteAssist — Monitoreo de Actividad y Asistencia Remota Corporativa
+# JOB-Monitor — Monitoreo de Actividad y Asistencia Remota Corporativa
 
 Sistema corporativo en Python de **monitoreo de actividad en tiempo real (estilo Microsoft Teams)** y **asistencia remota silenciosa** (sin cerrar la sesión del usuario en Windows y sin alertas de confirmación).
 
@@ -39,3 +39,4 @@ El panel se abrirá automáticamente en `http://127.0.0.1:5060` (Contraseña por
 ```bash
 .venv/bin/python agent/agent.py --server "ws://127.0.0.1:5060/ws/agent" --alias "PC de Miguel - Dirección"
 ```
+
