@@ -270,6 +270,21 @@ async def health():
     }
 
 
+def verify_admin_access(request: Request):
+    """
+    Micro-Función M1: Protege los endpoints HTTP REST mediante cabecera X-Admin-Password,
+    parámetro query admin_pass o cookie ra_admin_pass para despliegue seguro en VPS.
+    """
+    supplied = (
+        request.headers.get("x-admin-password")
+        or request.query_params.get("admin_pass")
+        or request.cookies.get("ra_admin_pass")
+        or ""
+    )
+    if supplied != config.ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="No autorizado: clave de administrador inválida")
+
+
 # ==============================================================================
 # FASE 4 - BLOQUE A: MINI-FUNCIONES DE EMPAQUETADO DINÁMICO DEL AGENTE (.ZIP)
 # ==============================================================================
@@ -370,6 +385,7 @@ def build_agent_package_zip(server_url: str, alias: str = "") -> bytes:
 @app.get("/api/agent-package-info")
 async def get_agent_package_info(request: Request):
     """Devuelve la URL WebSocket sugerida para prellenar el modal de descarga de agente."""
+    verify_admin_access(request)
     return {
         "ok": True,
         "default_ws_url": resolve_default_ws_url(request),
@@ -388,6 +404,7 @@ async def download_agent_package(
     Mini-Función A3: Endpoint HTTP que construye y descarga el paquete .zip
     preconfigurado para instalar el agente en Windows.
     """
+    verify_admin_access(request)
     default_ws = resolve_default_ws_url(request)
     final_ws_url = normalize_ws_url(server_url or "", default_ws)
     clean_alias = (alias or "").strip()
@@ -419,7 +436,8 @@ async def download_agent_package(
 
 
 @app.get("/api/chat/{agent_id}")
-async def get_agent_chat_history(agent_id: str, limit: int = Query(100)):
+async def get_agent_chat_history(request: Request, agent_id: str, limit: int = Query(100)):
+    verify_admin_access(request)
     messages = db.get_chat_history(agent_id=agent_id, limit=limit)
     return {
         "ok": True,
@@ -430,11 +448,13 @@ async def get_agent_chat_history(agent_id: str, limit: int = Query(100)):
 
 @app.post("/api/send-file/{agent_id}")
 async def send_file_to_agent(
+    request: Request,
     agent_id: str,
     file: UploadFile = File(...),
     destination: str = Form("Desktop"),
     auto_open: str = Form("false"),
 ):
+    verify_admin_access(request)
     agent = hub.agents.get(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="El equipo seleccionado no está conectado en este momento")
@@ -486,7 +506,8 @@ async def send_file_to_agent(
 
 
 @app.get("/api/metrics")
-async def get_metrics(date: Optional[str] = Query(None, description="Fecha YYYY-MM-DD")):
+async def get_metrics(request: Request, date: Optional[str] = Query(None, description="Fecha YYYY-MM-DD")):
+    verify_admin_access(request)
     metrics = db.get_daily_metrics(date_str=date)
     # Adjuntar estado en vivo de los agentes actualmente conectados
     for item in metrics:
@@ -509,11 +530,13 @@ async def get_metrics(date: Optional[str] = Query(None, description="Fecha YYYY-
 
 @app.get("/api/logs")
 async def get_logs(
+    request: Request,
     agent_id: Optional[str] = Query("ALL"),
     category: Optional[str] = Query("ALL"),
     q: Optional[str] = Query(""),
     limit: int = Query(250),
 ):
+    verify_admin_access(request)
     logs = db.query_logs(agent_id=agent_id, category=category, search_q=q, limit=limit)
     devices = db.get_all_known_devices()
     return {
@@ -525,10 +548,12 @@ async def get_logs(
 
 @app.get("/api/logs/export-csv")
 async def export_logs_csv(
+    request: Request,
     agent_id: Optional[str] = Query("ALL"),
     category: Optional[str] = Query("ALL"),
     q: Optional[str] = Query(""),
 ):
+    verify_admin_access(request)
     csv_text = db.export_logs_csv(agent_id=agent_id, category=category, search_q=q)
     return Response(
         content="\ufeff" + csv_text,
@@ -540,7 +565,8 @@ async def export_logs_csv(
 
 
 @app.post("/api/devices/{agent_id}/alias")
-async def update_device_alias(agent_id: str, body: AliasUpdateRequest):
+async def update_device_alias(request: Request, agent_id: str, body: AliasUpdateRequest):
+    verify_admin_access(request)
     if not body.alias.strip():
         raise HTTPException(status_code=400, detail="El alias no puede estar vacío")
     await hub.update_alias(agent_id, body.alias)

@@ -161,6 +161,14 @@
     }
   }
 
+  // Micro-Función M1: Peticiones HTTP autenticadas con X-Admin-Password
+  function authFetch(url, options = {}) {
+    const headers = Object.assign({}, options.headers || {}, {
+      'X-Admin-Password': state.password || '',
+    });
+    return fetch(url, Object.assign({}, options, { headers }));
+  }
+
   function formatIdleTime(seconds) {
     const s = Math.max(0, Number(seconds) || 0);
     if (s < 15) return 'Activo ahora';
@@ -222,27 +230,50 @@
       .replace(/"/g, '&quot;');
   }
 
+  // Micro-Función M2: Unificar equipos en vivo y equipos desconectados (SQLite) en el Muro
+  function buildOfflineWallItems() {
+    const offlineList = [];
+    (state.knownDevices || []).forEach((dev) => {
+      if (!state.agents.has(dev.agent_id)) {
+        offlineList.push({
+          agent_id: dev.agent_id,
+          alias: dev.alias || dev.hostname || dev.agent_id,
+          hostname: dev.hostname || 'Equipo registrado',
+          username: dev.username || '---',
+          local_ip: dev.local_ip || '---',
+          last_seen_at: dev.last_seen_at || '---',
+          activity_status: 'offline',
+          is_offline_card: true,
+        });
+      }
+    });
+    return offlineList;
+  }
+
   function updateCountersAndGrid() {
-    const all = Array.from(state.agents.values());
+    const onlineList = Array.from(state.agents.values());
+    const offlineList = buildOfflineWallItems();
+    const allItems = [...onlineList, ...offlineList];
+
     let activeCount = 0;
     let idleCount = 0;
     let awayCount = 0;
 
-    all.forEach((ag) => {
+    onlineList.forEach((ag) => {
       if (ag.activity_status === 'active') activeCount += 1;
       else if (ag.activity_status === 'idle') idleCount += 1;
       else awayCount += 1;
     });
 
-    countTotal.textContent = String(all.length);
+    countTotal.textContent = String(allItems.length);
     countActive.textContent = String(activeCount);
     countIdle.textContent = String(idleCount);
     countAway.textContent = String(awayCount);
     if (countOffline) {
-      countOffline.textContent = String(state.offlineCount || 0);
+      countOffline.textContent = String(offlineList.length);
     }
 
-    if (all.length === 0) {
+    if (allItems.length === 0) {
       emptyState.classList.remove('hidden');
       agentsGrid.classList.add('hidden');
       return;
@@ -252,17 +283,71 @@
     agentsGrid.classList.remove('hidden');
 
     const q = state.searchQuery.trim().toLowerCase();
-    const filtered = all.filter((ag) => {
+    const filtered = allItems.filter((ag) => {
       if (state.currentFilter !== 'all' && ag.activity_status !== state.currentFilter) {
         return false;
       }
       if (!q) return true;
-      const hay = `${ag.alias} ${ag.hostname} ${ag.username} ${ag.local_ip} ${ag.active_window}`.toLowerCase();
+      const hay = `${ag.alias} ${ag.hostname} ${ag.username} ${ag.local_ip} ${ag.active_window || ''}`.toLowerCase();
       return hay.includes(q);
     });
 
     agentsGrid.innerHTML = filtered
       .map((ag) => {
+        if (ag.is_offline_card) {
+          return `
+            <article class="agent-card" style="opacity:0.82;" data-agent-id="${escapeHtml(ag.agent_id)}">
+              <div>
+                <div class="card-header">
+                  <div class="card-title-group">
+                    <span class="indicator-dot dot-slate"></span>
+                    <div style="min-width:0;">
+                      <div class="card-alias-row">
+                        <span class="card-alias" title="${escapeHtml(ag.alias)}">${escapeHtml(ag.alias)}</span>
+                        <button type="button" class="icon-btn js-edit-alias" data-agent-id="${escapeHtml(ag.agent_id)}" title="Renombrar equipo">
+                          <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                          </svg>
+                        </button>
+                      </div>
+                      <p class="card-submeta">${escapeHtml(ag.hostname)} • ${escapeHtml(ag.username)}</p>
+                    </div>
+                  </div>
+                  <span class="badge-status cat-NETWORK">Desconectado</span>
+                </div>
+
+                <div class="card-preview" style="cursor:default;">
+                  <div class="card-preview-overlay">
+                    <div class="window-pill">
+                      <svg class="icon-xs muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="2" y1="3" x2="22" y2="17"/>
+                      </svg>
+                      <span>Equipo apagado o sin conexión</span>
+                    </div>
+                    <div class="preview-footer">
+                      <span>Últ. vez: ${escapeHtml(ag.last_seen_at)}</span>
+                      <span>IP: ${escapeHtml(ag.local_ip || '---')}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card-footer">
+                <button type="button" class="btn btn-secondary" style="flex:1; opacity:0.6; cursor:not-allowed;" disabled>
+                  <span>Sin conexión en vivo</span>
+                </button>
+                <button type="button" class="btn btn-secondary js-open-logs" data-agent-id="${escapeHtml(ag.agent_id)}" title="Ver bitácora histórica de este equipo">
+                  <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+                  </svg>
+                  <span>Logs</span>
+                </button>
+              </div>
+            </article>
+          `;
+        }
+
         const meta = getStatusMeta(ag.activity_status, ag.idle_seconds);
         const monCount = Math.max(1, (ag.monitors || []).filter((m) => m.id > 0).length);
         const thumbSrc = ag.thumbnail ? `data:image/jpeg;base64,${ag.thumbnail}` : '';
@@ -351,7 +436,7 @@
   async function loadDailyMetrics() {
     const dateVal = metricsDateInput.value || todayIso;
     try {
-      const res = await fetch(`/api/metrics?date=${encodeURIComponent(dateVal)}`);
+      const res = await authFetch(`/api/metrics?date=${encodeURIComponent(dateVal)}`);
       const data = await res.json();
       const rows = data.metrics || [];
       if (rows.length === 0) {
@@ -458,7 +543,7 @@
     });
 
     try {
-      const res = await fetch(`/api/logs?${params.toString()}`);
+      const res = await authFetch(`/api/logs?${params.toString()}`);
       const data = await res.json();
       if (Array.isArray(data.devices)) {
         state.knownDevices = data.devices;
@@ -528,7 +613,7 @@
   async function loadChatHistoryForAgent(agentId) {
     if (!chatMessagesList || !agentId) return;
     try {
-      const res = await fetch(`/api/chat/${encodeURIComponent(agentId)}?limit=100`);
+      const res = await authFetch(`/api/chat/${encodeURIComponent(agentId)}?limit=100`);
       const data = await res.json();
       const list = data.messages || [];
       if (list.length === 0) {
@@ -647,7 +732,7 @@
   }
 
   function openAliasEditor(agentId) {
-    const ag = state.agents.get(agentId);
+    const ag = state.agents.get(agentId) || (state.knownDevices || []).find((d) => d.agent_id === agentId);
     if (!ag) return;
     aliasAgentIdInput.value = agentId;
     aliasTextInput.value = ag.alias;
@@ -970,7 +1055,12 @@
     const dev = logDeviceFilter.value || 'ALL';
     const cat = logCategoryFilter.value || 'ALL';
     const q = logSearchInput.value.trim();
-    const params = new URLSearchParams({ agent_id: dev, category: cat, q });
+    const params = new URLSearchParams({
+      agent_id: dev,
+      category: cat,
+      q,
+      admin_pass: state.password || '',
+    });
     window.location.href = `/api/logs/export-csv?${params.toString()}`;
   });
 
@@ -1148,7 +1238,7 @@
       }
 
       try {
-        const res = await fetch(`/api/send-file/${encodeURIComponent(state.selectedAgentId)}`, {
+        const res = await authFetch(`/api/send-file/${encodeURIComponent(state.selectedAgentId)}`, {
           method: 'POST',
           body: fd,
         });
@@ -1185,7 +1275,7 @@
     openAgentPkgBtn.addEventListener('click', async () => {
       agentPkgModal.classList.remove('hidden');
       try {
-        const res = await fetch('/api/agent-package-info');
+        const res = await authFetch('/api/agent-package-info');
         const info = await res.json();
         if (info && info.default_ws_url && pkgServerUrlInput && !pkgServerUrlInput.dataset.userEdited) {
           pkgServerUrlInput.value = info.default_ws_url;
@@ -1214,6 +1304,7 @@
       const params = new URLSearchParams();
       if (serverUrl) params.set('server_url', serverUrl);
       if (alias) params.set('alias', alias);
+      if (state.password) params.set('admin_pass', state.password);
       window.location.href = `/api/download-agent?${params.toString()}`;
       if (agentPkgModal) {
         setTimeout(() => agentPkgModal.classList.add('hidden'), 400);
