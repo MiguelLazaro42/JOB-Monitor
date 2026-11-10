@@ -2,8 +2,17 @@
 __pycache__/
 *.py[cod]
 .DS_Store
-data/*.db*
-data/*.json
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
 agent/config_agent.json
 *.log
+*.lock
+*.pem
+*.key
 
