@@ -3,46 +3,68 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>JOB-Monitor — Centro de Monitoreo y Control Corporativo</title>
+  <title>SITAI.MX — JOB-Monitor | Consola de Monitoreo y Asistencia</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/css/styles.css" />
 </head>
 <body>
   <!-- ======================================================================= -->
-  <!-- PANTALLA DE INICIO DE SESIÓN (ESTÉTICA CORPORATIVA SITAI / LABSYS)      -->
+  <!-- PANTALLA DE INICIO DE SESIÓN (IDENTIDAD OFICIAL SITAI.MX)               -->
   <!-- ======================================================================= -->
   <div id="auth-modal" class="login-screen">
     <div class="login-split-shell">
       <div class="login-brand-side">
-        <div class="sitai-logo-block">
-          <span class="sitai-wordmark">JOB<span class="sitai-wordmark-thin">MONITOR</span></span>
-          <span class="sitai-underline"></span>
-          <span class="sitai-subcaption">Sistema Corporativo de Monitoreo</span>
+        <div class="sitai-brand-lockup">
+          <!-- Logotipo Vectorial Oficial SITAI (S-I-T-A-I) -->
+          <svg class="sitai-svg-logo" viewBox="0 0 310 74" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="SITAI">
+            <!-- S -->
+            <path d="M8 8H68V21H22V31H56C63.7 31 69 36.3 69 44V53C69 60.7 63.7 66 56 66H8V53H54V43H20C12.3 43 7 37.7 7 30V21C7 13.3 12.3 8 8 8Z" fill="#133447"/>
+            <!-- I -->
+            <rect x="82" y="8" width="15" height="58" fill="#133447"/>
+            <!-- T -->
+            <path d="M110 8H174V21H149.5V66H134.5V21H110V8Z" fill="#133447"/>
+            <!-- A geométrica oficial SITAI (Trazo izquierdo diagonal + triángulo derecho) -->
+            <polygon points="198,8 214,8 192,66 176,66" fill="#f87b02"/>
+            <polygon points="218,16 242,66 202,66 207,53 221,53 212,33" fill="#f87b02"/>
+            <!-- I -->
+            <rect x="254" y="8" width="15" height="58" fill="#133447"/>
+          </svg>
+          <span class="sitai-brand-tagline">Design &amp; Development • Monitoreo Corporativo</span>
         </div>
 
         <div class="login-hero-copy">
-          <h2>CONSOLE ERP</h2>
-          <p>Supervisión de actividad en tiempo real, bitácora histórica y asistencia remota silenciosa para equipos corporativos.</p>
+          <span class="hero-kicker">SITAI.MX WORKSPACE</span>
+          <h2>JOB-MONITOR</h2>
+          <p>Supervisión de actividad en tiempo real, bitácora histórica y asistencia remota silenciosa en un solo lugar.</p>
         </div>
 
         <div class="login-hero-meta">
-          <span>Servidor: <code>{{ lan_ip }}:{{ port }}</code></span>
+          <span>Servidor central: <code>{{ lan_ip }}:{{ port }}</code> • www.sitai.mx</span>
         </div>
       </div>
 
       <div class="login-form-side">
         <div class="login-form-box">
           <div class="login-mobile-logo">
-            <span class="sitai-wordmark">JOB<span class="sitai-wordmark-thin">MONITOR</span></span>
-            <span class="sitai-underline"></span>
+            <svg class="sitai-svg-logo-sm" viewBox="0 0 310 74" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M8 8H68V21H22V31H56C63.7 31 69 36.3 69 44V53C69 60.7 63.7 66 56 66H8V53H54V43H20C12.3 43 7 37.7 7 30V21C7 13.3 12.3 8 8 8Z" fill="#133447"/>
+              <rect x="82" y="8" width="15" height="58" fill="#133447"/>
+              <path d="M110 8H174V21H149.5V66H134.5V21H110V8Z" fill="#133447"/>
+              <polygon points="198,8 214,8 192,66 176,66" fill="#f87b02"/>
+              <polygon points="218,16 242,66 202,66 207,53 221,53 212,33" fill="#f87b02"/>
+              <rect x="254" y="8" width="15" height="58" fill="#133447"/>
+            </svg>
           </div>
 
           <h1 class="login-title">Iniciar sesión</h1>
-          <p class="login-subtitle">Ingresa tus credenciales del panel de administración</p>
+          <p class="login-subtitle">Accede al panel de monitoreo de SITAI.MX</p>
 
           <form id="auth-form" class="login-form" autocomplete="on">
             <div class="login-field">
               <label for="admin-user-input" class="input-label">Usuario</label>
-              <input id="admin-user-input" type="text" class="text-input login-input" placeholder="Tu usuario (ej. admin)" autocomplete="username" required />
+              <input id="admin-user-input" type="text" class="text-input login-input" placeholder="Tu usuario" autocomplete="username" required />
             </div>
 
             <div class="login-field">
@@ -60,7 +82,7 @@
             <button type="submit" id="login-submit-btn" class="btn btn-primary w-full login-submit-btn">Entrar</button>
 
             <p class="login-legal-note">
-              Acceso exclusivo para personal autorizado. Todas las sesiones y acciones de soporte quedan registradas en la bitácora del servidor.
+              Acceso exclusivo para personal autorizado de SITAI.MX. Todas las sesiones quedan registradas en bitácora.
             </p>
           </form>
         </div>
@@ -274,29 +296,36 @@
     </div>
   </div>
 
-  <!-- Barra Superior Principal (Estilo SITAI / LABSYS) -->
+  <!-- Barra Superior Ultra-Minimalista (Estilo SITAI.MX / ConoceCarmen) -->
   <header class="topbar">
     <div class="topbar-left">
       <div class="sitai-nav-brand">
-        <span class="sitai-wordmark-sm">JOB<span class="sitai-wordmark-thin">MONITOR</span></span>
-        <span class="sitai-underline-sm"></span>
+        <svg class="sitai-svg-logo-nav" viewBox="0 0 310 74" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="SITAI">
+          <path d="M8 8H68V21H22V31H56C63.7 31 69 36.3 69 44V53C69 60.7 63.7 66 56 66H8V53H54V43H20C12.3 43 7 37.7 7 30V21C7 13.3 12.3 8 8 8Z" fill="#133447"/>
+          <rect x="82" y="8" width="15" height="58" fill="#133447"/>
+          <path d="M110 8H174V21H149.5V66H134.5V21H110V8Z" fill="#133447"/>
+          <polygon points="198,8 214,8 192,66 176,66" fill="#f87b02"/>
+          <polygon points="218,16 242,66 202,66 207,53 221,53 212,33" fill="#f87b02"/>
+          <rect x="254" y="8" width="15" height="58" fill="#133447"/>
+        </svg>
+        <span class="sitai-nav-sub">MONITOR</span>
       </div>
-
-      <nav class="nav-tabs" aria-label="Navegación Principal">
-        <button id="tab-wall" class="nav-tab active" type="button">
-          <span>Equipos en Vivo</span>
-        </button>
-        <button id="tab-viewer" class="nav-tab" type="button" disabled>
-          <span id="tab-viewer-label">Visor Remoto</span>
-        </button>
-        <button id="tab-activity" class="nav-tab" type="button">
-          <span>Métricas del Día</span>
-        </button>
-        <button id="tab-logs" class="nav-tab" type="button">
-          <span>Bitácora y Logs</span>
-        </button>
-      </nav>
     </div>
+
+    <nav class="nav-tabs" aria-label="Navegación Principal">
+      <button id="tab-wall" class="nav-tab active" type="button">
+        <span>Mi Panel</span>
+      </button>
+      <button id="tab-viewer" class="nav-tab" type="button" disabled>
+        <span id="tab-viewer-label">Visor en Vivo</span>
+      </button>
+      <button id="tab-activity" class="nav-tab" type="button">
+        <span>Métricas</span>
+      </button>
+      <button id="tab-logs" class="nav-tab" type="button">
+        <span>Bitácora</span>
+      </button>
+    </nav>
 
     <div class="topbar-right">
       <span id="ws-status-pill" class="status-pill status-connecting">
@@ -304,98 +333,110 @@
         <span id="ws-status-text">Conectando...</span>
       </span>
 
-      <button id="open-agent-pkg-btn" type="button" class="btn btn-primary btn-sm" title="Descargar instalador preconfigurado para PC Windows">
-        <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-        </svg>
-        <span>Nuevo Agente (.ZIP)</span>
+      <button id="open-agent-pkg-btn" type="button" class="btn btn-soft-orange btn-sm" title="Descargar instalador preconfigurado para PC Windows">
+        <span>+ Agente Windows</span>
       </button>
 
-      <button id="logout-btn" type="button" class="btn btn-secondary btn-sm" title="Cerrar sesión de administrador">
-        <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-          <polyline points="16 17 21 12 16 7"/>
-          <line x1="21" y1="12" x2="9" y2="12"/>
-        </svg>
+      <button id="logout-btn" type="button" class="btn btn-ghost btn-sm" title="Cerrar sesión de administrador">
         <span>Salir</span>
       </button>
     </div>
   </header>
 
   <!-- ======================================================================= -->
-  <!-- VISTA 1: MURO DE MONITOREO EN VIVO                                      -->
+  <!-- VISTA 1: PANEL MINIMALISTA EN VIVO                                      -->
   <!-- ======================================================================= -->
   <main id="view-wall" class="main-container">
-    <div class="page-section-header">
-      <div>
-        <h1 class="page-title">Gestión y Monitoreo de Equipos</h1>
-        <p class="muted-text">Supervisa la actividad en tiempo real y brinda asistencia remota silenciosa • Servidor <code>{{ lan_ip }}:{{ port }}</code></p>
-      </div>
-      <button id="refresh-thumbs-btn" type="button" class="btn btn-secondary btn-sm" title="Actualizar capturas de todos los equipos">
-        <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><polyline points="21 3 21 8 16 8"/>
-        </svg>
-        <span>Actualizar Vistas</span>
-      </button>
-    </div>
+    <!-- Hero Minimalista de Bienvenida -->
+    <section class="minimal-hero">
+      <span class="minimal-kicker">
+        <span class="kicker-dot"></span>
+        Consola de monitoreo y asistencia activa
+      </span>
+      <h1 class="minimal-hero-title">
+        Bienvenido, <span class="brand-accent-text">SITAI Monitor</span>
+      </h1>
+      <p class="minimal-hero-sub">
+        Supervisa pantallas en tiempo real, tiempos de actividad, aplicaciones y soporte silencioso en un solo lugar.
+      </p>
+    </section>
 
-    <section class="stats-grid">
-      <div class="stat-card">
+    <!-- Barra de Operación en Vivo (Estilo cápsula limpia) -->
+    <section class="live-op-banner">
+      <div class="live-op-left">
+        <span class="live-op-icon">
+          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+          </svg>
+        </span>
         <div>
-          <span class="stat-label">Activos Ahora (&lt; 3m)</span>
-          <strong id="count-active" class="stat-value text-emerald">0</strong>
+          <strong>Operación en vivo</strong>
+          <p class="muted-text">Nodo central <code>{{ lan_ip }}:{{ port }}</code> • Conexión silenciosa sin interrumpir al usuario</p>
         </div>
-        <span class="indicator-dot dot-emerald pulse"></span>
-      </div>
-
-      <div class="stat-card">
-        <div>
-          <span class="stat-label">Inactivos (3–10m)</span>
-          <strong id="count-idle" class="stat-value text-amber">0</strong>
-        </div>
-        <span class="indicator-dot dot-amber"></span>
       </div>
 
-      <div class="stat-card">
-        <div>
-          <span class="stat-label">Ausentes (+10m)</span>
-          <strong id="count-away" class="stat-value text-rose">0</strong>
+      <div class="live-op-actions">
+        <div class="search-box minimal-search">
+          <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input id="search-input" type="text" placeholder="Buscar equipo, usuario, ventana o IP..." />
         </div>
-        <span class="indicator-dot dot-rose"></span>
-      </div>
-
-      <div class="stat-card">
-        <div>
-          <span class="stat-label">Desconectados / Apagados</span>
-          <strong id="count-offline" class="stat-value text-muted">0</strong>
-        </div>
-        <span class="indicator-dot dot-slate"></span>
+        <button id="refresh-thumbs-btn" type="button" class="btn btn-pill-primary btn-sm" title="Actualizar capturas de todos los equipos">
+          <span>Actualizar vistas</span>
+        </button>
       </div>
     </section>
 
-    <!-- Barra de Búsqueda y Píldoras Segmentadas (Estilo SITAI Gestión de Clientes) -->
-    <section class="toolbar-card sitai-filter-panel">
-      <div class="search-box sitai-search-full">
-        <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-        </svg>
-        <input id="search-input" type="text" placeholder="Buscar por nombre de equipo, usuario, ventana activa o dirección IP..." />
+    <!-- Contenedor Minimalista de Resumen de Estado -->
+    <section class="summary-shell-card">
+      <div class="summary-shell-header">
+        <div>
+          <h2>Estado de tus equipos hoy</h2>
+          <p class="muted-text">Resumen en tiempo real de actividad, pausas y conexiones registradas</p>
+        </div>
+
+        <div class="filter-group minimal-filter-pills">
+          <button type="button" data-filter="all" class="filter-btn active">Todos (<span id="count-total">0</span>)</button>
+          <button type="button" data-filter="active" class="filter-btn">Activos</button>
+          <button type="button" data-filter="idle" class="filter-btn">Inactivos</button>
+          <button type="button" data-filter="away" class="filter-btn">Ausentes</button>
+          <button type="button" data-filter="offline" class="filter-btn">Apagados</button>
+        </div>
       </div>
 
-      <div class="filter-group sitai-segmented-pills">
-        <button type="button" data-filter="all" class="filter-btn active">Todos (<span id="count-total">0</span>)</button>
-        <button type="button" data-filter="active" class="filter-btn">
-          <span class="indicator-dot dot-emerald"></span> Activos
-        </button>
-        <button type="button" data-filter="idle" class="filter-btn">
-          <span class="indicator-dot dot-amber"></span> Inactivos
-        </button>
-        <button type="button" data-filter="away" class="filter-btn">
-          <span class="indicator-dot dot-rose"></span> Ausentes
-        </button>
-        <button type="button" data-filter="offline" class="filter-btn">
-          <span class="indicator-dot dot-slate"></span> Desconectados
-        </button>
+      <div class="stats-grid">
+        <div class="stat-card">
+          <span class="stat-label">Activos ahora (&lt; 3m)</span>
+          <div class="stat-number-row">
+            <strong id="count-active" class="stat-value text-emerald">0</strong>
+            <span class="stat-unit">equipos</span>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <span class="stat-label">En pausa (3–10m)</span>
+          <div class="stat-number-row">
+            <strong id="count-idle" class="stat-value text-amber">0</strong>
+            <span class="stat-unit">equipos</span>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <span class="stat-label">Ausentes (+10m)</span>
+          <div class="stat-number-row">
+            <strong id="count-away" class="stat-value text-rose">0</strong>
+            <span class="stat-unit">equipos</span>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <span class="stat-label">Desconectados</span>
+          <div class="stat-number-row">
+            <strong id="count-offline" class="stat-value text-muted">0</strong>
+            <span class="stat-unit">equipos</span>
+          </div>
+        </div>
       </div>
     </section>
 
