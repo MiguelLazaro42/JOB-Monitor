@@ -42,7 +42,7 @@ else:
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config_agent.json"
 
-DEFAULT_SERVER_URL = os.environ.get("RA_SERVER_URL", "ws://127.0.0.1:5060/ws/agent")
+DEFAULT_SERVER_URL = os.environ.get("RA_SERVER_URL", "ws://127.0.0.1:5080/ws/agent")
 DEFAULT_TOKEN = os.environ.get("RA_AGENT_TOKEN", "ra-secret-token-2026")
 
 IS_WINDOWS = platform.system() == "Windows"

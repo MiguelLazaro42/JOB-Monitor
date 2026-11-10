@@ -6,7 +6,7 @@ PROJECT_ROOT = BASE_DIR.parent
 DATA_DIR = PROJECT_ROOT / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-PORT = int(os.environ.get("RA_PORT", 5060))
+PORT = int(os.environ.get("RA_PORT", 5080))
 HOST = os.environ.get("RA_HOST", "0.0.0.0")
 
 # Contraseña para el Panel de Administrador

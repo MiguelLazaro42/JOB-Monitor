@@ -714,7 +714,7 @@ async def ws_admin_endpoint(websocket: WebSocket):
 
 def main():
     parser = argparse.ArgumentParser(description="JOB-Monitor Server - Fase 2")
-    parser.add_argument("--port", type=int, default=config.PORT, help="Puerto HTTP/WS (por defecto 5060)")
+    parser.add_argument("--port", type=int, default=config.PORT, help="Puerto HTTP/WS (por defecto 5080)")
     parser.add_argument("--host", type=str, default=config.HOST, help="Host de escucha (por defecto 0.0.0.0)")
     parser.add_argument("--no-browser", action="store_true", help="No abrir el navegador automáticamente")
     args = parser.parse_args()
