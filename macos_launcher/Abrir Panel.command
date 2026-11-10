@@ -30,8 +30,8 @@ resolve_python() {
 }
 
 # Mini-Función C1.3: Iniciar servidor en segundo plano si no está activo y abrir navegador
+PY_BIN="$(resolve_python)"
 if ! is_server_ready; then
-  PY_BIN="$(resolve_python)"
   if [[ -z "$PY_BIN" ]]; then
     osascript -e 'display alert "Python 3 no encontrado" message "No se encontró el entorno .venv ni python3 en este Mac." as critical' >/dev/null 2>&1 || true
     exit 1
@@ -48,5 +48,11 @@ if ! is_server_ready; then
   done
 fi
 
+# Mini-Función C1.4: Asegurar que el Agente Local con Watchdog esté corriendo (candado de instancia única evita duplicados)
+if [[ -n "$PY_BIN" && -f "$PROJECT_DIR/agent/agent.py" ]]; then
+  nohup "$PY_BIN" "$PROJECT_DIR/agent/agent.py" --server "ws://127.0.0.1:$PORT/ws/agent" >> "$DATA_DIR/agent_macos.log" 2>&1 &
+fi
+
 open "$PANEL_URL"
 exit 0
+

@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 import config
-from database import db
+from database import AVAILABLE_TIMEZONES, db
 from models import AgentConnection, AliasUpdateRequest, ChatSendRequest, ClipboardSetRequest
 
 app = FastAPI(title="JOB-Monitor — Centro de Monitoreo y Control Corporativo")
@@ -160,6 +160,8 @@ class HubManager:
             "agents": [a.to_dict(include_thumbnail=True) for a in self.agents.values()],
             "known_devices": known_devices,
             "offline_count": offline_count,
+            "timezone": db.get_timezone(),
+            "available_timezones": AVAILABLE_TIMEZONES,
         }
 
     async def broadcast_agents_list(self):
@@ -299,6 +301,40 @@ async def admin_login(request: Request):
     return {
         "ok": True,
         "username": config.ADMIN_USERNAME,
+        "timezone": db.get_timezone(),
+    }
+
+
+@app.get("/api/settings/timezone")
+async def get_timezone_settings(request: Request):
+    verify_admin_access(request)
+    return {
+        "ok": True,
+        "timezone": db.get_timezone(),
+        "available_timezones": AVAILABLE_TIMEZONES,
+    }
+
+
+@app.post("/api/settings/timezone")
+async def update_timezone_settings(request: Request):
+    verify_admin_access(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    tz_name = str(body.get("timezone") or "America/Merida").strip()
+    try:
+        saved_tz = db.set_timezone(tz_name)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Zona horaria inválida: {tz_name}")
+
+    await hub.broadcast_to_admins({
+        "type": "timezone_updated",
+        "timezone": saved_tz,
+    })
+    return {
+        "ok": True,
+        "timezone": saved_tz,
     }
 
 
@@ -759,7 +795,13 @@ async def ws_admin_endpoint(websocket: WebSocket):
                 data = json.loads(message["text"])
                 msg_type = data.get("type")
 
-                if msg_type == "subscribe":
+                if msg_type == "ping":
+                    await websocket.send_json({
+                        "type": "pong",
+                        "timezone": db.get_timezone(),
+                    })
+
+                elif msg_type == "subscribe":
                     target_id = data.get("agent_id")
                     await hub.set_admin_subscription(websocket, target_id)
 

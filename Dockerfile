@@ -20,3 +20,4 @@ WORKDIR /app/server
 EXPOSE 5080
 
 CMD ["python", "app.py", "--host", "0.0.0.0", "--port", "5080", "--no-browser"]
+

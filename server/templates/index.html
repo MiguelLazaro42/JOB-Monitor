@@ -4,6 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SITAI.MX — JOB-Monitor | Consola de Monitoreo y Asistencia</title>
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/img/favicons/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/img/favicons/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/img/favicons/favicon-16x16.png" />
+  <link rel="shortcut icon" href="/static/img/favicons/favicon.ico" type="image/x-icon" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
@@ -17,14 +21,12 @@
     <div class="login-split-shell">
       <div class="login-brand-side">
         <div class="sitai-brand-lockup">
-          <svg class="sitai-svg-logo" viewBox="0 0 310 74" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="SITAI">
-            <path d="M8 8H68V21H22V31H56C63.7 31 69 36.3 69 44V53C69 60.7 63.7 66 56 66H8V53H54V43H20C12.3 43 7 37.7 7 30V21C7 13.3 12.3 8 8 8Z" fill="#ffffff"/>
-            <rect x="82" y="8" width="15" height="58" fill="#ffffff"/>
-            <path d="M110 8H174V21H149.5V66H134.5V21H110V8Z" fill="#ffffff"/>
-            <polygon points="198,8 214,8 192,66 176,66" fill="#f87b02"/>
-            <polygon points="218,16 242,66 202,66 207,53 221,53 212,33" fill="#f87b02"/>
-            <rect x="254" y="8" width="15" height="58" fill="#ffffff"/>
-          </svg>
+          <img
+            class="sitai-official-logo"
+            src="/static/img/logo-dark.webp"
+            alt="SITAI.MX"
+            onerror="this.onerror=null;this.src='/static/img/logo-dark.png';"
+          />
           <span class="sitai-brand-tagline">Design &amp; Development</span>
         </div>
 
@@ -41,14 +43,12 @@
       <div class="login-form-side">
         <div class="login-form-box">
           <div class="login-mobile-logo">
-            <svg class="sitai-svg-logo-sm" viewBox="0 0 310 74" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M8 8H68V21H22V31H56C63.7 31 69 36.3 69 44V53C69 60.7 63.7 66 56 66H8V53H54V43H20C12.3 43 7 37.7 7 30V21C7 13.3 12.3 8 8 8Z" fill="#133447"/>
-              <rect x="82" y="8" width="15" height="58" fill="#133447"/>
-              <path d="M110 8H174V21H149.5V66H134.5V21H110V8Z" fill="#133447"/>
-              <polygon points="198,8 214,8 192,66 176,66" fill="#f87b02"/>
-              <polygon points="218,16 242,66 202,66 207,53 221,53 212,33" fill="#f87b02"/>
-              <rect x="254" y="8" width="15" height="58" fill="#133447"/>
-            </svg>
+            <img
+              class="sitai-official-logo-sm"
+              src="/static/img/logo-light.webp"
+              alt="SITAI.MX"
+              onerror="this.onerror=null;this.src='/static/img/logo-light.png';"
+            />
           </div>
 
           <h1 class="login-title">Iniciar sesión</h1>
@@ -276,14 +276,12 @@
     <div class="topbar-inner">
       <div class="topbar-left">
         <div class="sitai-nav-brand">
-          <svg class="sitai-svg-logo-nav" viewBox="0 0 310 74" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="SITAI">
-            <path d="M8 8H68V21H22V31H56C63.7 31 69 36.3 69 44V53C69 60.7 63.7 66 56 66H8V53H54V43H20C12.3 43 7 37.7 7 30V21C7 13.3 12.3 8 8 8Z" fill="#ffffff"/>
-            <rect x="82" y="8" width="15" height="58" fill="#ffffff"/>
-            <path d="M110 8H174V21H149.5V66H134.5V21H110V8Z" fill="#ffffff"/>
-            <polygon points="198,8 214,8 192,66 176,66" fill="#f87b02"/>
-            <polygon points="218,16 242,66 202,66 207,53 221,53 212,33" fill="#f87b02"/>
-            <rect x="254" y="8" width="15" height="58" fill="#ffffff"/>
-          </svg>
+          <img
+            class="sitai-official-logo-nav"
+            src="/static/img/logo-dark.webp"
+            alt="SITAI.MX"
+            onerror="this.onerror=null;this.src='/static/img/logo-dark.png';"
+          />
           <span class="sitai-nav-sub">MONITOR</span>
         </div>
 
@@ -318,6 +316,21 @@
       </div>
 
       <div class="topbar-right">
+        <div class="tz-clock-pill" title="Zona horaria del servidor y bitácora">
+          <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+          </svg>
+          <span id="live-clock-text" class="tz-clock-time">--:--</span>
+          <select id="timezone-select" class="tz-select" aria-label="Configurar zona horaria">
+            <option value="America/Merida" selected>Mérida, MX</option>
+            <option value="America/Mexico_City">CDMX, MX</option>
+            <option value="America/Cancun">Cancún, MX</option>
+            <option value="America/Monterrey">Monterrey, MX</option>
+            <option value="America/Tijuana">Tijuana, MX</option>
+            <option value="UTC">UTC</option>
+          </select>
+        </div>
+
         <span id="ws-status-pill" class="status-pill status-connecting">
           <span class="status-dot"></span>
           <span id="ws-status-text">Conectando</span>

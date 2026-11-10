@@ -15,6 +15,8 @@
     currentView: 'wall',
     selectedAgentId: null,
     logsCache: [],
+    timezone: 'America/Merida',
+    lastWsActivityAt: Date.now(),
   };
 
   // Referencias DOM Generales y Login
@@ -40,6 +42,8 @@
 
   const wsStatusPill = document.getElementById('ws-status-pill');
   const wsStatusText = document.getElementById('ws-status-text');
+  const liveClockText = document.getElementById('live-clock-text');
+  const timezoneSelect = document.getElementById('timezone-select');
 
   // Pestañas y Vistas
   const tabWall = document.getElementById('tab-wall');
@@ -127,8 +131,44 @@
   const exportCsvBtn = document.getElementById('export-csv-btn');
   const logsTbody = document.getElementById('logs-tbody');
 
-  // Inicializar fecha de métricas en hoy
-  const todayIso = new Date().toISOString().slice(0, 10);
+  // Función para obtener la fecha YYYY-MM-DD en la zona horaria configurada (por defecto America/Merida)
+  function getTodayInTimezone(tz) {
+    try {
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: tz || state.timezone || 'America/Merida',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).formatToParts(new Date());
+      const y = parts.find((p) => p.type === 'year').value;
+      const m = parts.find((p) => p.type === 'month').value;
+      const d = parts.find((p) => p.type === 'day').value;
+      return `${y}-${m}-${d}`;
+    } catch (_) {
+      return new Date().toISOString().slice(0, 10);
+    }
+  }
+
+  function updateLiveClock() {
+    if (!liveClockText) return;
+    try {
+      liveClockText.textContent = new Intl.DateTimeFormat('es-MX', {
+        timeZone: state.timezone || 'America/Merida',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }).format(new Date());
+    } catch (_) {
+      liveClockText.textContent = new Date().toTimeString().slice(0, 8);
+    }
+  }
+
+  updateLiveClock();
+  setInterval(updateLiveClock, 1000);
+
+  // Inicializar fecha de métricas en hoy (según zona horaria Mérida, MX)
+  const todayIso = getTodayInTimezone(state.timezone);
   if (metricsDateInput) {
     metricsDateInput.value = todayIso;
   }
@@ -804,12 +844,30 @@
     };
 
     ws.onmessage = (evt) => {
+      state.lastWsActivityAt = Date.now();
       if (evt.data instanceof ArrayBuffer) {
         viewer.renderBinaryFrame(evt.data);
         return;
       }
 
       const msg = JSON.parse(evt.data);
+      if (msg.type === 'pong') {
+        if (msg.timezone && msg.timezone !== state.timezone) {
+          state.timezone = msg.timezone;
+          if (timezoneSelect) timezoneSelect.value = state.timezone;
+          updateLiveClock();
+        }
+        return;
+      }
+
+      if (msg.type === 'timezone_updated' && msg.timezone) {
+        state.timezone = msg.timezone;
+        if (timezoneSelect) timezoneSelect.value = state.timezone;
+        if (metricsDateInput) metricsDateInput.value = getTodayInTimezone(state.timezone);
+        updateLiveClock();
+        return;
+      }
+
       if (msg.type === 'auth_error') {
         setWsBadge('disconnected', 'Sesión requerida');
         logoutAdminSession();
@@ -821,6 +879,11 @@
         if (msg.type === 'auth_ok') {
           unlockDashboard();
           setWsBadge('connected', 'En línea');
+        }
+        if (msg.timezone) {
+          state.timezone = msg.timezone;
+          if (timezoneSelect) timezoneSelect.value = state.timezone;
+          updateLiveClock();
         }
 
         state.agents.clear();
@@ -1402,6 +1465,53 @@
       }
     });
   }
+
+  if (timezoneSelect) {
+    timezoneSelect.addEventListener('change', async () => {
+      const nextTz = timezoneSelect.value || 'America/Merida';
+      state.timezone = nextTz;
+      updateLiveClock();
+      if (metricsDateInput) {
+        metricsDateInput.value = getTodayInTimezone(nextTz);
+      }
+      try {
+        await authFetch('/api/settings/timezone', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ timezone: nextTz }),
+        });
+      } catch (_) {}
+    });
+  }
+
+  // Watchdog del Panel Web: verifica activamente cada 12s que la sesión WebSocket esté viva
+  // y la auto-reconecta de inmediato al despertar de suspensión o recuperar red.
+  function checkAndRecoverConnection() {
+    if (!state.authenticated || !state.password) return;
+    if (!state.ws || state.ws.readyState === WebSocket.CLOSED) {
+      connectAdminWebSocket();
+      return;
+    }
+    if (state.ws.readyState === WebSocket.OPEN) {
+      const idleMs = Date.now() - (state.lastWsActivityAt || Date.now());
+      if (idleMs > 32000) {
+        try {
+          state.ws.close();
+        } catch (_) {}
+        connectAdminWebSocket();
+      } else {
+        sendWsJson({ type: 'ping' });
+      }
+    }
+  }
+
+  setInterval(checkAndRecoverConnection, 12000);
+  window.addEventListener('online', checkAndRecoverConnection);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      checkAndRecoverConnection();
+    }
+  });
 
   if (state.password) {
     unlockDashboard();

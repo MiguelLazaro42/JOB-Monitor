@@ -5,10 +5,20 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 import config
 
 DB_PATH: Path = config.DATA_DIR / "remote_assist.db"
+
+AVAILABLE_TIMEZONES = [
+    {"id": "America/Merida", "label": "Mérida, MX (UTC-6)"},
+    {"id": "America/Mexico_City", "label": "CDMX, MX (UTC-6)"},
+    {"id": "America/Cancun", "label": "Cancún, MX (UTC-5)"},
+    {"id": "America/Monterrey", "label": "Monterrey, MX (UTC-6)"},
+    {"id": "America/Tijuana", "label": "Tijuana, MX (UTC-8/-7)"},
+    {"id": "UTC", "label": "UTC (Universal)"},
+]
 
 
 def format_duration_short(seconds: int) -> str:
@@ -28,12 +38,43 @@ class DatabaseManager:
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = db_path
         self._lock = threading.Lock()
+        self._cached_tz: str = getattr(config, "DEFAULT_TIMEZONE", "America/Merida")
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _now_dt(self) -> datetime:
+        try:
+            return datetime.now(ZoneInfo(self._cached_tz))
+        except Exception:
+            return datetime.now(ZoneInfo("America/Merida"))
+
+    def get_timezone(self) -> str:
+        return self._cached_tz
+
+    def set_timezone(self, tz_name: str) -> str:
+        clean_tz = (tz_name or "America/Merida").strip()
+        # Validar que ZoneInfo soporte el identificador
+        ZoneInfo(clean_tz)
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO system_settings (key, value)
+                    VALUES ('timezone', ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                    """,
+                    (clean_tz,),
+                )
+                conn.commit()
+                self._cached_tz = clean_tz
+            finally:
+                conn.close()
+        return self._cached_tz
 
     def _init_db(self):
         with self._lock:
@@ -42,6 +83,11 @@ class DatabaseManager:
                 conn.execute("PRAGMA journal_mode=WAL;")
                 conn.executescript(
                     """
+                    CREATE TABLE IF NOT EXISTS system_settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    );
+
                     CREATE TABLE IF NOT EXISTS devices (
                         agent_id TEXT PRIMARY KEY,
                         alias TEXT NOT NULL,
@@ -98,6 +144,14 @@ class DatabaseManager:
                     CREATE INDEX IF NOT EXISTS idx_chat_agent_id ON chat_messages(agent_id, id ASC);
                     """
                 )
+                default_tz = getattr(config, "DEFAULT_TIMEZONE", "America/Merida")
+                conn.execute(
+                    "INSERT OR IGNORE INTO system_settings (key, value) VALUES ('timezone', ?)",
+                    (default_tz,),
+                )
+                row = conn.execute("SELECT value FROM system_settings WHERE key = 'timezone'").fetchone()
+                if row and row["value"]:
+                    self._cached_tz = row["value"]
                 # Al iniciar el servidor, todos los equipos inician marcados como desconectados hasta que se reporten
                 conn.execute("UPDATE devices SET is_online = 0")
                 conn.commit()
@@ -126,9 +180,10 @@ class DatabaseManager:
         local_ip: str,
         is_online: bool = True,
     ):
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        time_only = datetime.now().strftime("%H:%M:%S")
+        now_dt = self._now_dt()
+        now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+        today_str = now_dt.strftime("%Y-%m-%d")
+        time_only = now_dt.strftime("%H:%M:%S")
 
         with self._lock:
             conn = self._get_conn()
@@ -162,7 +217,7 @@ class DatabaseManager:
                 conn.close()
 
     def set_device_offline(self, agent_id: str):
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = self._now_dt().strftime("%Y-%m-%d %H:%M:%S")
         with self._lock:
             conn = self._get_conn()
             try:
@@ -211,7 +266,7 @@ class DatabaseManager:
         message: str,
         duration_seconds: Optional[int] = None,
     ) -> dict:
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = self._now_dt().strftime("%Y-%m-%d %H:%M:%S")
         with self._lock:
             conn = self._get_conn()
             try:
@@ -246,9 +301,10 @@ class DatabaseManager:
         app_name: str,
         increment_away_alert: bool = False,
     ):
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        time_only = datetime.now().strftime("%H:%M:%S")
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_dt = self._now_dt()
+        today_str = now_dt.strftime("%Y-%m-%d")
+        time_only = now_dt.strftime("%H:%M:%S")
+        now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
         delta = max(1, min(30, int(delta_seconds)))
         act_inc = delta if is_active else 0
         idl_inc = 0 if is_active else delta
@@ -346,7 +402,7 @@ class DatabaseManager:
         return out.getvalue()
 
     def get_daily_metrics(self, date_str: Optional[str] = None) -> List[dict]:
-        target_date = date_str or datetime.now().strftime("%Y-%m-%d")
+        target_date = date_str or self._now_dt().strftime("%Y-%m-%d")
         with self._lock:
             conn = self._get_conn()
             try:
@@ -414,7 +470,7 @@ class DatabaseManager:
         sender_name: str,
         message: str,
     ) -> dict:
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = self._now_dt().strftime("%Y-%m-%d %H:%M:%S")
         with self._lock:
             conn = self._get_conn()
             try:

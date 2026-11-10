@@ -12,3 +12,4 @@ services:
       - RA_AGENT_TOKEN=${RA_AGENT_TOKEN:-ra-secret-token-2026}
     volumes:
       - ./data:/app/data
+

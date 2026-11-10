@@ -125,10 +125,16 @@ exit /b 0
 
 
 :register_startup_task
-echo [3/3] Configurando inicio automatico al iniciar sesion en Windows...
+echo [3/3] Configurando inicio automatico y Watchdog cada 2 minutos en Windows...
 schtasks /Create /TN "%TASK_NAME%" /TR "\"%PYTHONW_EXE%\" \"%INSTALL_DIR%\agent.py\"" /SC ONLOGON /RL HIGHEST /F >nul 2>&1
 if errorlevel 1 (
     schtasks /Create /TN "%TASK_NAME%" /TR "\"%PYTHONW_EXE%\" \"%INSTALL_DIR%\agent.py\"" /SC ONLOGON /F >nul 2>&1
+)
+
+REM Watchdog del Sistema Operativo: verifica cada 2 minutos que el servicio este activo y lo autoarranca si se cerro
+schtasks /Create /TN "%TASK_NAME%Watchdog" /TR "\"%PYTHONW_EXE%\" \"%INSTALL_DIR%\agent.py\"" /SC MINUTE /MO 2 /RL HIGHEST /F >nul 2>&1
+if errorlevel 1 (
+    schtasks /Create /TN "%TASK_NAME%Watchdog" /TR "\"%PYTHONW_EXE%\" \"%INSTALL_DIR%\agent.py\"" /SC MINUTE /MO 2 /F >nul 2>&1
 )
 
 REM Respaldo en clave Run del usuario actual por si schtasks esta restringido por politicas locales
@@ -137,3 +143,4 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "%TASK_NAME%" /t
 echo [OK] Iniciando agente con pythonw.exe...
 start "" /d "%INSTALL_DIR%" "%PYTHONW_EXE%" "%INSTALL_DIR%\agent.py"
 exit /b 0
+

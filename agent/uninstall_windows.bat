@@ -13,8 +13,9 @@ echo   JOB-Monitor - Desinstalador Limpio del Agente (Fase 4)
 echo ================================================================
 echo.
 
-echo [1/3] Eliminando tarea programada y registro de autoinicio...
+echo [1/3] Eliminando tareas programadas (autoinicio + watchdog) y registro...
 schtasks /Delete /TN "%TASK_NAME%" /F >nul 2>&1
+schtasks /Delete /TN "%TASK_NAME%Watchdog" /F >nul 2>&1
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "%TASK_NAME%" /f >nul 2>&1
 
 echo [2/3] Deteniendo procesos activos de pythonw.exe asociados al agente...
@@ -35,3 +36,4 @@ echo.
 echo [OK] El agente JOB-Monitor fue desinstalado completamente del equipo.
 timeout /t 3 >nul
 exit /b 0
+

@@ -858,8 +858,13 @@ class SilentRemoteAgent:
                     }
                     if tick % 3 == 1:
                         payload["thumbnail"] = self.capture_thumbnail_b64(sct)
-                    await self.ws.send(json.dumps(payload))
+                    await asyncio.wait_for(self.ws.send(json.dumps(payload)), timeout=8.0)
                 except Exception:
+                    try:
+                        if self.ws:
+                            await self.ws.close()
+                    except Exception:
+                        pass
                     break
 
     async def run_forever(self):
@@ -973,6 +978,8 @@ class SilentRemoteAgent:
                                 elif mtype == "file_transfer":
                                     ack = self.handle_file_transfer(data)
                                     await ws.send(json.dumps(ack))
+                                elif mtype == "ping":
+                                    await ws.send(json.dumps({"type": "pong"}))
                     finally:
                         stream_task.cancel()
                         telem_task.cancel()
@@ -982,22 +989,63 @@ class SilentRemoteAgent:
             except Exception:
                 self.ws = None
                 self.streaming = False
-                await asyncio.sleep(4.0)
+                await asyncio.sleep(3.0)
+
+
+_SINGLE_INSTANCE_LOCK_FH = None
+
+
+def acquire_single_instance_lock() -> bool:
+    """
+    Micro-Función W1: Evita instancias duplicadas del agente cuando el Watchdog
+    del sistema operativo (schtasks / cron) verifica periódicamente el servicio.
+    Si el agente ya está corriendo, retorna False y la segunda instancia termina en 0ms.
+    Si el agente se cerró o cayó, el SO libera el candado automáticamente y el Watchdog lo levanta.
+    """
+    global _SINGLE_INSTANCE_LOCK_FH
+    lock_path = Path(tempfile.gettempdir()) / "job_monitor_agent.lock"
+    try:
+        fh = open(lock_path, "a+", encoding="utf-8")
+        if IS_WINDOWS:
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fh.seek(0)
+        fh.truncate()
+        fh.write(str(os.getpid()))
+        fh.flush()
+        _SINGLE_INSTANCE_LOCK_FH = fh
+        return True
+    except Exception:
+        return False
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Agente Silencioso RemoteAssist - Fase 2")
+    parser = argparse.ArgumentParser(description="Agente Silencioso JOB-Monitor con Watchdog")
     parser.add_argument("--server", type=str, default=None, help="URL WebSocket del Servidor Central")
     parser.add_argument("--token", type=str, default=None, help="Token secreto del servidor")
     parser.add_argument("--alias", type=str, default=None, help="Alias amigable de esta PC (ej. 'PC de Miguel')")
     args = parser.parse_args()
 
+    if not acquire_single_instance_lock():
+        # Ya existe una instancia activa del agente ejecutándose en este equipo
+        return
+
     cfg = load_or_create_agent_config(args.server, args.token, args.alias)
-    agent = SilentRemoteAgent(cfg)
-    try:
-        asyncio.run(agent.run_forever())
-    except KeyboardInterrupt:
-        pass
+
+    # Watchdog Interno Inmortal: si ocurre cualquier fallo inesperado a nivel de bucle o red,
+    # el proceso se auto-reinicia después de 3 segundos sin morir nunca.
+    while True:
+        try:
+            agent = SilentRemoteAgent(cfg)
+            asyncio.run(agent.run_forever())
+        except KeyboardInterrupt:
+            break
+        except Exception:
+            time.sleep(3.0)
 
 
 if __name__ == "__main__":

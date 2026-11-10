@@ -107,16 +107,18 @@ body {
   gap: 6px;
 }
 
-.sitai-svg-logo {
-  height: 40px;
+.sitai-official-logo {
+  height: 36px;
   width: auto;
   display: block;
+  object-fit: contain;
 }
 
-.sitai-svg-logo-sm {
-  height: 34px;
+.sitai-official-logo-sm {
+  height: 32px;
   width: auto;
   display: block;
+  object-fit: contain;
 }
 
 .sitai-brand-tagline {
@@ -307,14 +309,15 @@ body {
 
 .sitai-nav-brand {
   display: inline-flex;
-  align-items: baseline;
-  gap: 7px;
+  align-items: center;
+  gap: 8px;
 }
 
-.sitai-svg-logo-nav {
-  height: 21px;
+.sitai-official-logo-nav {
+  height: 22px;
   width: auto;
   display: block;
+  object-fit: contain;
 }
 
 .sitai-nav-sub {
@@ -339,6 +342,42 @@ body {
 .muted-text {
   color: var(--text-secondary);
   font-size: 12px;
+}
+
+/* Selector de Zona Horaria y Reloj en Vivo (Mérida, MX por defecto) */
+.tz-clock-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.88);
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 11.5px;
+}
+
+.tz-clock-time {
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: 0.03em;
+}
+
+.tz-select {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.85);
+  font-family: var(--font-body);
+  font-size: 11.5px;
+  font-weight: 500;
+  outline: none;
+  cursor: pointer;
+}
+
+.tz-select option {
+  background: var(--sitai-navy);
+  color: #ffffff;
 }
 
 /* Pastilla minimalista de estado WebSocket en el Topbar */
