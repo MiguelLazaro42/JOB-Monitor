@@ -252,8 +252,9 @@ def get_local_lan_ip() -> str:
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse(
-        "index.html",
-        {
+        request=request,
+        name="index.html",
+        context={
             "request": request,
             "lan_ip": get_local_lan_ip(),
             "port": config.PORT,
