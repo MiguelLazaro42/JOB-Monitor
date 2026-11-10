@@ -7,30 +7,69 @@
   <link rel="stylesheet" href="/static/css/styles.css" />
 </head>
 <body>
-  <!-- Modal de Autenticación -->
-  <div id="auth-modal" class="modal-backdrop hidden">
-    <div class="modal-card">
-      <div class="modal-header">
-        <div class="brand-badge">
-          <svg class="icon-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="2" y="3" width="20" height="14" rx="2"/>
-            <line x1="8" y1="21" x2="16" y2="21"/>
-            <line x1="12" y1="17" x2="12" y2="21"/>
-          </svg>
+  <!-- ======================================================================= -->
+  <!-- PANTALLA DE INICIO DE SESIÓN (ESTÉTICA CORPORATIVA SITAI / LABSYS)      -->
+  <!-- ======================================================================= -->
+  <div id="auth-modal" class="login-screen">
+    <div class="login-split-shell">
+      <div class="login-brand-side">
+        <div class="sitai-logo-block">
+          <span class="sitai-wordmark">JOB<span class="sitai-wordmark-thin">MONITOR</span></span>
+          <span class="sitai-underline"></span>
+          <span class="sitai-subcaption">Sistema Corporativo de Monitoreo</span>
         </div>
-        <div>
-          <h2>Acceso de Administrador</h2>
-          <p class="muted-text">Ingresa la clave del servidor central para gestionar los equipos.</p>
+
+        <div class="login-hero-copy">
+          <h2>CONSOLE ERP</h2>
+          <p>Supervisión de actividad en tiempo real, bitácora histórica y asistencia remota silenciosa para equipos corporativos.</p>
+        </div>
+
+        <div class="login-hero-meta">
+          <span>Servidor: <code>{{ lan_ip }}:{{ port }}</code></span>
         </div>
       </div>
-      <form id="auth-form" class="modal-body">
-        <label for="admin-pass-input" class="input-label">Contraseña del Panel</label>
-        <input id="admin-pass-input" type="password" class="text-input" value="admin123" placeholder="Contraseña..." required />
-        <p id="auth-error" class="error-text hidden">Contraseña incorrecta. Verifica tu configuración.</p>
-        <button type="submit" class="btn btn-primary w-full">Entrar al Panel</button>
-      </form>
+
+      <div class="login-form-side">
+        <div class="login-form-box">
+          <div class="login-mobile-logo">
+            <span class="sitai-wordmark">JOB<span class="sitai-wordmark-thin">MONITOR</span></span>
+            <span class="sitai-underline"></span>
+          </div>
+
+          <h1 class="login-title">Iniciar sesión</h1>
+          <p class="login-subtitle">Ingresa tus credenciales del panel de administración</p>
+
+          <form id="auth-form" class="login-form" autocomplete="on">
+            <div class="login-field">
+              <label for="admin-user-input" class="input-label">Usuario</label>
+              <input id="admin-user-input" type="text" class="text-input login-input" placeholder="Tu usuario (ej. admin)" autocomplete="username" required />
+            </div>
+
+            <div class="login-field">
+              <label for="admin-pass-input" class="input-label">Contraseña</label>
+              <input id="admin-pass-input" type="password" class="text-input login-input" placeholder="••••••••" autocomplete="current-password" required />
+            </div>
+
+            <label class="checkbox-row login-remember">
+              <input type="checkbox" id="remember-session-check" />
+              <span>Mantener la sesión</span>
+            </label>
+
+            <p id="auth-error" class="error-text hidden">Usuario o contraseña incorrectos. Verifica tus datos.</p>
+
+            <button type="submit" id="login-submit-btn" class="btn btn-primary w-full login-submit-btn">Entrar</button>
+
+            <p class="login-legal-note">
+              Acceso exclusivo para personal autorizado. Todas las sesiones y acciones de soporte quedan registradas en la bitácora del servidor.
+            </p>
+          </form>
+        </div>
+      </div>
     </div>
   </div>
+
+  <!-- Contenedor Principal Protegido (Oculto hasta autenticar) -->
+  <div id="app-shell" class="app-shell hidden">
 
   <!-- Modal para Renombrar Alias de Equipo -->
   <div id="alias-modal" class="modal-backdrop hidden">
@@ -235,69 +274,51 @@
     </div>
   </div>
 
-  <!-- Barra Superior Principal -->
+  <!-- Barra Superior Principal (Estilo SITAI / LABSYS) -->
   <header class="topbar">
     <div class="topbar-left">
-      <div class="brand-badge">
-        <svg class="icon-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="2" y="3" width="20" height="14" rx="2"/>
-          <line x1="8" y1="21" x2="16" y2="21"/>
-          <line x1="12" y1="17" x2="12" y2="21"/>
-        </svg>
+      <div class="sitai-nav-brand">
+        <span class="sitai-wordmark-sm">JOB<span class="sitai-wordmark-thin">MONITOR</span></span>
+        <span class="sitai-underline-sm"></span>
       </div>
-      <div>
-        <div class="title-row">
-          <h1>JOB-Monitor — Centro de Monitoreo y Asistencia</h1>
-          <span id="ws-status-pill" class="status-pill status-connecting">
-            <span class="status-dot"></span>
-            <span id="ws-status-text">Conectando...</span>
-          </span>
-        </div>
-        <p class="muted-text">Servidor activo en <code>{{ lan_ip }}:{{ port }}</code> • Sistema Completo (Fases 1–4 Activas)</p>
-      </div>
-    </div>
 
-    <div class="topbar-right" style="display:flex; align-items:center; gap:10px;">
-      <button id="open-agent-pkg-btn" type="button" class="btn btn-secondary btn-sm" title="Descargar instalador preconfigurado para PC Windows">
-        <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-          <polyline points="7 10 12 15 17 10"/>
-          <line x1="12" y1="15" x2="12" y2="3"/>
-        </svg>
-        <span>Instalador Agente (.ZIP)</span>
-      </button>
-
-      <div class="nav-tabs">
+      <nav class="nav-tabs" aria-label="Navegación Principal">
         <button id="tab-wall" class="nav-tab active" type="button">
-          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
-            <rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>
-          </svg>
-          <span>Muro de Monitoreo</span>
+          <span>Equipos en Vivo</span>
         </button>
         <button id="tab-viewer" class="nav-tab" type="button" disabled>
-          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/>
-            <circle cx="12" cy="12" r="3"/>
-          </svg>
           <span id="tab-viewer-label">Visor Remoto</span>
         </button>
         <button id="tab-activity" class="nav-tab" type="button">
-          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-          </svg>
           <span>Métricas del Día</span>
         </button>
         <button id="tab-logs" class="nav-tab" type="button">
-          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-            <polyline points="14 2 14 8 20 8"/>
-            <line x1="16" y1="13" x2="8" y2="13"/>
-            <line x1="16" y1="17" x2="8" y2="17"/>
-          </svg>
-          <span>Logs de Equipos</span>
+          <span>Bitácora y Logs</span>
         </button>
-      </div>
+      </nav>
+    </div>
+
+    <div class="topbar-right">
+      <span id="ws-status-pill" class="status-pill status-connecting">
+        <span class="status-dot"></span>
+        <span id="ws-status-text">Conectando...</span>
+      </span>
+
+      <button id="open-agent-pkg-btn" type="button" class="btn btn-primary btn-sm" title="Descargar instalador preconfigurado para PC Windows">
+        <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        <span>Nuevo Agente (.ZIP)</span>
+      </button>
+
+      <button id="logout-btn" type="button" class="btn btn-secondary btn-sm" title="Cerrar sesión de administrador">
+        <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+          <polyline points="16 17 21 12 16 7"/>
+          <line x1="21" y1="12" x2="9" y2="12"/>
+        </svg>
+        <span>Salir</span>
+      </button>
     </div>
   </header>
 
@@ -305,6 +326,19 @@
   <!-- VISTA 1: MURO DE MONITOREO EN VIVO                                      -->
   <!-- ======================================================================= -->
   <main id="view-wall" class="main-container">
+    <div class="page-section-header">
+      <div>
+        <h1 class="page-title">Gestión y Monitoreo de Equipos</h1>
+        <p class="muted-text">Supervisa la actividad en tiempo real y brinda asistencia remota silenciosa • Servidor <code>{{ lan_ip }}:{{ port }}</code></p>
+      </div>
+      <button id="refresh-thumbs-btn" type="button" class="btn btn-secondary btn-sm" title="Actualizar capturas de todos los equipos">
+        <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><polyline points="21 3 21 8 16 8"/>
+        </svg>
+        <span>Actualizar Vistas</span>
+      </button>
+    </div>
+
     <section class="stats-grid">
       <div class="stat-card">
         <div>
@@ -339,10 +373,16 @@
       </div>
     </section>
 
-    <!-- Barra de Filtros y Búsqueda -->
-    <section class="toolbar-card">
-      <div class="filter-group">
-        <span class="filter-label">Filtrar:</span>
+    <!-- Barra de Búsqueda y Píldoras Segmentadas (Estilo SITAI Gestión de Clientes) -->
+    <section class="toolbar-card sitai-filter-panel">
+      <div class="search-box sitai-search-full">
+        <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input id="search-input" type="text" placeholder="Buscar por nombre de equipo, usuario, ventana activa o dirección IP..." />
+      </div>
+
+      <div class="filter-group sitai-segmented-pills">
         <button type="button" data-filter="all" class="filter-btn active">Todos (<span id="count-total">0</span>)</button>
         <button type="button" data-filter="active" class="filter-btn">
           <span class="indicator-dot dot-emerald"></span> Activos
@@ -355,21 +395,6 @@
         </button>
         <button type="button" data-filter="offline" class="filter-btn">
           <span class="indicator-dot dot-slate"></span> Desconectados
-        </button>
-      </div>
-
-      <div class="search-group">
-        <div class="search-box">
-          <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-          </svg>
-          <input id="search-input" type="text" placeholder="Buscar por nombre, usuario, ventana o IP..." />
-        </div>
-        <button id="refresh-thumbs-btn" type="button" class="btn btn-secondary" title="Actualizar capturas de todos los equipos">
-          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><polyline points="21 3 21 8 16 8"/>
-          </svg>
-          <span>Refrescar Vistas</span>
         </button>
       </div>
     </section>
@@ -722,6 +747,7 @@
       </div>
     </div>
   </section>
+  </div><!-- /#app-shell -->
 
   <script src="/static/js/audio.js"></script>
   <script src="/static/js/viewer.js"></script>

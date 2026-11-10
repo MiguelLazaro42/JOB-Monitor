@@ -1,7 +1,12 @@
 (function () {
+  // Limpiar clave antigua sin sesión explícita para no exponer el panel automáticamente
+  localStorage.removeItem('ra_admin_password');
+
   const state = {
     ws: null,
-    password: localStorage.getItem('ra_admin_password') || 'admin123',
+    username: sessionStorage.getItem('ra_session_user') || localStorage.getItem('ra_remember_user') || 'admin',
+    password: sessionStorage.getItem('ra_session_pass') || localStorage.getItem('ra_remember_pass') || '',
+    authenticated: false,
     agents: new Map(),
     knownDevices: [],
     offlineCount: 0,
@@ -12,11 +17,20 @@
     logsCache: [],
   };
 
-  // Referencias DOM Generales
+  // Referencias DOM Generales y Login
+  const appShell = document.getElementById('app-shell');
   const authModal = document.getElementById('auth-modal');
   const authForm = document.getElementById('auth-form');
+  const userInput = document.getElementById('admin-user-input');
   const passInput = document.getElementById('admin-pass-input');
+  const rememberSessionCheck = document.getElementById('remember-session-check');
+  const loginSubmitBtn = document.getElementById('login-submit-btn');
   const authError = document.getElementById('auth-error');
+  const logoutBtn = document.getElementById('logout-btn');
+
+  if (userInput) {
+    userInput.value = state.username || 'admin';
+  }
 
   const aliasModal = document.getElementById('alias-modal');
   const aliasForm = document.getElementById('alias-form');
@@ -741,7 +755,44 @@
     aliasTextInput.select();
   }
 
+  function showLoginGate(showError = false) {
+    state.authenticated = false;
+    if (appShell) appShell.classList.add('hidden');
+    if (authModal) authModal.classList.remove('hidden');
+    if (authError) authError.classList.toggle('hidden', !showError);
+    if (passInput) passInput.focus();
+  }
+
+  function unlockDashboard() {
+    state.authenticated = true;
+    if (authModal) authModal.classList.add('hidden');
+    if (authError) authError.classList.add('hidden');
+    if (appShell) appShell.classList.remove('hidden');
+  }
+
+  function logoutAdminSession() {
+    state.password = '';
+    state.authenticated = false;
+    sessionStorage.removeItem('ra_session_user');
+    sessionStorage.removeItem('ra_session_pass');
+    localStorage.removeItem('ra_remember_user');
+    localStorage.removeItem('ra_remember_pass');
+    if (passInput) passInput.value = '';
+    if (state.ws) {
+      try {
+        state.ws.onclose = null;
+        state.ws.close();
+      } catch (_) {}
+      state.ws = null;
+    }
+    showLoginGate(false);
+  }
+
   function connectAdminWebSocket() {
+    if (!state.password) {
+      showLoginGate(false);
+      return;
+    }
     setWsBadge('connecting', 'Conectando...');
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${proto}//${window.location.host}/ws/admin`;
@@ -754,6 +805,7 @@
       ws.send(
         JSON.stringify({
           type: 'auth',
+          username: state.username || 'admin',
           password: state.password,
         })
       );
@@ -767,17 +819,15 @@
 
       const msg = JSON.parse(evt.data);
       if (msg.type === 'auth_error') {
-        setWsBadge('disconnected', 'Clave requerida');
-        authError.classList.remove('hidden');
-        authModal.classList.remove('hidden');
+        setWsBadge('disconnected', 'Sesión requerida');
+        logoutAdminSession();
+        if (authError) authError.classList.remove('hidden');
         return;
       }
 
       if (msg.type === 'auth_ok' || msg.type === 'agents_list') {
         if (msg.type === 'auth_ok') {
-          localStorage.setItem('ra_admin_password', state.password);
-          authModal.classList.add('hidden');
-          authError.classList.add('hidden');
+          unlockDashboard();
           setWsBadge('connected', 'En línea');
         }
 
@@ -885,21 +935,70 @@
     };
 
     ws.onclose = () => {
+      if (!state.authenticated || !state.password) return;
       setWsBadge('disconnected', 'Reconectando...');
       setTimeout(connectAdminWebSocket, 3000);
     };
   }
 
-  // Eventos de UI
-  authForm.addEventListener('submit', (e) => {
+  // Eventos de UI (Inicio y Cierre de Sesión)
+  authForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    state.password = passInput.value;
-    if (state.ws) {
-      state.ws.close();
-    } else {
+    const enteredUser = userInput ? userInput.value.trim() : 'admin';
+    const enteredPass = passInput ? passInput.value : '';
+    if (authError) authError.classList.add('hidden');
+    if (loginSubmitBtn) {
+      loginSubmitBtn.disabled = true;
+      loginSubmitBtn.textContent = 'Verificando...';
+    }
+
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: enteredUser, password: enteredPass }),
+      });
+
+      if (!res.ok) {
+        throw new Error('Credenciales inválidas');
+      }
+
+      state.username = enteredUser;
+      state.password = enteredPass;
+      sessionStorage.setItem('ra_session_user', enteredUser);
+      sessionStorage.setItem('ra_session_pass', enteredPass);
+
+      if (rememberSessionCheck && rememberSessionCheck.checked) {
+        localStorage.setItem('ra_remember_user', enteredUser);
+        localStorage.setItem('ra_remember_pass', enteredPass);
+      } else {
+        localStorage.removeItem('ra_remember_user');
+        localStorage.removeItem('ra_remember_pass');
+      }
+
+      unlockDashboard();
+      if (state.ws) {
+        try {
+          state.ws.onclose = null;
+          state.ws.close();
+        } catch (_) {}
+      }
       connectAdminWebSocket();
+    } catch (_) {
+      showLoginGate(true);
+    } finally {
+      if (loginSubmitBtn) {
+        loginSubmitBtn.disabled = false;
+        loginSubmitBtn.textContent = 'Entrar';
+      }
     }
   });
+
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', () => {
+      logoutAdminSession();
+    });
+  }
 
   aliasForm.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -1312,5 +1411,10 @@
     });
   }
 
-  connectAdminWebSocket();
+  if (state.password) {
+    unlockDashboard();
+    connectAdminWebSocket();
+  } else {
+    showLoginGate(false);
+  }
 })();

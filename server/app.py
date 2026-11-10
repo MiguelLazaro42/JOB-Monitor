@@ -285,6 +285,23 @@ def verify_admin_access(request: Request):
         raise HTTPException(status_code=401, detail="No autorizado: clave de administrador inválida")
 
 
+@app.post("/api/login")
+async def admin_login(request: Request):
+    """Valida usuario y contraseña de administrador antes de desbloquear el panel."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    username = str(body.get("username") or "").strip()
+    password = str(body.get("password") or "")
+    if username != config.ADMIN_USERNAME or password != config.ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
+    return {
+        "ok": True,
+        "username": config.ADMIN_USERNAME,
+    }
+
+
 # ==============================================================================
 # FASE 4 - BLOQUE A: MINI-FUNCIONES DE EMPAQUETADO DINÁMICO DEL AGENTE (.ZIP)
 # ==============================================================================
@@ -715,8 +732,13 @@ async def ws_admin_endpoint(websocket: WebSocket):
     try:
         raw = await asyncio.wait_for(websocket.receive_text(), timeout=15.0)
         auth = json.loads(raw)
-        if auth.get("type") != "auth" or auth.get("password") != config.ADMIN_PASSWORD:
-            await websocket.send_json({"type": "auth_error", "message": "Contraseña de administrador incorrecta"})
+        supplied_user = str(auth.get("username") or config.ADMIN_USERNAME).strip()
+        if (
+            auth.get("type") != "auth"
+            or supplied_user != config.ADMIN_USERNAME
+            or auth.get("password") != config.ADMIN_PASSWORD
+        ):
+            await websocket.send_json({"type": "auth_error", "message": "Credenciales de administrador inválidas"})
             await websocket.close(code=1008)
             return
 

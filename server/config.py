@@ -9,7 +9,8 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 PORT = int(os.environ.get("RA_PORT", 5080))
 HOST = os.environ.get("RA_HOST", "0.0.0.0")
 
-# Contraseña para el Panel de Administrador
+# Credenciales para el Panel de Administrador
+ADMIN_USERNAME = os.environ.get("RA_ADMIN_USER", "admin")
 ADMIN_PASSWORD = os.environ.get("RA_ADMIN_PASS", "admin123")
 
 # Token compartido para autenticar los agentes de las PCs de la empresa

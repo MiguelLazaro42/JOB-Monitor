@@ -370,19 +370,19 @@ class PopupChatManager:
 
         try:
             root = tk.Tk()
-            root.title("Soporte Técnico Corporativo — Mensaje Directo")
+            root.title("JOB-Monitor — Soporte Técnico Corporativo")
             root.geometry("430x380")
-            root.configure(bg="#0f172a")
+            root.configure(bg="#f8f9fb")
             root.attributes("-topmost", True)
 
-            header = tk.Frame(root, bg="#1e293b", padx=12, pady=10)
+            header = tk.Frame(root, bg="#ffffff", padx=14, pady=10, highlightthickness=1, highlightbackground="#e5e7eb")
             header.pack(fill=tk.X)
 
             title_lbl = tk.Label(
                 header,
                 text="Asistencia y Soporte Corporativo",
-                bg="#1e293b",
-                fg="#f8fafc",
+                bg="#ffffff",
+                fg="#111827",
                 font=("Segoe UI", 11, "bold"),
                 anchor="w",
             )
@@ -391,8 +391,8 @@ class PopupChatManager:
             sub_lbl = tk.Label(
                 header,
                 text="El administrador te ha enviado un mensaje directo. Puedes responder abajo.",
-                bg="#1e293b",
-                fg="#94a3b8",
+                bg="#ffffff",
+                fg="#6b7280",
                 font=("Segoe UI", 8),
                 anchor="w",
             )
@@ -402,29 +402,31 @@ class PopupChatManager:
                 root,
                 wrap=tk.WORD,
                 state="disabled",
-                bg="#090d16",
-                fg="#e2e8f0",
+                bg="#ffffff",
+                fg="#111827",
                 font=("Segoe UI", 10),
                 padx=10,
                 pady=10,
-                relief=tk.FLAT,
+                relief=tk.SOLID,
+                bd=1,
                 height=13,
             )
             chat_area.pack(fill=tk.BOTH, expand=True, padx=12, pady=(10, 6))
-            chat_area.tag_config("admin_tag", foreground="#60a5fa", font=("Segoe UI", 9, "bold"))
-            chat_area.tag_config("user_tag", foreground="#34d399", font=("Segoe UI", 9, "bold"))
-            chat_area.tag_config("body_tag", foreground="#f8fafc", font=("Segoe UI", 10))
+            chat_area.tag_config("admin_tag", foreground="#0066cc", font=("Segoe UI", 9, "bold"))
+            chat_area.tag_config("user_tag", foreground="#047857", font=("Segoe UI", 9, "bold"))
+            chat_area.tag_config("body_tag", foreground="#111827", font=("Segoe UI", 10))
 
-            bottom_frame = tk.Frame(root, bg="#0f172a", padx=12, pady=10)
+            bottom_frame = tk.Frame(root, bg="#f8f9fb", padx=12, pady=10)
             bottom_frame.pack(fill=tk.X, side=tk.BOTTOM)
 
             entry = tk.Entry(
                 bottom_frame,
-                bg="#1e293b",
-                fg="#f8fafc",
-                insertbackground="#f8fafc",
+                bg="#ffffff",
+                fg="#111827",
+                insertbackground="#111827",
                 font=("Segoe UI", 10),
-                relief=tk.FLAT,
+                relief=tk.SOLID,
+                bd=1,
             )
             entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=6, padx=(0, 8))
 
@@ -452,9 +454,9 @@ class PopupChatManager:
                 bottom_frame,
                 text="Enviar",
                 command=send_reply,
-                bg="#2563eb",
+                bg="#0066cc",
                 fg="#ffffff",
-                activebackground="#1d4ed8",
+                activebackground="#0052a3",
                 activeforeground="#ffffff",
                 font=("Segoe UI", 9, "bold"),
                 relief=tk.FLAT,
