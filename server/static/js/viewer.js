@@ -37,13 +37,13 @@ class RemoteCanvasViewer {
       btn.className = 'btn btn-mode-control';
       iconObs.classList.add('hidden');
       iconCtrl.classList.remove('hidden');
-      label.textContent = 'Modo: Controlando Mouse y Teclado';
+      label.textContent = 'Control Activo';
       this.stage.focus();
     } else {
       btn.className = 'btn btn-mode-observe';
       iconObs.classList.remove('hidden');
       iconCtrl.classList.add('hidden');
-      label.textContent = 'Modo: Solo Observar';
+      label.textContent = 'Observar';
     }
   }
 

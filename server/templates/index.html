@@ -17,31 +17,24 @@
     <div class="login-split-shell">
       <div class="login-brand-side">
         <div class="sitai-brand-lockup">
-          <!-- Logotipo Vectorial Oficial SITAI (S-I-T-A-I) -->
           <svg class="sitai-svg-logo" viewBox="0 0 310 74" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="SITAI">
-            <!-- S -->
-            <path d="M8 8H68V21H22V31H56C63.7 31 69 36.3 69 44V53C69 60.7 63.7 66 56 66H8V53H54V43H20C12.3 43 7 37.7 7 30V21C7 13.3 12.3 8 8 8Z" fill="#133447"/>
-            <!-- I -->
-            <rect x="82" y="8" width="15" height="58" fill="#133447"/>
-            <!-- T -->
-            <path d="M110 8H174V21H149.5V66H134.5V21H110V8Z" fill="#133447"/>
-            <!-- A geométrica oficial SITAI (Trazo izquierdo diagonal + triángulo derecho) -->
+            <path d="M8 8H68V21H22V31H56C63.7 31 69 36.3 69 44V53C69 60.7 63.7 66 56 66H8V53H54V43H20C12.3 43 7 37.7 7 30V21C7 13.3 12.3 8 8 8Z" fill="#ffffff"/>
+            <rect x="82" y="8" width="15" height="58" fill="#ffffff"/>
+            <path d="M110 8H174V21H149.5V66H134.5V21H110V8Z" fill="#ffffff"/>
             <polygon points="198,8 214,8 192,66 176,66" fill="#f87b02"/>
             <polygon points="218,16 242,66 202,66 207,53 221,53 212,33" fill="#f87b02"/>
-            <!-- I -->
-            <rect x="254" y="8" width="15" height="58" fill="#133447"/>
+            <rect x="254" y="8" width="15" height="58" fill="#ffffff"/>
           </svg>
-          <span class="sitai-brand-tagline">Design &amp; Development • Monitoreo Corporativo</span>
+          <span class="sitai-brand-tagline">Design &amp; Development</span>
         </div>
 
         <div class="login-hero-copy">
-          <span class="hero-kicker">SITAI.MX WORKSPACE</span>
           <h2>JOB-MONITOR</h2>
-          <p>Supervisión de actividad en tiempo real, bitácora histórica y asistencia remota silenciosa en un solo lugar.</p>
+          <p>Monitoreo y asistencia remota</p>
         </div>
 
         <div class="login-hero-meta">
-          <span>Servidor central: <code>{{ lan_ip }}:{{ port }}</code> • www.sitai.mx</span>
+          <code>{{ lan_ip }}:{{ port }}</code>
         </div>
       </div>
 
@@ -59,12 +52,11 @@
           </div>
 
           <h1 class="login-title">Iniciar sesión</h1>
-          <p class="login-subtitle">Accede al panel de monitoreo de SITAI.MX</p>
 
           <form id="auth-form" class="login-form" autocomplete="on">
             <div class="login-field">
               <label for="admin-user-input" class="input-label">Usuario</label>
-              <input id="admin-user-input" type="text" class="text-input login-input" placeholder="Tu usuario" autocomplete="username" required />
+              <input id="admin-user-input" type="text" class="text-input login-input" placeholder="Usuario" autocomplete="username" required />
             </div>
 
             <div class="login-field">
@@ -74,16 +66,12 @@
 
             <label class="checkbox-row login-remember">
               <input type="checkbox" id="remember-session-check" />
-              <span>Mantener la sesión</span>
+              <span>Mantener sesión</span>
             </label>
 
-            <p id="auth-error" class="error-text hidden">Usuario o contraseña incorrectos. Verifica tus datos.</p>
+            <p id="auth-error" class="error-text hidden">Credenciales incorrectas.</p>
 
             <button type="submit" id="login-submit-btn" class="btn btn-primary w-full login-submit-btn">Entrar</button>
-
-            <p class="login-legal-note">
-              Acceso exclusivo para personal autorizado de SITAI.MX. Todas las sesiones quedan registradas en bitácora.
-            </p>
           </form>
         </div>
       </div>
@@ -253,32 +241,19 @@
           </svg>
         </div>
         <div>
-          <h2>Generar Paquete Instalador de Agente (Windows)</h2>
-          <p class="muted-text">Descarga un archivo .ZIP preconfigurado con <code>agent.py</code>, <code>config_agent.json</code> e <code>install_windows.bat</code>.</p>
+          <h2>Generar Paquete Instalador (.ZIP)</h2>
         </div>
       </div>
 
       <form id="agent-pkg-form" class="modal-body">
         <div>
-          <label for="pkg-alias-input" class="input-label">Nombre / Alias del equipo (Opcional)</label>
-          <input id="pkg-alias-input" type="text" class="text-input" placeholder="Ej. PC de Contabilidad - Laura (o déjalo vacío para nombre automático)" />
+          <label for="pkg-alias-input" class="input-label">Alias del equipo (Opcional)</label>
+          <input id="pkg-alias-input" type="text" class="text-input" placeholder="Ej. PC Contabilidad" />
         </div>
 
         <div>
-          <label for="pkg-server-url-input" class="input-label">URL WebSocket del Servidor Central</label>
+          <label for="pkg-server-url-input" class="input-label">URL WebSocket del Servidor</label>
           <input id="pkg-server-url-input" type="text" class="text-input" value="ws://{{ lan_ip }}:{{ port }}/ws/agent" required />
-          <p class="muted-text" style="margin-top:6px;">
-            En red local usa <code>ws://{{ lan_ip }}:{{ port }}/ws/agent</code>. Si usas un VPS o dominio externo usa <code>ws://TU_IP_VPS:{{ port }}/ws/agent</code> o <code>wss://tu-dominio.com/ws/agent</code>.
-          </p>
-        </div>
-
-        <div class="drawer-section" style="margin-top:4px;">
-          <span class="input-label">Contenido incluido en el paquete .ZIP:</span>
-          <p class="muted-text" style="line-height:1.5;">
-            • <code>agent.py</code> + <code>requirements-agent.txt</code> + <code>config_agent.json</code> preconfigurado.<br/>
-            • <code>install_windows.bat</code>: instala en <code>C:\ProgramData\MonitoreoEmpresa</code> y registra inicio automático con <code>pythonw.exe</code>.<br/>
-            • <code>uninstall_windows.bat</code> y guía <code>LEEME_INSTALACION.txt</code>.
-          </p>
         </div>
 
         <div class="modal-actions">
@@ -289,35 +264,35 @@
               <polyline points="7 10 12 15 17 10"/>
               <line x1="12" y1="15" x2="12" y2="3"/>
             </svg>
-            <span>Descargar Paquete (.ZIP)</span>
+            <span>Descargar .ZIP</span>
           </button>
         </div>
       </form>
     </div>
   </div>
 
-  <!-- Barra Superior Ultra-Minimalista (Estilo SITAI.MX / ConoceCarmen) -->
+  <!-- Barra Superior SITAI (#133447) -->
   <header class="topbar">
     <div class="topbar-left">
       <div class="sitai-nav-brand">
         <svg class="sitai-svg-logo-nav" viewBox="0 0 310 74" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="SITAI">
-          <path d="M8 8H68V21H22V31H56C63.7 31 69 36.3 69 44V53C69 60.7 63.7 66 56 66H8V53H54V43H20C12.3 43 7 37.7 7 30V21C7 13.3 12.3 8 8 8Z" fill="#133447"/>
-          <rect x="82" y="8" width="15" height="58" fill="#133447"/>
-          <path d="M110 8H174V21H149.5V66H134.5V21H110V8Z" fill="#133447"/>
+          <path d="M8 8H68V21H22V31H56C63.7 31 69 36.3 69 44V53C69 60.7 63.7 66 56 66H8V53H54V43H20C12.3 43 7 37.7 7 30V21C7 13.3 12.3 8 8 8Z" fill="#ffffff"/>
+          <rect x="82" y="8" width="15" height="58" fill="#ffffff"/>
+          <path d="M110 8H174V21H149.5V66H134.5V21H110V8Z" fill="#ffffff"/>
           <polygon points="198,8 214,8 192,66 176,66" fill="#f87b02"/>
           <polygon points="218,16 242,66 202,66 207,53 221,53 212,33" fill="#f87b02"/>
-          <rect x="254" y="8" width="15" height="58" fill="#133447"/>
+          <rect x="254" y="8" width="15" height="58" fill="#ffffff"/>
         </svg>
         <span class="sitai-nav-sub">MONITOR</span>
       </div>
     </div>
 
-    <nav class="nav-tabs" aria-label="Navegación Principal">
+    <nav class="nav-tabs" aria-label="Navegación">
       <button id="tab-wall" class="nav-tab active" type="button">
-        <span>Mi Panel</span>
+        <span>Equipos</span>
       </button>
       <button id="tab-viewer" class="nav-tab" type="button" disabled>
-        <span id="tab-viewer-label">Visor en Vivo</span>
+        <span id="tab-viewer-label">Visor</span>
       </button>
       <button id="tab-activity" class="nav-tab" type="button">
         <span>Métricas</span>
@@ -330,133 +305,92 @@
     <div class="topbar-right">
       <span id="ws-status-pill" class="status-pill status-connecting">
         <span class="status-dot"></span>
-        <span id="ws-status-text">Conectando...</span>
+        <span id="ws-status-text">Conectando</span>
       </span>
 
-      <button id="open-agent-pkg-btn" type="button" class="btn btn-soft-orange btn-sm" title="Descargar instalador preconfigurado para PC Windows">
-        <span>+ Agente Windows</span>
+      <button id="open-agent-pkg-btn" type="button" class="btn btn-pill-primary btn-sm" title="Descargar agente Windows (.ZIP)">
+        <span>+ Agente</span>
       </button>
 
-      <button id="logout-btn" type="button" class="btn btn-ghost btn-sm" title="Cerrar sesión de administrador">
+      <button id="logout-btn" type="button" class="btn btn-ghost-light btn-sm" title="Cerrar sesión">
         <span>Salir</span>
       </button>
     </div>
   </header>
 
   <!-- ======================================================================= -->
-  <!-- VISTA 1: PANEL MINIMALISTA EN VIVO                                      -->
+  <!-- VISTA 1: PANEL EN VIVO (DIRECTO Y SIN TEXTO INNECESARIO)                -->
   <!-- ======================================================================= -->
   <main id="view-wall" class="main-container">
-    <!-- Hero Minimalista de Bienvenida -->
-    <section class="minimal-hero">
-      <span class="minimal-kicker">
-        <span class="kicker-dot"></span>
-        Consola de monitoreo y asistencia activa
-      </span>
-      <h1 class="minimal-hero-title">
-        Bienvenido, <span class="brand-accent-text">SITAI Monitor</span>
-      </h1>
-      <p class="minimal-hero-sub">
-        Supervisa pantallas en tiempo real, tiempos de actividad, aplicaciones y soporte silencioso en un solo lugar.
-      </p>
-    </section>
-
-    <!-- Barra de Operación en Vivo (Estilo cápsula limpia) -->
-    <section class="live-op-banner">
-      <div class="live-op-left">
-        <span class="live-op-icon">
-          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-            <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
-          </svg>
-        </span>
-        <div>
-          <strong>Operación en vivo</strong>
-          <p class="muted-text">Nodo central <code>{{ lan_ip }}:{{ port }}</code> • Conexión silenciosa sin interrumpir al usuario</p>
+    <section class="stats-grid">
+      <div class="stat-card">
+        <span class="stat-label">Activos</span>
+        <div class="stat-number-row">
+          <strong id="count-active" class="stat-value">0</strong>
+          <span class="indicator-dot dot-emerald"></span>
         </div>
       </div>
 
+      <div class="stat-card">
+        <span class="stat-label">Inactivos</span>
+        <div class="stat-number-row">
+          <strong id="count-idle" class="stat-value">0</strong>
+          <span class="indicator-dot dot-amber"></span>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <span class="stat-label">Ausentes</span>
+        <div class="stat-number-row">
+          <strong id="count-away" class="stat-value">0</strong>
+          <span class="indicator-dot dot-rose"></span>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <span class="stat-label">Apagados</span>
+        <div class="stat-number-row">
+          <strong id="count-offline" class="stat-value">0</strong>
+          <span class="indicator-dot dot-slate"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="compact-control-bar">
+      <div class="filter-group">
+        <button type="button" data-filter="all" class="filter-btn active">Todos (<span id="count-total">0</span>)</button>
+        <button type="button" data-filter="active" class="filter-btn">Activos</button>
+        <button type="button" data-filter="idle" class="filter-btn">Inactivos</button>
+        <button type="button" data-filter="away" class="filter-btn">Ausentes</button>
+        <button type="button" data-filter="offline" class="filter-btn">Apagados</button>
+      </div>
+
       <div class="live-op-actions">
-        <div class="search-box minimal-search">
+        <div class="search-box">
           <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
             <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
           </svg>
-          <input id="search-input" type="text" placeholder="Buscar equipo, usuario, ventana o IP..." />
+          <input id="search-input" type="text" placeholder="Buscar equipo o usuario..." />
         </div>
-        <button id="refresh-thumbs-btn" type="button" class="btn btn-pill-primary btn-sm" title="Actualizar capturas de todos los equipos">
-          <span>Actualizar vistas</span>
+        <button id="refresh-thumbs-btn" type="button" class="btn btn-secondary btn-sm" title="Actualizar capturas">
+          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><polyline points="21 3 21 8 16 8"/>
+          </svg>
         </button>
       </div>
     </section>
 
-    <!-- Contenedor Minimalista de Resumen de Estado -->
-    <section class="summary-shell-card">
-      <div class="summary-shell-header">
-        <div>
-          <h2>Estado de tus equipos hoy</h2>
-          <p class="muted-text">Resumen en tiempo real de actividad, pausas y conexiones registradas</p>
-        </div>
-
-        <div class="filter-group minimal-filter-pills">
-          <button type="button" data-filter="all" class="filter-btn active">Todos (<span id="count-total">0</span>)</button>
-          <button type="button" data-filter="active" class="filter-btn">Activos</button>
-          <button type="button" data-filter="idle" class="filter-btn">Inactivos</button>
-          <button type="button" data-filter="away" class="filter-btn">Ausentes</button>
-          <button type="button" data-filter="offline" class="filter-btn">Apagados</button>
-        </div>
-      </div>
-
-      <div class="stats-grid">
-        <div class="stat-card">
-          <span class="stat-label">Activos ahora (&lt; 3m)</span>
-          <div class="stat-number-row">
-            <strong id="count-active" class="stat-value text-emerald">0</strong>
-            <span class="stat-unit">equipos</span>
-          </div>
-        </div>
-
-        <div class="stat-card">
-          <span class="stat-label">En pausa (3–10m)</span>
-          <div class="stat-number-row">
-            <strong id="count-idle" class="stat-value text-amber">0</strong>
-            <span class="stat-unit">equipos</span>
-          </div>
-        </div>
-
-        <div class="stat-card">
-          <span class="stat-label">Ausentes (+10m)</span>
-          <div class="stat-number-row">
-            <strong id="count-away" class="stat-value text-rose">0</strong>
-            <span class="stat-unit">equipos</span>
-          </div>
-        </div>
-
-        <div class="stat-card">
-          <span class="stat-label">Desconectados</span>
-          <div class="stat-number-row">
-            <strong id="count-offline" class="stat-value text-muted">0</strong>
-            <span class="stat-unit">equipos</span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Estado Vacío -->
+    <!-- Estado Vacío Compacto -->
     <section id="empty-state" class="empty-card">
       <div class="empty-icon">
-        <svg class="icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <svg class="icon-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <rect x="2" y="3" width="20" height="14" rx="2"/>
           <line x1="8" y1="21" x2="16" y2="21"/>
           <line x1="12" y1="17" x2="12" y2="21"/>
         </svg>
       </div>
-      <h3>Esperando conexión de equipos...</h3>
-      <p class="muted-text">
-        En cuanto el agente silencioso se inicie en una PC de la empresa, aparecerá automáticamente aquí sin necesidad de configurar su IP.
-      </p>
-      <div class="code-box">
-        <span class="code-label">Comando para conectar un agente apuntando a este servidor:</span>
-        <code>python agent/agent.py --server "ws://{{ lan_ip }}:{{ port }}/ws/agent" --alias "PC de Prueba"</code>
-      </div>
+      <h3>Sin equipos conectados</h3>
+      <p class="muted-text">Descarga el paquete desde <strong>+ Agente</strong> en la barra superior.</p>
     </section>
 
     <!-- Cuadrícula de Equipos Conectados -->
@@ -616,10 +550,7 @@
             <svg class="icon-sm text-blue" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
             </svg>
-            <div>
-              <h3>Mensajes Directos</h3>
-              <p class="muted-text">Abre ventana emergente en la PC al enviar</p>
-            </div>
+            <h3>Chat Directo</h3>
           </div>
           <button type="button" id="close-chat-sidebar-btn" class="icon-btn" title="Ocultar panel de chat">
             <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -629,35 +560,26 @@
         </div>
 
         <div class="quick-messages-box">
-          <span class="quick-box-label">Mensajes rápidos de 1 clic:</span>
+          <span class="quick-box-label">Mensajes rápidos</span>
           <button type="button" class="quick-msg-btn js-quick-chat" data-msg="Hola, vi tu equipo sin actividad, ¿todo está bien?">
-            <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
-            </svg>
-            <span>"Hola, vi tu equipo sin actividad, ¿todo está bien?"</span>
+            <span>¿Todo está bien?</span>
           </button>
           <button type="button" class="quick-msg-btn js-quick-chat" data-msg="Hola, ¿requieres ayuda con el sistema o algún reporte?">
-            <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
-            </svg>
-            <span>"Hola, ¿requieres ayuda con el sistema o algún reporte?"</span>
+            <span>¿Requieres apoyo?</span>
           </button>
           <button type="button" class="quick-msg-btn js-quick-chat" data-msg="Voy a mover tu mouse un momento para ayudarte.">
-            <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
-            </svg>
-            <span>"Voy a mover tu mouse un momento para ayudarte."</span>
+            <span>Tomaré control un momento</span>
           </button>
         </div>
 
         <div id="chat-messages-list" class="chat-messages-list">
           <div class="chat-empty-state">
-            No hay mensajes en esta sesión. Mientras no envíes un mensaje, el empleado no verá ninguna ventana de chat.
+            Sin mensajes en esta sesión.
           </div>
         </div>
 
         <form id="chat-send-form" class="chat-input-bar">
-          <input id="chat-input" type="text" class="text-input" placeholder="Escribe un mensaje para el empleado..." autocomplete="off" />
+          <input id="chat-input" type="text" class="text-input" placeholder="Mensaje..." autocomplete="off" />
           <button type="submit" class="btn btn-primary btn-sm" title="Enviar mensaje">
             <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
@@ -674,10 +596,7 @@
   <section id="view-activity" class="main-container hidden">
     <div class="panel-card">
       <div class="panel-card-header">
-        <div>
-          <h2>Resumen de Actividad e Inactividad Diaria (Estilo Teams)</h2>
-          <p class="muted-text">Tiempo efectivo frente al equipo, pausas acumuladas, alertas de ausencia (+10 min) y aplicaciones principales.</p>
-        </div>
+        <h2>Métricas Diarias</h2>
         <div class="panel-controls">
           <div class="control-select-wrap">
             <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -686,10 +605,7 @@
             </svg>
             <input id="metrics-date-input" type="date" class="toolbar-select" />
           </div>
-          <button id="refresh-metrics-btn" type="button" class="btn btn-secondary">
-            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><polyline points="21 3 21 8 16 8"/>
-            </svg>
+          <button id="refresh-metrics-btn" type="button" class="btn btn-secondary btn-sm">
             <span>Actualizar</span>
           </button>
         </div>
@@ -699,18 +615,18 @@
         <table class="data-table">
           <thead>
             <tr>
-              <th>Empleado / Equipo</th>
-              <th>Estado Actual</th>
-              <th>Inicio de Jornada</th>
-              <th>Tiempo Activo Hoy</th>
-              <th>Tiempo Inactivo / Alertas</th>
-              <th>Aplicaciones Principales (Tiempo en Foco)</th>
+              <th>Equipo</th>
+              <th>Estado</th>
+              <th>Inicio</th>
+              <th>Activo</th>
+              <th>Inactivo</th>
+              <th>Aplicaciones</th>
               <th>Acciones</th>
             </tr>
           </thead>
           <tbody id="metrics-tbody">
             <tr>
-              <td colspan="7" class="empty-row">Cargando métricas del día...</td>
+              <td colspan="7" class="empty-row">Sin registros hoy.</td>
             </tr>
           </tbody>
         </table>
@@ -724,31 +640,22 @@
   <section id="view-logs" class="main-container hidden">
     <div class="panel-card">
       <div class="panel-card-header">
-        <div>
-          <h2>Bitácora y Logs de Equipos</h2>
-          <p class="muted-text">Registro cronológico en SQLite de periodos de inactividad, regresos, cambios de ventana/aplicación, conexiones y soporte.</p>
-        </div>
+        <h2>Bitácora de Eventos</h2>
         <div class="panel-controls">
           <div class="control-select-wrap">
-            <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
-            </svg>
             <select id="log-device-filter" class="toolbar-select">
               <option value="ALL">Todos los equipos</option>
             </select>
           </div>
 
           <div class="control-select-wrap">
-            <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
-            </svg>
             <select id="log-category-filter" class="toolbar-select">
               <option value="ALL">Todas las categorías</option>
-              <option value="IDLE">Alertas de Inactividad (IDLE)</option>
-              <option value="RESUME">Regreso a Actividad (RESUME)</option>
-              <option value="WINDOW">Cambio de Ventana / App (WINDOW)</option>
-              <option value="NETWORK">Conexión / Encendido (NETWORK)</option>
-              <option value="AUDIT">Auditoría de Soporte (AUDIT)</option>
+              <option value="IDLE">Inactividad</option>
+              <option value="RESUME">Regreso</option>
+              <option value="WINDOW">Ventana</option>
+              <option value="NETWORK">Red</option>
+              <option value="AUDIT">Soporte</option>
             </select>
           </div>
 
@@ -756,15 +663,11 @@
             <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
             </svg>
-            <input id="log-search-input" type="text" placeholder="Filtrar eventos (ej. Excel, Chrome, Inactivo)..." />
+            <input id="log-search-input" type="text" placeholder="Filtrar..." />
           </div>
 
-          <button id="export-csv-btn" type="button" class="btn btn-secondary">
-            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-            </svg>
-            <span>Exportar CSV</span>
+          <button id="export-csv-btn" type="button" class="btn btn-secondary btn-sm">
+            <span>CSV</span>
           </button>
         </div>
       </div>
@@ -773,15 +676,15 @@
         <table class="data-table logs-table">
           <thead>
             <tr>
-              <th style="width: 155px;">Fecha y Hora</th>
-              <th style="width: 210px;">Equipo / Usuario</th>
-              <th style="width: 135px;">Categoría</th>
-              <th>Detalle del Evento</th>
+              <th style="width: 155px;">Hora</th>
+              <th style="width: 200px;">Equipo</th>
+              <th style="width: 120px;">Tipo</th>
+              <th>Evento</th>
             </tr>
           </thead>
           <tbody id="logs-tbody">
             <tr>
-              <td colspan="4" class="empty-row">Cargando bitácora de eventos...</td>
+              <td colspan="4" class="empty-row">Sin eventos.</td>
             </tr>
           </tbody>
         </table>

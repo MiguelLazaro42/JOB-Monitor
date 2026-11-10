@@ -314,17 +314,17 @@
               <div>
                 <div class="card-header">
                   <div class="card-title-group">
-                    <div style="min-width:0;">
+                    <div style="min-width:0; width:100%;">
                       <div class="card-alias-row">
                         <span class="card-alias" title="${escapeHtml(ag.alias)}">${escapeHtml(ag.alias)}</span>
                         <span class="badge-status cat-NETWORK">Apagado</span>
-                        <button type="button" class="icon-btn js-edit-alias" data-agent-id="${escapeHtml(ag.agent_id)}" title="Renombrar equipo">
+                        <button type="button" class="icon-btn js-edit-alias" data-agent-id="${escapeHtml(ag.agent_id)}" title="Renombrar">
                           <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
                             <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
                           </svg>
                         </button>
                       </div>
-                      <p class="card-submeta">${escapeHtml(ag.hostname)} • Usuario: ${escapeHtml(ag.username)} • IP ${escapeHtml(ag.local_ip || '---')}</p>
+                      <p class="card-submeta">${escapeHtml(ag.hostname)} • ${escapeHtml(ag.username)} • ${escapeHtml(ag.local_ip || '---')}</p>
                     </div>
                   </div>
                 </div>
@@ -332,18 +332,18 @@
                 <div class="card-activity-strip strip-offline">
                   <span class="indicator-dot dot-slate"></span>
                   <div class="strip-copy">
-                    <strong>Equipo desconectado del nodo central</strong>
-                    <span>Última actividad registrada: ${escapeHtml(ag.last_seen_at)}</span>
+                    <strong>Sin conexión</strong>
+                    <span>Visto: ${escapeHtml(ag.last_seen_at)}</span>
                   </div>
                 </div>
               </div>
 
               <div class="card-footer">
                 <button type="button" class="btn btn-pastel-slate" style="flex:1; cursor:not-allowed;" disabled>
-                  <span>Sin transmisión activa</span>
+                  <span>Apagado</span>
                 </button>
-                <button type="button" class="btn btn-pastel-orange js-open-logs" data-agent-id="${escapeHtml(ag.agent_id)}" title="Ver bitácora histórica de este equipo">
-                  <span>Ver Bitácora</span>
+                <button type="button" class="btn btn-pastel-orange js-open-logs" data-agent-id="${escapeHtml(ag.agent_id)}">
+                  <span>Bitácora</span>
                 </button>
               </div>
             </article>
@@ -360,17 +360,17 @@
             <div>
               <div class="card-header">
                 <div class="card-title-group">
-                  <div style="min-width:0;">
+                  <div style="min-width:0; width:100%;">
                     <div class="card-alias-row">
                       <span class="card-alias" title="${escapeHtml(ag.alias)}">${escapeHtml(ag.alias)}</span>
                       <span class="badge-status ${meta.badgeClass}">${escapeHtml(meta.label)}</span>
-                      <button type="button" class="icon-btn js-edit-alias" data-agent-id="${escapeHtml(ag.agent_id)}" title="Renombrar equipo">
+                      <button type="button" class="icon-btn js-edit-alias" data-agent-id="${escapeHtml(ag.agent_id)}" title="Renombrar">
                         <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
                           <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
                         </svg>
                       </button>
                     </div>
-                    <p class="card-submeta">${escapeHtml(ag.hostname)} • ${escapeHtml(ag.username)} • ${monCount} Monitor${monCount > 1 ? 'es' : ''} • IP ${escapeHtml(ag.local_ip || '---')}</p>
+                    <p class="card-submeta">${escapeHtml(ag.hostname)} • ${escapeHtml(ag.username)} • ${monCount}M • ${escapeHtml(ag.local_ip || '---')}</p>
                   </div>
                 </div>
               </div>
@@ -378,25 +378,25 @@
               <div class="card-activity-strip">
                 <span class="indicator-dot ${meta.dotClass}"></span>
                 <div class="strip-copy">
-                  <strong>Ventana en foco: ${escapeHtml(ag.active_window || 'Escritorio')}</strong>
-                  <span>${escapeHtml(formatIdleTime(ag.idle_seconds))} • Sesión silenciosa lista</span>
+                  <strong>${escapeHtml(ag.active_window || 'Escritorio')}</strong>
+                  <span>${escapeHtml(formatIdleTime(ag.idle_seconds))}</span>
                 </div>
               </div>
 
               <div class="card-preview js-open-viewer" data-agent-id="${escapeHtml(ag.agent_id)}">
-                ${thumbSrc ? `<img src="${thumbSrc}" alt="Vista previa de ${escapeHtml(ag.alias)}" />` : ''}
+                ${thumbSrc ? `<img src="${thumbSrc}" alt="${escapeHtml(ag.alias)}" />` : ''}
               </div>
             </div>
 
             <div class="card-footer">
               <button type="button" class="btn btn-pastel-blue js-open-viewer" style="flex:1.2;" data-agent-id="${escapeHtml(ag.agent_id)}">
-                <span>Vista en Vivo</span>
+                <span>Ver</span>
               </button>
-              <button type="button" class="btn btn-pastel-green js-open-chat" style="flex:1;" data-agent-id="${escapeHtml(ag.agent_id)}" title="Abrir visor y enviar mensaje directo">
-                <span>Mensaje</span>
+              <button type="button" class="btn btn-pastel-green js-open-chat" style="flex:1;" data-agent-id="${escapeHtml(ag.agent_id)}">
+                <span>Chat</span>
               </button>
-              <button type="button" class="btn btn-pastel-orange js-open-logs" style="flex:1;" data-agent-id="${escapeHtml(ag.agent_id)}" title="Ver bitácora de logs de este equipo">
-                <span>Bitácora</span>
+              <button type="button" class="btn btn-pastel-orange js-open-logs" style="flex:1;" data-agent-id="${escapeHtml(ag.agent_id)}">
+                <span>Logs</span>
               </button>
             </div>
           </article>
@@ -556,7 +556,7 @@
     const meta = getStatusMeta(agent.activity_status, agent.idle_seconds);
     viewerStatusDot.className = `indicator-dot ${meta.dotClass}`;
     viewerDeviceAlias.textContent = agent.alias;
-    viewerActiveWindow.textContent = `Ventana activa: ${agent.active_window || 'Escritorio'}`;
+    viewerActiveWindow.textContent = agent.active_window || 'Escritorio';
     tabViewerLabel.textContent = `Visor: ${agent.alias}`;
   }
 
@@ -605,7 +605,7 @@
       if (list.length === 0) {
         chatMessagesList.innerHTML = `
           <div class="chat-empty-state">
-            No hay mensajes en esta sesión. Mientras no envíes un mensaje, el empleado no verá ninguna ventana de chat.
+            Sin mensajes aún.
           </div>
         `;
         return;
