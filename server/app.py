@@ -390,30 +390,36 @@ def generate_install_readme(server_url: str, alias: str = "") -> str:
     alias_line = alias.strip() if alias.strip() else "(Automático según nombre de usuario y equipo)"
     return (
         "====================================================================\r\n"
-        "  JOB-Monitor — Paquete Instalador de Agente Corporativo (Windows)\r\n"
+        "  JOB-Monitor — Paquete Instalador de Agente (Windows & macOS)\r\n"
         "====================================================================\r\n\r\n"
         f"Servidor configurado : {server_url}\r\n"
         f"Alias preconfigurado : {alias_line}\r\n\r\n"
-        "REQUISITOS PREVIOS EN LA PC WINDOWS:\r\n"
-        "1. Tener instalado Python 3.10 o superior desde https://www.python.org/downloads/\r\n"
-        "   (marcando la casilla 'Add python.exe to PATH' durante la instalación).\r\n\r\n"
-        "PASOS DE INSTALACIÓN:\r\n"
-        "1. Extrae todos los archivos de este ZIP en una carpeta temporal.\r\n"
-        "2. Haz clic derecho sobre 'install_windows.bat' y selecciona\r\n"
+        "--------------------------------------------------------------------\r\n"
+        "OPCION A — INSTALACION EN WINDOWS:\r\n"
+        "--------------------------------------------------------------------\r\n"
+        "1. Tener instalado Python 3.10+ (marcando 'Add python.exe to PATH').\r\n"
+        "2. Extrae este ZIP y haz clic derecho en 'install_windows.bat' ->\r\n"
         "   'Ejecutar como administrador' (o doble clic).\r\n"
-        "3. El instalador copiará el agente a C:\\ProgramData\\MonitoreoEmpresa,\r\n"
-        "   instalará las librerías necesarias, registrará el inicio automático\r\n"
-        "   con pythonw.exe y conectará el equipo de inmediato al panel.\r\n\r\n"
-        "DESINSTALACIÓN:\r\n"
-        "- Ejecuta 'uninstall_windows.bat' para detener el agente y eliminar\r\n"
-        "  la tarea programada y los archivos del equipo.\r\n"
+        "3. Instala en C:\\ProgramData\\MonitoreoEmpresa con auto-arranque\r\n"
+        "   y Watchdog en el Programador de Tareas cada 2 minutos.\r\n"
+        "- Para desinstalar en Windows: ejecuta 'uninstall_windows.bat'.\r\n\r\n"
+        "--------------------------------------------------------------------\r\n"
+        "OPCION B — INSTALACION EN MACOS:\r\n"
+        "--------------------------------------------------------------------\r\n"
+        "1. Extrae este ZIP y haz doble clic en 'install_macos.command'\r\n"
+        "   (o ejecuta en Terminal: bash install_macos.command).\r\n"
+        "2. Instala en ~/.local/share/MonitoreoEmpresa y registra un\r\n"
+        "   LaunchAgent nativo (KeepAlive=true) como Watchdog automático.\r\n"
+        "3. Acepta los permisos de Grabación de Pantalla y Accesibilidad\r\n"
+        "   cuando macOS los solicite.\r\n"
+        "- Para desinstalar en macOS: ejecuta 'uninstall_macos.command'.\r\n"
     )
 
 
 def build_agent_package_zip(server_url: str, alias: str = "") -> bytes:
     """
     Mini-Función A2: Empaqueta en memoria (ZIP) el agente, dependencias,
-    config_agent.json preconfigurado y scripts de instalación para Windows.
+    config_agent.json preconfigurado y scripts de instalación para Windows y macOS.
     """
     agent_dir = config.PROJECT_ROOT / "agent"
     cfg_payload = generate_agent_config_payload(server_url=server_url, alias=alias)
@@ -424,10 +430,23 @@ def build_agent_package_zip(server_url: str, alias: str = "") -> bytes:
     folder_prefix = "JOB-Monitor-Agent"
 
     with zipfile.ZipFile(mem_zip, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for fname in ("agent.py", "requirements-agent.txt", "install_windows.bat", "uninstall_windows.bat"):
+        for fname in (
+            "agent.py",
+            "requirements-agent.txt",
+            "install_windows.bat",
+            "uninstall_windows.bat",
+            "install_macos.command",
+            "uninstall_macos.command",
+        ):
             fpath = agent_dir / fname
             if fpath.exists():
-                zf.write(fpath, arcname=f"{folder_prefix}/{fname}")
+                zinfo = zipfile.ZipInfo(f"{folder_prefix}/{fname}")
+                zinfo.compress_type = zipfile.ZIP_DEFLATED
+                if fname.endswith(".command") or fname.endswith(".py"):
+                    zinfo.external_attr = (0o100755 & 0xFFFF) << 16
+                else:
+                    zinfo.external_attr = (0o100644 & 0xFFFF) << 16
+                zf.writestr(zinfo, fpath.read_bytes())
 
         zf.writestr(f"{folder_prefix}/config_agent.json", cfg_json_str)
         zf.writestr(f"{folder_prefix}/LEEME_INSTALACION.txt", readme_str)
