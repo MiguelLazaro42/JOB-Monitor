@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import base64
 import ctypes
+import ctypes.util
 import getpass
 import hashlib
 import io
@@ -47,6 +48,38 @@ DEFAULT_TOKEN = os.environ.get("RA_AGENT_TOKEN", "ra-secret-token-2026")
 
 IS_WINDOWS = platform.system() == "Windows"
 IS_MAC = platform.system() == "Darwin"
+
+
+def hide_macos_dock_icon():
+    """
+    Oculta completamente el ícono de Python del Dock y del selector Cmd+Tab en macOS
+    (modo agente en segundo plano / LSUIElement equivalente en tiempo de ejecución).
+    """
+    if not IS_MAC:
+        return
+    try:
+        import AppKit
+        app = AppKit.NSApplication.sharedApplication()
+        # NSApplicationActivationPolicyAccessory (1) oculta del Dock y la barra de menús
+        app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+    except Exception:
+        pass
+    try:
+        lib_path = ctypes.util.find_library("ApplicationServices")
+        if lib_path:
+            app_services = ctypes.cdll.LoadLibrary(lib_path)
+
+            class ProcessSerialNumber(ctypes.Structure):
+                _fields_ = [("highLongOfPSN", ctypes.c_uint32), ("lowLongOfPSN", ctypes.c_uint32)]
+
+            psn = ProcessSerialNumber(0, 2)  # kCurrentProcess = 2
+            # kProcessTransformToUIElementApplication = 4
+            app_services.TransformProcessType(ctypes.byref(psn), 4)
+    except Exception:
+        pass
+
+
+hide_macos_dock_icon()
 
 # 1. Corrección obligatoria de Escalado DPI en Windows (125% / 150% / Multi-monitor)
 if IS_WINDOWS:
@@ -509,6 +542,7 @@ class SilentRemoteAgent:
 
         self.mouse = MouseController()
         self.keyboard = KeyboardController()
+        hide_macos_dock_icon()
 
         self.streaming: bool = False
         self.current_monitor: int = 1
