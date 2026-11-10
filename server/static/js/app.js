@@ -311,38 +311,49 @@
         if (ag.is_offline_card) {
           return `
             <article class="agent-card card-offline-minimal" data-agent-id="${escapeHtml(ag.agent_id)}">
-              <div>
-                <div class="card-header">
-                  <div class="card-title-group">
-                    <div style="min-width:0; width:100%;">
-                      <div class="card-alias-row">
-                        <span class="card-alias" title="${escapeHtml(ag.alias)}">${escapeHtml(ag.alias)}</span>
-                        <span class="badge-status cat-NETWORK">Apagado</span>
-                        <button type="button" class="icon-btn js-edit-alias" data-agent-id="${escapeHtml(ag.agent_id)}" title="Renombrar">
-                          <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                            <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-                          </svg>
-                        </button>
-                      </div>
-                      <p class="card-submeta">${escapeHtml(ag.hostname)} • ${escapeHtml(ag.username)} • ${escapeHtml(ag.local_ip || '---')}</p>
-                    </div>
+              <div class="card-screen card-screen-offline">
+                <div class="screen-top-badges">
+                  <span class="badge-status badge-offline-overlay">
+                    <span class="indicator-dot dot-slate"></span>
+                    Apagado
+                  </span>
+                </div>
+                <div class="screen-offline-placeholder">
+                  <svg class="icon-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                    <rect x="2" y="3" width="20" height="14" rx="2"/>
+                    <line x1="8" y1="21" x2="16" y2="21"/>
+                    <line x1="12" y1="17" x2="12" y2="21"/>
+                  </svg>
+                  <span>Visto: ${escapeHtml(ag.last_seen_at)}</span>
+                </div>
+              </div>
+
+              <div class="card-body">
+                <div class="card-identity-row">
+                  <div class="card-alias-wrap">
+                    <span class="card-alias" title="${escapeHtml(ag.alias)}">${escapeHtml(ag.alias)}</span>
+                    <button type="button" class="icon-btn js-edit-alias" data-agent-id="${escapeHtml(ag.agent_id)}" title="Renombrar">
+                      <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                        <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                      </svg>
+                    </button>
                   </div>
+                  <span class="card-ip-pill">${escapeHtml(ag.local_ip || '---')}</span>
                 </div>
 
-                <div class="card-activity-strip strip-offline">
-                  <span class="indicator-dot dot-slate"></span>
-                  <div class="strip-copy">
-                    <strong>Sin conexión</strong>
-                    <span>Visto: ${escapeHtml(ag.last_seen_at)}</span>
-                  </div>
+                <p class="card-submeta">${escapeHtml(ag.hostname)} • ${escapeHtml(ag.username)}</p>
+
+                <div class="card-focus-bar focus-bar-offline">
+                  <span class="focus-win-text">Sin conexión activa</span>
+                  <span class="focus-time-text">Offline</span>
                 </div>
               </div>
 
               <div class="card-footer">
-                <button type="button" class="btn btn-pastel-slate" style="flex:1; cursor:not-allowed;" disabled>
-                  <span>Apagado</span>
+                <button type="button" class="btn btn-pastel-slate card-btn-main" disabled>
+                  <span>Sin señal</span>
                 </button>
-                <button type="button" class="btn btn-pastel-orange js-open-logs" data-agent-id="${escapeHtml(ag.agent_id)}">
+                <button type="button" class="btn btn-pastel-orange card-btn-side js-open-logs" data-agent-id="${escapeHtml(ag.agent_id)}" title="Ver bitácora">
                   <span>Bitácora</span>
                 </button>
               </div>
@@ -357,45 +368,53 @@
 
         return `
           <article class="agent-card ${cardExtra}" data-agent-id="${escapeHtml(ag.agent_id)}">
-            <div>
-              <div class="card-header">
-                <div class="card-title-group">
-                  <div style="min-width:0; width:100%;">
-                    <div class="card-alias-row">
-                      <span class="card-alias" title="${escapeHtml(ag.alias)}">${escapeHtml(ag.alias)}</span>
-                      <span class="badge-status ${meta.badgeClass}">${escapeHtml(meta.label)}</span>
-                      <button type="button" class="icon-btn js-edit-alias" data-agent-id="${escapeHtml(ag.agent_id)}" title="Renombrar">
-                        <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                          <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-                        </svg>
-                      </button>
-                    </div>
-                    <p class="card-submeta">${escapeHtml(ag.hostname)} • ${escapeHtml(ag.username)} • ${monCount}M • ${escapeHtml(ag.local_ip || '---')}</p>
-                  </div>
+            <div class="card-screen js-open-viewer" data-agent-id="${escapeHtml(ag.agent_id)}" title="Haz clic para abrir pantalla en vivo">
+              ${
+                thumbSrc
+                  ? `<img src="${thumbSrc}" alt="${escapeHtml(ag.alias)}" />`
+                  : `<div class="screen-offline-placeholder"><span>Capturando pantalla...</span></div>`
+              }
+              <div class="screen-top-badges">
+                <span class="badge-status ${meta.badgeClass}">
+                  <span class="indicator-dot ${meta.dotClass}"></span>
+                  ${escapeHtml(meta.label)}
+                </span>
+                <span class="screen-mon-pill">${monCount}M</span>
+              </div>
+            </div>
+
+            <div class="card-body">
+              <div class="card-identity-row">
+                <div class="card-alias-wrap">
+                  <span class="card-alias" title="${escapeHtml(ag.alias)}">${escapeHtml(ag.alias)}</span>
+                  <button type="button" class="icon-btn js-edit-alias" data-agent-id="${escapeHtml(ag.agent_id)}" title="Renombrar">
+                    <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                      <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                    </svg>
+                  </button>
                 </div>
+                <span class="card-ip-pill">${escapeHtml(ag.local_ip || '---')}</span>
               </div>
 
-              <div class="card-activity-strip">
-                <span class="indicator-dot ${meta.dotClass}"></span>
-                <div class="strip-copy">
-                  <strong>${escapeHtml(ag.active_window || 'Escritorio')}</strong>
-                  <span>${escapeHtml(formatIdleTime(ag.idle_seconds))}</span>
-                </div>
-              </div>
+              <p class="card-submeta">${escapeHtml(ag.hostname)} • ${escapeHtml(ag.username)}</p>
 
-              <div class="card-preview js-open-viewer" data-agent-id="${escapeHtml(ag.agent_id)}">
-                ${thumbSrc ? `<img src="${thumbSrc}" alt="${escapeHtml(ag.alias)}" />` : ''}
+              <div class="card-focus-bar">
+                <span class="focus-win-text" title="${escapeHtml(ag.active_window || 'Escritorio')}">${escapeHtml(ag.active_window || 'Escritorio')}</span>
+                <span class="focus-time-text">${escapeHtml(formatIdleTime(ag.idle_seconds))}</span>
               </div>
             </div>
 
             <div class="card-footer">
-              <button type="button" class="btn btn-pastel-blue js-open-viewer" style="flex:1.2;" data-agent-id="${escapeHtml(ag.agent_id)}">
-                <span>Ver</span>
+              <button type="button" class="btn btn-primary card-btn-main js-open-viewer" data-agent-id="${escapeHtml(ag.agent_id)}">
+                <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+                </svg>
+                <span>Conectar</span>
               </button>
-              <button type="button" class="btn btn-pastel-green js-open-chat" style="flex:1;" data-agent-id="${escapeHtml(ag.agent_id)}">
+              <button type="button" class="btn btn-pastel-green card-btn-side js-open-chat" data-agent-id="${escapeHtml(ag.agent_id)}" title="Enviar mensaje directo">
                 <span>Chat</span>
               </button>
-              <button type="button" class="btn btn-pastel-orange js-open-logs" style="flex:1;" data-agent-id="${escapeHtml(ag.agent_id)}">
+              <button type="button" class="btn btn-pastel-orange card-btn-side js-open-logs" data-agent-id="${escapeHtml(ag.agent_id)}" title="Ver bitácora del equipo">
                 <span>Logs</span>
               </button>
             </div>
@@ -656,6 +675,7 @@
 
     state.selectedAgentId = agentId;
     tabViewer.disabled = false;
+    tabViewer.classList.remove('hidden');
     viewer.setAgent(agentId);
 
     updateViewerHeader(agent);
