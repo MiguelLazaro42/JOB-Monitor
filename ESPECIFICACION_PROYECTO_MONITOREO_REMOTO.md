@@ -37,9 +37,9 @@ flowchart LR
         C1["Dashboard Web + App Launcher macOS\n• Vista 1: Muro de Monitoreo en Vivo\n• Vista 2: Visor y Control Remoto\n• Vista 3: Métricas de Actividad del Día\n• Vista 4: Bitácora y Logs de Equipos"]
     end
 
-    A1 -- "Conexión saliente WSS (Puerto 443/5060)\nTelemetría + Frames JPEG + Logs" --> S1
+    A1 -- "Conexión saliente WSS (Puerto 443/5080)\nTelemetría + Frames JPEG + Logs" --> S1
     S1 -- "Comandos de control, archivos, chat y voz" --> A1
-    C1 <== "WebSockets + REST API\nAutenticado por contraseña" ==> S1
+    C1 <== "WebSockets + REST API\nAutenticado por usuario y contraseña" ==> S1
 ```
 
 ### 2.1 Estructura de Directorios del Proyecto
@@ -250,40 +250,41 @@ Para máxima velocidad y mínimo consumo de ancho de banda, cada cuadro de video
 
 ---
 
-## 5. Plan de Desarrollo por Fases (Roadmap para el Desarrollador)
+## 5. Plan de Desarrollo por Fases (Estado Actual: 100% Completado)
 
-Para garantizar entregas limpias y fáciles de probar, el desarrollo debe ejecutarse en **4 fases secuenciales**:
+Para garantizar entregas limpias y fáciles de probar, el desarrollo se ejecutó en **4 fases secuenciales**:
 
-### Fase 1: Núcleo de Conexión Inversa, Visor Multi-Monitor y Control Remoto (MVP)
+### Fase 1: Núcleo de Conexión Inversa, Visor Multi-Monitor y Control Remoto (MVP) — [COMPLETADA]
 * **Alcance:**
   * Configurar el servidor `FastAPI` con endpoints `/ws/agent` y `/ws/admin`.
   * Programar `agent/agent.py` con identificación única (`UUID` + Alias), corrección de escala DPI (`SetProcessDpiAwareness`), captura multi-monitor con `mss` y control de mouse/teclado con `pynput`.
-  * Construir la **Vista 1 (Muro básico)** y **Vista 2 (Visor en vivo)** con selector de monitores y el interruptor **`Modo: Solo Observar`** vs **`Modo: Controlar Mouse y Teclado`**.
+  * Construir la **Vista 1 (Muro básico)** y **Vista 2 (Visor en vivo)** con selector de monitores y el interruptor **`Observar`** vs **`Control Activo`**.
 * **Criterio de Aceptación:**
   * Ejecutar el agente en una PC de prueba, verla aparecer en el panel sin configurar IPs, entrar en silencio sin bloquear su sesión de Windows, alternar entre monitores y mover su mouse/teclado con precisión exacta.
 
-### Fase 2: Motor de Monitoreo Tipo Teams, Base de Datos SQLite y Vista de Logs
+### Fase 2: Motor de Monitoreo Tipo Teams, Base de Datos SQLite y Vista de Logs — [COMPLETADA]
 * **Alcance:**
   * Integrar en el agente la lectura de `GetLastInputInfo` (segundos inactivos) y `GetForegroundWindow` (ventana activa y tiempo de permanencia por programa).
-  * Implementar `server/database.py` con las tablas SQLite (`devices`, `device_logs`, `window_usage_daily`, `daily_activity_summary`).
-  * Construir la **Vista 3 (Métricas de Actividad del Día)** y la **Vista 4 (Bitácora y Logs de Equipos)** con filtros por PC, categoría, buscador y exportación a CSV.
+  * Implementar `server/database.py` con las tablas SQLite (`system_settings`, `devices`, `device_logs`, `window_usage_daily`, `daily_activity_summary`) y zona horaria predeterminada **`America/Merida` (Mérida, Yucatán, México)** configurable en tiempo real desde la barra superior.
+  * Construir la **Vista 3 (Productividad / Métricas del Día)** y la **Vista 4 (Bitácora y Logs de Equipos)** con filtros por PC, categoría, buscador y exportación a CSV.
   * Configurar el semáforo automático (Verde < 3 min, Ámbar 3–10 min, Rojo > 10–15 min).
 * **Criterio de Aceptación:**
   * Dejar una PC sin mover el mouse durante 3 minutos y verificar que la tarjeta cambie a Ámbar/Rojo, que se registre el evento `IDLE` en la pestaña de Logs y que cada cambio de ventana quede registrado con su duración en SQLite.
 
-### Fase 3: Herramientas de Asistencia (Voz Push-to-Talk, Chat Emergente, Portapapeles y Archivos)
+### Fase 3: Herramientas de Asistencia (Voz Push-to-Talk, Chat Emergente, Portapapeles y Archivos) — [COMPLETADA]
 * **Alcance:**
   * Implementar captura de micrófono en el navegador (`audio.js`) enviando paquetes WAV al agente y reproduciéndolos con `winsound.PlaySound(..., SND_MEMORY)`.
   * Implementar la ventana emergente de chat en `tkinter` (`topmost`) que solo se abre en la PC del empleado cuando el administrador envía un mensaje (incluyendo los botones de mensajes rápidos de 1 clic).
   * Implementar sincronización de portapapeles (`pyperclip`) y el endpoint `/api/send-file/{agent_id}` para enviar archivos al Escritorio o Descargas del empleado.
 * **Criterio de Aceptación:**
-  * Presionar "Mantener para Hablar" en la Mac y escuchar la voz en la PC Windows; enviar un mensaje rápido y responder desde la ventana emergente de la PC; transferir un archivo al Escritorio del empleado.
+  * Presionar "Voz" en la Mac y escuchar la voz en la PC Windows; enviar un mensaje rápido y responder desde la ventana emergente de la PC; transferir un archivo al Escritorio del empleado.
 
-### Fase 4: Instalador Silencioso para Windows (`pythonw.exe`), Launcher macOS y Despliegue en VPS
+### Fase 4: Instalador Silencioso para Windows (`pythonw.exe`), Watchdog, Identidad SITAI.MX y Despliegue en VPS — [COMPLETADA]
 * **Alcance:**
-  * Crear el generador de paquetes preconfigurados (`/api/download-agent`) y el script `install_windows.bat` que instala las dependencias y registra la tarea programada con `pythonw.exe` oficial (sin `.exe` no firmados ni `.vbs` para evitar alertas en McAfee).
-  * Crear el launcher nativo para macOS (`Remote Assist.app` y `Abrir Panel.command`) para abrir el panel con un clic desde la Mac.
-  * Preparar `Dockerfile`, `docker-compose.yml` y configuración de proxy inverso con HTTPS/WSS (`wss://`) para el servidor VPS.
+  * Crear el generador de paquetes preconfigurados (`/api/download-agent`) y el script `install_windows.bat` que instala las dependencias y registra el autoinicio (`ONLOGON`) más la tarea de vigilancia **`ServicioMonitoreoCorporativoWatchdog` (`/SC MINUTE /MO 2`)** con `pythonw.exe` oficial y bloqueo de instancia única (`acquire_single_instance_lock`).
+  * Crear el launcher nativo para macOS (`Remote Assist.app` y `Abrir Panel.command`) que auto-inicia servidor y agente local.
+  * Incorporar Login Gate obligatorio (`POST /api/login` + protección de endpoints REST), identidad gráfica oficial **SITAI.MX** (`#133447`, `#f87b02`, `#124fae`, tipografías `Oxanium` + `Helvetica Neue`, logos y favicons oficiales de `sitai.mx`), proporción `16:9` en tarjetas de equipos y barra unificada de filtros KPI.
+  * Preparar `Dockerfile`, `docker-compose.yml` y scripts nativos para VPS multi-proyecto (`deploy/job-monitor.service`, `deploy/nginx-job-monitor.conf`, `deploy/install_vps.sh`) usando puerto interno `5080` y proxy inverso Nginx sobre `80`/`443` (`wss://`).
 * **Criterio de Aceptación:**
-  * Ejecutar `install_windows.bat` en una PC de la empresa con McAfee (excluyendo la carpeta `C:\ProgramData\MonitoreoEmpresa`), reiniciar la PC, y comprobar que el equipo aparece activo en el panel automáticamente sin mostrar ninguna ventana ni alerta al empleado.
+  * Ejecutar `install_windows.bat` en una PC de la empresa con McAfee (excluyendo la carpeta `C:\ProgramData\MonitoreoEmpresa`), reiniciar la PC o cerrar el proceso, y comprobar que el Watchdog lo levanta y reconecta automáticamente sin mostrar ninguna ventana ni alerta al empleado.
 
