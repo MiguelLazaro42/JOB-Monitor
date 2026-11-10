@@ -15,4 +15,10 @@ agent/config_agent.json
 *.lock
 *.pem
 *.key
+*.crt
+*.csr
+*.srl
+*.p12
+certs/
+agent/agent_client.*
 

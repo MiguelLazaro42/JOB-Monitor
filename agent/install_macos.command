@@ -33,6 +33,13 @@ cp -f "$SRC_DIR/requirements-agent.txt" "$INSTALL_DIR/requirements-agent.txt"
 if [ -f "$SRC_DIR/config_agent.json" ]; then
     cp -f "$SRC_DIR/config_agent.json" "$INSTALL_DIR/config_agent.json"
 fi
+if [ -f "$SRC_DIR/agent_client.crt" ]; then
+    cp -f "$SRC_DIR/agent_client.crt" "$INSTALL_DIR/agent_client.crt"
+fi
+if [ -f "$SRC_DIR/agent_client.key" ]; then
+    cp -f "$SRC_DIR/agent_client.key" "$INSTALL_DIR/agent_client.key"
+    chmod 600 "$INSTALL_DIR/agent_client.key"
+fi
 
 echo "[2/4] Configurando entorno virtual e instalando dependencias..."
 if [ ! -d "$INSTALL_DIR/.venv" ]; then
@@ -86,3 +93,4 @@ echo "                 o Accesibilidad para Python, aceptalos en"
 echo "                 Configuracion del Sistema -> Privacidad y Seguridad."
 echo "===================================================================="
 echo ""
+

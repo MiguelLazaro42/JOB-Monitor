@@ -11,6 +11,7 @@ import os
 import platform
 import queue
 import socket
+import ssl
 import struct
 import subprocess
 import tempfile
@@ -901,12 +902,38 @@ class SilentRemoteAgent:
                         pass
                     break
 
+    def _build_ssl_context(self) -> Optional[ssl.SSLContext]:
+        """
+        Micro-Función S2: Construye el contexto TLS para conexiones wss:// y carga
+        automáticamente el Certificado X.509 de Cliente (mTLS) si está presente junto al agente.
+        """
+        if not self.server_url.startswith("wss://"):
+            return None
+        try:
+            import certifi
+            ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            ssl_ctx = ssl.create_default_context()
+
+        cert_name = str(self.cfg.get("mtls_cert") or "agent_client.crt").strip()
+        key_name = str(self.cfg.get("mtls_key") or "agent_client.key").strip()
+        cert_path = BASE_DIR / cert_name
+        key_path = BASE_DIR / key_name
+        if cert_path.exists() and key_path.exists():
+            try:
+                ssl_ctx.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
+            except Exception:
+                pass
+        return ssl_ctx
+
     async def run_forever(self):
         self.loop = asyncio.get_running_loop()
         while True:
             try:
+                ssl_ctx = self._build_ssl_context()
                 async with websockets.connect(
                     self.server_url,
+                    ssl=ssl_ctx,
                     max_size=25 * 1024 * 1024,
                     ping_interval=20,
                     ping_timeout=20,

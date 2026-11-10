@@ -41,6 +41,11 @@ AGENT_TOKEN = os.environ.get("RA_AGENT_TOKEN", "ra-secret-token-2026")
 # Zona horaria oficial por defecto: Mérida, Yucatán, México (America/Merida)
 DEFAULT_TIMEZONE = os.environ.get("RA_TIMEZONE", "America/Merida")
 
+# Directorio de certificados mTLS X.509 (CA y certificados de clientes agente, fuera de Git)
+CERTS_DIR = DATA_DIR / "certs"
+CERTS_DIR.mkdir(parents=True, exist_ok=True)
+REQUIRE_MTLS = os.environ.get("RA_REQUIRE_MTLS", "0") == "1"
+
 # Archivo de persistencia de alias de equipos (Fase 1 -> SQLite en Fase 2)
 ALIASES_FILE = DATA_DIR / "device_aliases.json"
 

@@ -111,6 +111,12 @@ if errorlevel 1 exit /b 1
 if exist "%SCRIPT_DIR%config_agent.json" (
     copy /y "%SCRIPT_DIR%config_agent.json" "%INSTALL_DIR%\config_agent.json" >nul
 )
+if exist "%SCRIPT_DIR%agent_client.crt" (
+    copy /y "%SCRIPT_DIR%agent_client.crt" "%INSTALL_DIR%\agent_client.crt" >nul
+)
+if exist "%SCRIPT_DIR%agent_client.key" (
+    copy /y "%SCRIPT_DIR%agent_client.key" "%INSTALL_DIR%\agent_client.key" >nul
+)
 
 copy /y "%SCRIPT_DIR%requirements-agent.txt" "%INSTALL_DIR%\requirements-agent.txt" >nul
 

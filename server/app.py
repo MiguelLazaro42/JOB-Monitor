@@ -6,6 +6,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import threading
 import time
 import webbrowser
@@ -370,14 +371,91 @@ def normalize_ws_url(raw_url: str, fallback_url: str) -> str:
     return val
 
 
+def ensure_mtls_certificates() -> tuple[Optional[bytes], Optional[bytes]]:
+    """
+    Micro-Función S1: Asegura la existencia de la Autoridad Certificadora Corporativa (SITAI Root CA)
+    y del Certificado X.509 de Cliente (agent_client.crt / agent_client.key) en data/certs/.
+    Nunca se suben a Git; se empaquetan dinámicamente dentro del .ZIP de '+ Agente'.
+    """
+    ca_key = config.CERTS_DIR / "sitai_ca.key"
+    ca_crt = config.CERTS_DIR / "sitai_ca.crt"
+    cli_key = config.CERTS_DIR / "agent_client.key"
+    cli_crt = config.CERTS_DIR / "agent_client.crt"
+    cli_csr = config.CERTS_DIR / "agent_client.csr"
+    ext_cfg = config.CERTS_DIR / "client_ext.cnf"
+
+    try:
+        if not (ca_key.exists() and ca_crt.exists()):
+            subprocess.run(
+                [
+                    "openssl", "req", "-x509", "-newkey", "rsa:4096", "-nodes",
+                    "-keyout", str(ca_key),
+                    "-out", str(ca_crt),
+                    "-days", "3650",
+                    "-subj", "/C=MX/ST=Yucatan/L=Merida/O=SITAI.MX/OU=Security/CN=SITAI.MX JOB-Monitor Root CA",
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            os.chmod(ca_key, 0o600)
+
+        if not (cli_key.exists() and cli_crt.exists()):
+            ext_cfg.write_text(
+                "basicConstraints = CA:FALSE\n"
+                "keyUsage = digitalSignature, keyEncipherment\n"
+                "extendedKeyUsage = clientAuth\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                [
+                    "openssl", "req", "-newkey", "rsa:2048", "-nodes",
+                    "-keyout", str(cli_key),
+                    "-out", str(cli_csr),
+                    "-subj", "/C=MX/ST=Yucatan/L=Merida/O=SITAI.MX/OU=Agents/CN=SITAI-Authorized-Agent",
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            subprocess.run(
+                [
+                    "openssl", "x509", "-req",
+                    "-in", str(cli_csr),
+                    "-CA", str(ca_crt),
+                    "-CAkey", str(ca_key),
+                    "-CAcreateserial",
+                    "-out", str(cli_crt),
+                    "-days", "3650",
+                    "-sha256",
+                    "-extfile", str(ext_cfg),
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            os.chmod(cli_key, 0o600)
+            if cli_csr.exists():
+                cli_csr.unlink()
+
+        return cli_crt.read_bytes(), cli_key.read_bytes()
+    except Exception:
+        if cli_crt.exists() and cli_key.exists():
+            return cli_crt.read_bytes(), cli_key.read_bytes()
+        return None, None
+
+
 def generate_agent_config_payload(server_url: str, alias: str = "", token: str = "") -> dict:
     """
     Mini-Función A1: Genera el diccionario de configuración para config_agent.json.
-    Omite agent_id para que cada PC Windows calcule su propio UUID único de hardware al iniciar.
+    Omite agent_id para que cada PC Windows/Mac calcule su propio UUID único de hardware al iniciar.
+    Incluye referencias al par de llaves X.509 mTLS empaquetado en el .ZIP.
     """
     payload = {
         "server_url": server_url,
         "token": (token or config.AGENT_TOKEN).strip(),
+        "mtls_cert": "agent_client.crt",
+        "mtls_key": "agent_client.key",
     }
     clean_alias = (alias or "").strip()
     if clean_alias:
@@ -450,6 +528,18 @@ def build_agent_package_zip(server_url: str, alias: str = "") -> bytes:
 
         zf.writestr(f"{folder_prefix}/config_agent.json", cfg_json_str)
         zf.writestr(f"{folder_prefix}/LEEME_INSTALACION.txt", readme_str)
+
+        cli_crt_bytes, cli_key_bytes = ensure_mtls_certificates()
+        if cli_crt_bytes and cli_key_bytes:
+            crt_info = zipfile.ZipInfo(f"{folder_prefix}/agent_client.crt")
+            crt_info.compress_type = zipfile.ZIP_DEFLATED
+            crt_info.external_attr = (0o100644 & 0xFFFF) << 16
+            zf.writestr(crt_info, cli_crt_bytes)
+
+            key_info = zipfile.ZipInfo(f"{folder_prefix}/agent_client.key")
+            key_info.compress_type = zipfile.ZIP_DEFLATED
+            key_info.external_attr = (0o100600 & 0xFFFF) << 16
+            zf.writestr(key_info, cli_key_bytes)
 
     mem_zip.seek(0)
     return mem_zip.read()
@@ -648,6 +738,13 @@ async def update_device_alias(request: Request, agent_id: str, body: AliasUpdate
 
 @app.websocket("/ws/agent")
 async def ws_agent_endpoint(websocket: WebSocket):
+    if config.REQUIRE_MTLS:
+        forwarded_proto = websocket.headers.get("x-forwarded-proto", "")
+        client_verify = websocket.headers.get("x-ssl-client-verify", "")
+        if forwarded_proto == "https" and client_verify != "SUCCESS":
+            await websocket.close(code=1008)
+            return
+
     await websocket.accept()
     agent_id: Optional[str] = None
     try:
