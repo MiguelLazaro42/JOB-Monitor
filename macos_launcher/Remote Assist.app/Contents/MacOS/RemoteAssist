@@ -1,0 +1,4 @@
+#!/bin/zsh
+APP_MACOS_DIR="$(cd "$(dirname "$0")" && pwd)"
+LAUNCHER_DIR="$(cd "$APP_MACOS_DIR/../../.." && pwd)"
+exec "$LAUNCHER_DIR/Abrir Panel.command"

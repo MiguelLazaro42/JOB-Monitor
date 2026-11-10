@@ -180,6 +180,61 @@
     </div>
   </div>
 
+  <!-- Modal Generador de Paquete Instalador de Agente Windows (.ZIP) (Fase 4) -->
+  <div id="agent-pkg-modal" class="modal-backdrop hidden">
+    <div class="modal-card modal-card-wide">
+      <div class="modal-header">
+        <div class="brand-badge">
+          <svg class="icon-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+        </div>
+        <div>
+          <h2>Generar Paquete Instalador de Agente (Windows)</h2>
+          <p class="muted-text">Descarga un archivo .ZIP preconfigurado con <code>agent.py</code>, <code>config_agent.json</code> e <code>install_windows.bat</code>.</p>
+        </div>
+      </div>
+
+      <form id="agent-pkg-form" class="modal-body">
+        <div>
+          <label for="pkg-alias-input" class="input-label">Nombre / Alias del equipo (Opcional)</label>
+          <input id="pkg-alias-input" type="text" class="text-input" placeholder="Ej. PC de Contabilidad - Laura (o déjalo vacío para nombre automático)" />
+        </div>
+
+        <div>
+          <label for="pkg-server-url-input" class="input-label">URL WebSocket del Servidor Central</label>
+          <input id="pkg-server-url-input" type="text" class="text-input" value="ws://{{ lan_ip }}:{{ port }}/ws/agent" required />
+          <p class="muted-text" style="margin-top:6px;">
+            En red local usa <code>ws://{{ lan_ip }}:{{ port }}/ws/agent</code>. Si usas un VPS o dominio externo usa <code>ws://TU_IP_VPS:{{ port }}/ws/agent</code> o <code>wss://tu-dominio.com/ws/agent</code>.
+          </p>
+        </div>
+
+        <div class="drawer-section" style="margin-top:4px;">
+          <span class="input-label">Contenido incluido en el paquete .ZIP:</span>
+          <p class="muted-text" style="line-height:1.5;">
+            • <code>agent.py</code> + <code>requirements-agent.txt</code> + <code>config_agent.json</code> preconfigurado.<br/>
+            • <code>install_windows.bat</code>: instala en <code>C:\ProgramData\MonitoreoEmpresa</code> y registra inicio automático con <code>pythonw.exe</code>.<br/>
+            • <code>uninstall_windows.bat</code> y guía <code>LEEME_INSTALACION.txt</code>.
+          </p>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" id="close-agent-pkg-btn" class="btn btn-secondary">Cerrar</button>
+          <button type="submit" class="btn btn-primary">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            <span>Descargar Paquete (.ZIP)</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- Barra Superior Principal -->
   <header class="topbar">
     <div class="topbar-left">
@@ -198,11 +253,20 @@
             <span id="ws-status-text">Conectando...</span>
           </span>
         </div>
-        <p class="muted-text">Servidor activo en <code>{{ lan_ip }}:{{ port }}</code> • Fase 3 (Monitoreo + SQLite + Voz, Chat, Portapapeles y Archivos)</p>
+        <p class="muted-text">Servidor activo en <code>{{ lan_ip }}:{{ port }}</code> • Sistema Completo (Fases 1–4 Activas)</p>
       </div>
     </div>
 
-    <div class="topbar-right">
+    <div class="topbar-right" style="display:flex; align-items:center; gap:10px;">
+      <button id="open-agent-pkg-btn" type="button" class="btn btn-secondary btn-sm" title="Descargar instalador preconfigurado para PC Windows">
+        <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        <span>Instalador Agente (.ZIP)</span>
+      </button>
+
       <div class="nav-tabs">
         <button id="tab-wall" class="nav-tab active" type="button">
           <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

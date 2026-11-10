@@ -1173,5 +1173,53 @@
     });
   }
 
+  // Eventos de Fase 4: Generador de Paquete Instalador (.ZIP) para Windows
+  const openAgentPkgBtn = document.getElementById('open-agent-pkg-btn');
+  const agentPkgModal = document.getElementById('agent-pkg-modal');
+  const closeAgentPkgBtn = document.getElementById('close-agent-pkg-btn');
+  const agentPkgForm = document.getElementById('agent-pkg-form');
+  const pkgAliasInput = document.getElementById('pkg-alias-input');
+  const pkgServerUrlInput = document.getElementById('pkg-server-url-input');
+
+  if (openAgentPkgBtn && agentPkgModal) {
+    openAgentPkgBtn.addEventListener('click', async () => {
+      agentPkgModal.classList.remove('hidden');
+      try {
+        const res = await fetch('/api/agent-package-info');
+        const info = await res.json();
+        if (info && info.default_ws_url && pkgServerUrlInput && !pkgServerUrlInput.dataset.userEdited) {
+          pkgServerUrlInput.value = info.default_ws_url;
+        }
+      } catch (_) {}
+    });
+  }
+
+  if (pkgServerUrlInput) {
+    pkgServerUrlInput.addEventListener('input', () => {
+      pkgServerUrlInput.dataset.userEdited = 'true';
+    });
+  }
+
+  if (closeAgentPkgBtn && agentPkgModal) {
+    closeAgentPkgBtn.addEventListener('click', () => {
+      agentPkgModal.classList.add('hidden');
+    });
+  }
+
+  if (agentPkgForm) {
+    agentPkgForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const alias = pkgAliasInput ? pkgAliasInput.value.trim() : '';
+      const serverUrl = pkgServerUrlInput ? pkgServerUrlInput.value.trim() : '';
+      const params = new URLSearchParams();
+      if (serverUrl) params.set('server_url', serverUrl);
+      if (alias) params.set('alias', alias);
+      window.location.href = `/api/download-agent?${params.toString()}`;
+      if (agentPkgModal) {
+        setTimeout(() => agentPkgModal.classList.add('hidden'), 400);
+      }
+    });
+  }
+
   connectAdminWebSocket();
 })();

@@ -1,0 +1,14 @@
+services:
+  job-monitor-server:
+    build: .
+    container_name: job-monitor-server
+    restart: unless-stopped
+    ports:
+      - "${RA_PORT:-5080}:5080"
+    environment:
+      - RA_HOST=0.0.0.0
+      - RA_PORT=5080
+      - RA_ADMIN_PASS=${RA_ADMIN_PASS:-admin123}
+      - RA_AGENT_TOKEN=${RA_AGENT_TOKEN:-ra-secret-token-2026}
+    volumes:
+      - ./data:/app/data

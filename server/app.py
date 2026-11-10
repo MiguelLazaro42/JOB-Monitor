@@ -1,12 +1,15 @@
 import argparse
 import asyncio
 import base64
+import io
 import json
 import os
+import re
 import socket
 import threading
 import time
 import webbrowser
+import zipfile
 from typing import Dict, List, Optional, Set
 
 import uvicorn
@@ -260,11 +263,159 @@ async def index(request: Request):
 async def health():
     return {
         "ok": True,
-        "phase": 3,
+        "phase": 4,
         "agents_online": len(hub.agents),
         "lan_ip": get_local_lan_ip(),
         "port": config.PORT,
     }
+
+
+# ==============================================================================
+# FASE 4 - BLOQUE A: MINI-FUNCIONES DE EMPAQUETADO DINÁMICO DEL AGENTE (.ZIP)
+# ==============================================================================
+def resolve_default_ws_url(request: Request) -> str:
+    """Detecta la URL WebSocket ideal para las PCs cliente según el host o IP LAN."""
+    lan_ip = get_local_lan_ip()
+    host_header = request.headers.get("host", f"{lan_ip}:{config.PORT}")
+    if host_header.startswith("127.0.0.1") or host_header.startswith("localhost"):
+        host_header = f"{lan_ip}:{config.PORT}"
+    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    ws_scheme = "wss" if forwarded_proto == "https" else "ws"
+    return f"{ws_scheme}://{host_header}/ws/agent"
+
+
+def normalize_ws_url(raw_url: str, fallback_url: str) -> str:
+    """Normaliza cualquier URL o IP ingresada por el administrador a ws(s)://.../ws/agent."""
+    val = (raw_url or "").strip()
+    if not val:
+        return fallback_url
+    if val.startswith("http://"):
+        val = "ws://" + val[len("http://"):]
+    elif val.startswith("https://"):
+        val = "wss://" + val[len("https://"):]
+    elif not val.startswith("ws://") and not val.startswith("wss://"):
+        val = "ws://" + val
+    val = val.rstrip("/")
+    if not val.endswith("/ws/agent"):
+        val = val + "/ws/agent"
+    return val
+
+
+def generate_agent_config_payload(server_url: str, alias: str = "", token: str = "") -> dict:
+    """
+    Mini-Función A1: Genera el diccionario de configuración para config_agent.json.
+    Omite agent_id para que cada PC Windows calcule su propio UUID único de hardware al iniciar.
+    """
+    payload = {
+        "server_url": server_url,
+        "token": (token or config.AGENT_TOKEN).strip(),
+    }
+    clean_alias = (alias or "").strip()
+    if clean_alias:
+        payload["alias"] = clean_alias
+    return payload
+
+
+def generate_install_readme(server_url: str, alias: str = "") -> str:
+    """Genera las instrucciones de instalación incluidas dentro del paquete .zip."""
+    alias_line = alias.strip() if alias.strip() else "(Automático según nombre de usuario y equipo)"
+    return (
+        "====================================================================\r\n"
+        "  JOB-Monitor — Paquete Instalador de Agente Corporativo (Windows)\r\n"
+        "====================================================================\r\n\r\n"
+        f"Servidor configurado : {server_url}\r\n"
+        f"Alias preconfigurado : {alias_line}\r\n\r\n"
+        "REQUISITOS PREVIOS EN LA PC WINDOWS:\r\n"
+        "1. Tener instalado Python 3.10 o superior desde https://www.python.org/downloads/\r\n"
+        "   (marcando la casilla 'Add python.exe to PATH' durante la instalación).\r\n\r\n"
+        "PASOS DE INSTALACIÓN:\r\n"
+        "1. Extrae todos los archivos de este ZIP en una carpeta temporal.\r\n"
+        "2. Haz clic derecho sobre 'install_windows.bat' y selecciona\r\n"
+        "   'Ejecutar como administrador' (o doble clic).\r\n"
+        "3. El instalador copiará el agente a C:\\ProgramData\\MonitoreoEmpresa,\r\n"
+        "   instalará las librerías necesarias, registrará el inicio automático\r\n"
+        "   con pythonw.exe y conectará el equipo de inmediato al panel.\r\n\r\n"
+        "DESINSTALACIÓN:\r\n"
+        "- Ejecuta 'uninstall_windows.bat' para detener el agente y eliminar\r\n"
+        "  la tarea programada y los archivos del equipo.\r\n"
+    )
+
+
+def build_agent_package_zip(server_url: str, alias: str = "") -> bytes:
+    """
+    Mini-Función A2: Empaqueta en memoria (ZIP) el agente, dependencias,
+    config_agent.json preconfigurado y scripts de instalación para Windows.
+    """
+    agent_dir = config.PROJECT_ROOT / "agent"
+    cfg_payload = generate_agent_config_payload(server_url=server_url, alias=alias)
+    cfg_json_str = json.dumps(cfg_payload, indent=2, ensure_ascii=False)
+    readme_str = generate_install_readme(server_url=server_url, alias=alias)
+
+    mem_zip = io.BytesIO()
+    folder_prefix = "JOB-Monitor-Agent"
+
+    with zipfile.ZipFile(mem_zip, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for fname in ("agent.py", "requirements-agent.txt", "install_windows.bat", "uninstall_windows.bat"):
+            fpath = agent_dir / fname
+            if fpath.exists():
+                zf.write(fpath, arcname=f"{folder_prefix}/{fname}")
+
+        zf.writestr(f"{folder_prefix}/config_agent.json", cfg_json_str)
+        zf.writestr(f"{folder_prefix}/LEEME_INSTALACION.txt", readme_str)
+
+    mem_zip.seek(0)
+    return mem_zip.read()
+
+
+@app.get("/api/agent-package-info")
+async def get_agent_package_info(request: Request):
+    """Devuelve la URL WebSocket sugerida para prellenar el modal de descarga de agente."""
+    return {
+        "ok": True,
+        "default_ws_url": resolve_default_ws_url(request),
+        "lan_ip": get_local_lan_ip(),
+        "port": config.PORT,
+    }
+
+
+@app.get("/api/download-agent")
+async def download_agent_package(
+    request: Request,
+    server_url: Optional[str] = Query(None, description="URL WebSocket del servidor central"),
+    alias: Optional[str] = Query("", description="Alias opcional preconfigurado para la PC"),
+):
+    """
+    Mini-Función A3: Endpoint HTTP que construye y descarga el paquete .zip
+    preconfigurado para instalar el agente en Windows.
+    """
+    default_ws = resolve_default_ws_url(request)
+    final_ws_url = normalize_ws_url(server_url or "", default_ws)
+    clean_alias = (alias or "").strip()
+
+    zip_bytes = build_agent_package_zip(server_url=final_ws_url, alias=clean_alias)
+
+    safe_slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", clean_alias).strip("-") if clean_alias else "Windows"
+    filename = f"JOB-Monitor-Agent-{safe_slug}.zip"
+
+    alias_info = f"con alias '{clean_alias}'" if clean_alias else "con alias automático"
+    log_entry = db.add_log(
+        agent_id="SYSTEM-SERVER",
+        alias="Consola de Administración",
+        hostname="Servidor Central",
+        username="Administrador",
+        category="AUDIT",
+        message=f"Paquete instalador '{filename}' generado ({alias_info} -> {final_ws_url})",
+    )
+    await hub.broadcast_new_log(log_entry)
+
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @app.get("/api/chat/{agent_id}")
