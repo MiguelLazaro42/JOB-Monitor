@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=20261111-v12" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261111-v13" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -445,10 +445,9 @@
     </div>
   </div>
 
-  <!-- Barra Superior Corporativa SITAI (#133447) en 3 Zonas Balanceadas -->
+  <!-- Barra Superior Minimalista Ejecutiva SITAI -->
   <header class="topbar">
     <div class="topbar-inner">
-      <!-- Zona 1: Identidad de Marca + Rol/Tenant Activo -->
       <div class="topbar-left">
         <div class="sitai-nav-brand">
           <img
@@ -457,14 +456,11 @@
             alt="SITAI.MX"
             onerror="this.onerror=null;this.src='/static/img/logo-dark.png';"
           />
-          <div class="brand-meta-stack">
-            <span class="sitai-nav-sub">JOB-MONITOR</span>
-            <span id="active-user-badge" class="user-role-chip">SUPER ADMIN</span>
-          </div>
+          <span class="nav-brand-divider" aria-hidden="true"></span>
+          <span class="sitai-nav-product">Monitor</span>
         </div>
       </div>
 
-      <!-- Zona 2: Dock Central de Navegación Segmentada -->
       <nav class="nav-tabs" aria-label="Navegación principal">
         <button id="tab-wall" class="nav-tab active" type="button">
           <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -482,15 +478,14 @@
         </button>
         <button id="tab-logs" class="nav-tab" type="button">
           <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-            <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+            <circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/>
           </svg>
           <span>Bitácora</span>
         </button>
         <button id="tab-settings" class="nav-tab" type="button">
           <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
           </svg>
           <span>Ajustes</span>
         </button>
@@ -500,40 +495,39 @@
         </button>
       </nav>
 
-      <!-- Zona 3: Telemetría del Sistema + Acciones Rápidas -->
       <div class="topbar-right">
-        <div class="topbar-telemetry-group">
-          <div class="tz-clock-pill" title="Zona horaria oficial y reloj en tiempo real">
-            <span id="ws-status-pill" class="status-pill status-connecting" title="Estado del enlace WebSocket">
-              <span class="status-dot"></span>
-              <span id="ws-status-text" class="sr-only">Conectando</span>
-            </span>
-            <span id="live-clock-text" class="tz-clock-time">--:--</span>
-            <span class="tz-sep">|</span>
-            <select id="timezone-select" class="tz-select" aria-label="Configurar zona horaria">
-              <option value="America/Merida" selected>Mérida</option>
-              <option value="America/Mexico_City">CDMX</option>
-              <option value="America/Cancun">Cancún</option>
-              <option value="America/Monterrey">Monterrey</option>
-              <option value="America/Tijuana">Tijuana</option>
-              <option value="UTC">UTC</option>
-            </select>
-          </div>
+        <div class="tz-clock-pill" title="Estado en tiempo real y zona horaria">
+          <span id="ws-status-pill" class="status-pill status-connecting" title="Estado del enlace WebSocket">
+            <span class="status-dot"></span>
+            <span id="ws-status-text" class="sr-only">Conectando</span>
+          </span>
+          <span id="live-clock-text" class="tz-clock-time">--:--</span>
+          <span class="tz-sep">·</span>
+          <select id="timezone-select" class="tz-select" aria-label="Configurar zona horaria">
+            <option value="America/Merida" selected>Mérida</option>
+            <option value="America/Mexico_City">CDMX</option>
+            <option value="America/Cancun">Cancún</option>
+            <option value="America/Monterrey">Monterrey</option>
+            <option value="America/Tijuana">Tijuana</option>
+            <option value="UTC">UTC</option>
+          </select>
         </div>
 
-        <button id="open-agent-pkg-btn" type="button" class="btn btn-pill-primary btn-sm" title="Descargar paquete instalador Windows / macOS (.ZIP)">
+        <button id="open-agent-pkg-btn" type="button" class="btn btn-pill-primary btn-sm" title="Vincular nuevo equipo Windows o macOS">
           <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
           <span>Agente</span>
         </button>
 
-        <button id="logout-btn" type="button" class="btn btn-ghost-light btn-sm" title="Cerrar sesión">
-          <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
-          </svg>
-          <span>Salir</span>
-        </button>
+        <div class="topbar-account-pill">
+          <span id="active-user-badge" class="user-role-chip">SUPER ADMIN</span>
+          <button id="logout-btn" type="button" class="topbar-logout-icon" title="Cerrar sesión" aria-label="Cerrar sesión">
+            <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
   </header>
@@ -931,67 +925,64 @@
   <!-- VISTA 4: BITÁCORA Y LOGS DE EQUIPOS (SQLITE EN TIEMPO REAL)             -->
   <!-- ======================================================================= -->
   <section id="view-logs" class="main-container hidden">
-    <div class="panel-card">
-      <div class="panel-card-header">
-        <div style="display:flex; align-items:center; gap:10px;">
-          <h2>Bitácora de Eventos</h2>
+    <div class="panel-card logs-panel-card">
+      <div class="panel-card-header logs-panel-header">
+        <div class="logs-title-wrap">
+          <h2>Bitácora de Actividad</h2>
           <span id="logs-counter-badge" class="badge-pill muted-badge">0 eventos</span>
         </div>
         <div class="panel-controls">
           <div class="control-select-wrap">
-            <select id="log-device-filter" class="toolbar-select">
+            <select id="log-device-filter" class="toolbar-select" aria-label="Filtrar por equipo">
               <option value="ALL">Todos los equipos</option>
             </select>
           </div>
 
-          <div class="control-select-wrap">
-            <select id="log-category-filter" class="toolbar-select">
-              <option value="ALL">Todas las categorías</option>
-              <option value="KEYBOARD">Teclado / Redacción</option>
-              <option value="IDLE">Inactividad</option>
-              <option value="RESUME">Regreso</option>
-              <option value="WINDOW">Ventana</option>
-              <option value="NETWORK">Red</option>
-              <option value="AUDIT">Soporte</option>
-            </select>
-          </div>
+          <select id="log-category-filter" class="hidden" aria-hidden="true">
+            <option value="ALL">Todas las categorías</option>
+            <option value="KEYBOARD">Teclado / Redacción</option>
+            <option value="IDLE">Inactividad</option>
+            <option value="RESUME">Regreso</option>
+            <option value="WINDOW">Ventana</option>
+            <option value="NETWORK">Red</option>
+            <option value="AUDIT">Soporte</option>
+          </select>
 
           <div class="search-box">
             <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
             </svg>
-            <input id="log-search-input" type="text" placeholder="Filtrar eventos o palabras..." />
+            <input id="log-search-input" type="text" placeholder="Buscar app, texto o evento..." />
           </div>
 
-          <button id="group-logs-toggle-btn" type="button" class="btn btn-secondary btn-sm active" title="Agrupar eventos repetitivos consecutivos para una bitácora limpia y organizada">
+          <button id="group-logs-toggle-btn" type="button" class="btn btn-secondary btn-sm active" title="Agrupar eventos repetitivos consecutivos">
             <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M4 6h16M4 12h16M4 18h16"/>
             </svg>
-            <span id="group-logs-label">Agrupar repetidos</span>
+            <span id="group-logs-label">Agrupar</span>
           </button>
 
-          <button id="export-csv-btn" type="button" class="btn btn-secondary btn-sm">
+          <button id="export-csv-btn" type="button" class="btn btn-secondary btn-sm" title="Descargar eventos actuales en formato CSV">
+            <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
             <span>CSV</span>
           </button>
         </div>
       </div>
 
-      <div class="table-wrap">
-        <table class="data-table logs-table">
-          <thead>
-            <tr>
-              <th style="width: 155px;">Hora</th>
-              <th style="width: 200px;">Equipo</th>
-              <th style="width: 120px;">Tipo</th>
-              <th>Evento / Evidencia Visual</th>
-            </tr>
-          </thead>
-          <tbody id="logs-tbody">
-            <tr>
-              <td colspan="4" class="empty-row">Sin eventos.</td>
-            </tr>
-          </tbody>
-        </table>
+      <div id="log-category-chips" class="logs-chip-bar" role="tablist" aria-label="Categorías de bitácora">
+        <button type="button" class="log-cat-chip active" data-cat="ALL">Todos</button>
+        <button type="button" class="log-cat-chip" data-cat="WINDOW">Apps y Pestañas</button>
+        <button type="button" class="log-cat-chip" data-cat="KEYBOARD">Teclado</button>
+        <button type="button" class="log-cat-chip" data-cat="IDLE">Inactividad</button>
+        <button type="button" class="log-cat-chip" data-cat="RESUME">Regresos</button>
+        <button type="button" class="log-cat-chip" data-cat="AUDIT">Soporte y Archivos</button>
+        <button type="button" class="log-cat-chip" data-cat="NETWORK">Conexiones</button>
+      </div>
+
+      <div id="logs-tbody" class="logs-timeline-feed">
+        <div class="logs-empty-feed">Sin eventos registrados para este filtro.</div>
       </div>
     </div>
   </section>
@@ -1241,6 +1232,6 @@
 
   <script src="/static/js/audio.js?v=20261111-v9"></script>
   <script src="/static/js/viewer.js?v=20261111-v9"></script>
-  <script src="/static/js/app.js?v=20261111-v12"></script>
+  <script src="/static/js/app.js?v=20261111-v13"></script>
 </body>
 </html>

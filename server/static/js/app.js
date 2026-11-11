@@ -684,21 +684,26 @@
         }
 
         const tenantTagHtml = showTenantPill
-          ? ` • <strong style="color:#0284c7;">${escapeHtml(ag.tenant_name || ag.tenant_id || 'Principal')}</strong>`
+          ? ` <span class="card-tenant-chip">${escapeHtml(ag.tenant_name || ag.tenant_id || 'Principal')}</span>`
           : '';
-        const manageIconsHtml = showManageBtns
-          ? `
-            <button type="button" class="icon-btn js-edit-alias" data-agent-id="${escapeHtml(ag.agent_id)}" title="Renombrar sesión actual">
-              <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-              </svg>
-            </button>
-            <button type="button" class="icon-btn icon-btn-danger js-unlink-device" data-agent-id="${escapeHtml(ag.agent_id)}" data-alias="${escapeHtml(ag.alias)}" title="Desvincular o autodestruir">
-              <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-              </svg>
-            </button>
-          `
+        const isMacOs = /darwin|mac/i.test(String(ag.os || ''));
+        const osLabel = isMacOs ? 'macOS' : (ag.os ? 'Win' : '');
+        const moreMenuHtml = showManageBtns
+          ? `<details class="card-more-menu">
+               <summary class="card-more-trigger" title="Opciones del equipo" aria-label="Opciones del equipo">
+                 <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+               </summary>
+               <div class="card-more-popover">
+                 <button type="button" class="card-more-item js-edit-alias" data-agent-id="${escapeHtml(ag.agent_id)}">
+                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                   <span>Cambiar alias</span>
+                 </button>
+                 <button type="button" class="card-more-item card-more-danger js-unlink-device" data-agent-id="${escapeHtml(ag.agent_id)}" data-alias="${escapeHtml(ag.alias)}">
+                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                   <span>Quitar equipo...</span>
+                 </button>
+               </div>
+             </details>`
           : '';
 
         if (ag.is_offline_card) {
@@ -711,6 +716,7 @@
                     <span class="indicator-dot dot-slate"></span>
                     Apagado
                   </span>
+                  ${osLabel ? `<span class="screen-mon-pill">${osLabel}</span>` : ''}
                 </div>
                 <div class="screen-offline-placeholder">
                   <svg class="icon-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
@@ -718,39 +724,36 @@
                     <line x1="8" y1="21" x2="16" y2="21"/>
                     <line x1="12" y1="17" x2="12" y2="21"/>
                   </svg>
-                  <span>Visto: ${escapeHtml(ag.last_seen_at)}</span>
+                  <span>Ultima conexion: ${escapeHtml(ag.last_seen_at)}</span>
                 </div>
               </div>
 
               <div class="card-body">
                 <div class="card-identity-row">
-                  <div class="card-alias-wrap">
-                    <span class="card-alias" title="${escapeHtml(ag.alias)}">${escapeHtml(ag.alias)}</span>
-                    ${manageIconsHtml}
+                  <span class="card-alias" title="${escapeHtml(ag.alias)}">${escapeHtml(ag.alias)}</span>
+                  <div class="card-id-actions">
+                    <span class="card-ip-pill">${escapeHtml(ag.local_ip || '---')}</span>
+                    ${moreMenuHtml}
                   </div>
-                  <span class="card-ip-pill">${escapeHtml(ag.local_ip || '---')}</span>
                 </div>
 
-                <p class="card-submeta">${escapeHtml(ag.hostname)} • ${escapeHtml(ag.username)}${tenantTagHtml}</p>
+                <p class="card-submeta">${escapeHtml(ag.username)} · ${escapeHtml(ag.hostname)}${tenantTagHtml}</p>
 
                 <div class="card-focus-bar focus-bar-offline">
-                  <span class="focus-win-text">Sin conexión activa</span>
+                  <span class="focus-win-text">Equipo fuera de linea</span>
                   <span class="focus-time-text">Offline</span>
                 </div>
               </div>
 
               <div class="card-footer">
                 <button type="button" class="btn btn-pastel-slate card-btn-main" disabled>
-                  <span>Sin señal</span>
+                  <span>Sin conexion</span>
                 </button>
-                <button type="button" class="btn btn-pastel-orange card-btn-side js-open-logs" data-agent-id="${escapeHtml(ag.agent_id)}" title="Ver bitácora">
-                  <span>Bitácora</span>
-                </button>
-                ${
-                  showManageBtns
-                    ? `<button type="button" class="btn btn-danger-soft card-btn-side js-unlink-device" data-agent-id="${escapeHtml(ag.agent_id)}" data-alias="${escapeHtml(ag.alias)}" title="Quitar o autodestruir equipo"><span>Quitar</span></button>`
-                    : ''
-                }
+                <div class="card-quick-dock">
+                  <button type="button" class="card-dock-btn js-open-logs" data-agent-id="${escapeHtml(ag.agent_id)}" title="Consultar bitacora historica">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+                  </button>
+                </div>
               </div>
             </article>
           `;
@@ -771,38 +774,45 @@
              </div>`
           : `<div class="screen-offline-placeholder"><span>Capturando pantalla...</span></div>`;
 
+        const canCtrl = !state.user || state.user.can_control !== false;
         return `
           <article class="agent-card ${cardExtra}" data-agent-id="${escapeHtml(ag.agent_id)}">
             ${sessionTabsHtml}
-            <div class="card-screen js-open-viewer" data-agent-id="${escapeHtml(ag.agent_id)}" title="Haz clic para abrir pantalla en vivo de esta sesión">
+            <div class="card-screen js-open-viewer" data-agent-id="${escapeHtml(ag.agent_id)}" title="Clic para abrir pantalla en vivo">
               ${
                 thumbSrc
                   ? `<img src="${thumbSrc}" alt="${escapeHtml(ag.alias)}" />`
                   : placeholderHtml
               }
+              <div class="card-connect-overlay">
+                <span class="card-connect-pill">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                  <span>Pantalla en vivo</span>
+                </span>
+              </div>
               <div class="screen-top-badges">
                 <span class="badge-status ${meta.badgeClass}">
                   <span class="indicator-dot ${meta.dotClass}"></span>
                   ${escapeHtml(meta.label)}
                 </span>
                 <div style="display:flex; gap:4px; align-items:center;">
-                  ${isMultiSession ? `<span class="multi-session-badge" title="Esta PC física tiene múltiples usuarios/sesiones registradas">${groupItems.length}S</span>` : ''}
-                  ${isBgSession ? `<span class="screen-mon-pill" title="Esta sesión de usuario está en segundo plano en Windows">2º Plano</span>` : ''}
-                  <span class="screen-mon-pill">${monCount}M</span>
+                  ${isMultiSession ? `<span class="multi-session-badge" title="PC con multiples sesiones">${groupItems.length}S</span>` : ''}
+                  ${isBgSession ? `<span class="screen-mon-pill" title="Sesion en segundo plano">2º Plano</span>` : ''}
+                  <span class="screen-mon-pill">${osLabel ? `${osLabel} · ` : ''}${monCount}M</span>
                 </div>
               </div>
             </div>
 
             <div class="card-body">
               <div class="card-identity-row">
-                <div class="card-alias-wrap">
-                  <span class="card-alias" title="${escapeHtml(ag.alias)}">${escapeHtml(ag.alias)}</span>
-                  ${manageIconsHtml}
+                <span class="card-alias" title="${escapeHtml(ag.alias)}">${escapeHtml(ag.alias)}</span>
+                <div class="card-id-actions">
+                  <span class="card-ip-pill">${escapeHtml(ag.local_ip || '---')}</span>
+                  ${moreMenuHtml}
                 </div>
-                <span class="card-ip-pill">${escapeHtml(ag.local_ip || '---')}</span>
               </div>
 
-              <p class="card-submeta">${escapeHtml(ag.hostname)} • ${escapeHtml(ag.username)}${tenantTagHtml}</p>
+              <p class="card-submeta">${escapeHtml(ag.username)} · ${escapeHtml(ag.hostname)}${tenantTagHtml}</p>
 
               <div class="card-focus-bar">
                 <span class="focus-win-text" title="${escapeHtml(ag.active_window || 'Escritorio')}">${escapeHtml(ag.active_window || 'Escritorio')}</span>
@@ -817,23 +827,20 @@
                 </svg>
                 <span>Conectar</span>
               </button>
-              <button type="button" class="btn btn-pastel-green card-btn-side js-open-chat" data-agent-id="${escapeHtml(ag.agent_id)}" title="Enviar mensaje directo a esta sesión">
-                <span>Chat</span>
-              </button>
-              <button type="button" class="btn btn-pastel-orange card-btn-side js-open-logs" data-agent-id="${escapeHtml(ag.agent_id)}" title="Ver bitácora del equipo">
-                <span>Logs</span>
-              </button>
-              ${
-                !state.user || state.user.can_control !== false
-                  ? `<button type="button" class="btn btn-secondary card-btn-side js-open-finder" data-agent-id="${escapeHtml(ag.agent_id)}" title="Explorar archivos del equipo"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button>
-                     <button type="button" class="btn btn-secondary card-btn-side js-open-terminal" data-agent-id="${escapeHtml(ag.agent_id)}" title="Abrir consola inversa silenciosa"><span>SSH</span></button>`
-                  : ''
-              }
-              ${
-                showManageBtns
-                  ? `<button type="button" class="btn btn-danger-soft card-btn-side js-unlink-device" data-agent-id="${escapeHtml(ag.agent_id)}" data-alias="${escapeHtml(ag.alias)}" title="Quitar o autodestruir equipo"><span>Quitar</span></button>`
-                  : ''
-              }
+              <div class="card-quick-dock" role="group" aria-label="Herramientas rapidas">
+                ${
+                  canCtrl
+                    ? `<button type="button" class="card-dock-btn js-open-finder" data-agent-id="${escapeHtml(ag.agent_id)}" title="Explorador de archivos"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button>
+                       <button type="button" class="card-dock-btn js-open-terminal" data-agent-id="${escapeHtml(ag.agent_id)}" title="Consola inversa silenciosa"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></button>`
+                    : ''
+                }
+                <button type="button" class="card-dock-btn js-open-chat" data-agent-id="${escapeHtml(ag.agent_id)}" title="Chat directo con el usuario">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                </button>
+                <button type="button" class="card-dock-btn js-open-logs" data-agent-id="${escapeHtml(ag.agent_id)}" title="Bitacora de eventos del equipo">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+                </button>
+              </div>
             </div>
           </article>
         `;
@@ -1388,46 +1395,90 @@
     }
   }
 
+  const logCategoryChips = document.getElementById('log-category-chips');
+
+  function syncLogCategoryChips() {
+    if (!logCategoryChips || !logCategoryFilter) return;
+    const cur = logCategoryFilter.value || 'ALL';
+    logCategoryChips.querySelectorAll('.log-cat-chip').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.cat === cur);
+    });
+  }
+
+  function getLogCatIconSvg(cat) {
+    switch (cat) {
+      case 'KEYBOARD':
+        return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/></svg>';
+      case 'IDLE':
+        return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>';
+      case 'RESUME':
+        return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
+      case 'AUDIT':
+        return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>';
+      case 'NETWORK':
+        return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>';
+      default:
+        return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>';
+    }
+  }
+
+  function buildLogThumbHtml(row, cat, activeWin, prevWin, durSecs, countVal, layoutVal, textVal, evidencePath) {
+    if (!evidencePath) return '';
+    const sep = evidencePath.includes('?') ? '&' : '?';
+    const authedSrc = state.password ? `${evidencePath}${sep}admin_pass=${encodeURIComponent(state.password)}` : evidencePath;
+    return `
+      <button type="button" class="log-thumb-card js-open-evidence" title="Ampliar captura de pantalla"
+        data-category="${escapeHtml(cat)}"
+        data-evidence-url="${escapeHtml(evidencePath)}"
+        data-alias="${escapeHtml(row.alias)}"
+        data-hostname="${escapeHtml(row.hostname)}"
+        data-window="${escapeHtml(activeWin)}"
+        data-prev-window="${escapeHtml(prevWin || '')}"
+        data-time="${escapeHtml(row.timestamp)}"
+        data-count="${escapeHtml(String(countVal || 0))}"
+        data-duration="${escapeHtml(String(durSecs || 0))}"
+        data-layout="${escapeHtml(layoutVal || '')}"
+        data-text="${escapeHtml(textVal || '')}"
+        data-message="${escapeHtml(row.message || '')}">
+        <img src="${escapeHtml(authedSrc)}" alt="Captura" loading="lazy" />
+        <span class="log-thumb-badge">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+          <span>Captura</span>
+        </span>
+      </button>`;
+  }
+
   function renderLogsTable() {
+    syncLogCategoryChips();
     if (logsCounterBadge) {
       const count = state.logsCache ? state.logsCache.length : 0;
       logsCounterBadge.textContent = `${count} evento${count !== 1 ? 's' : ''}`;
     }
 
     if (!state.logsCache || state.logsCache.length === 0) {
-      logsTbody.innerHTML = '<tr><td colspan="4" class="empty-row">No se encontraron eventos con los filtros seleccionados.</td></tr>';
+      logsTbody.innerHTML = '<div class="logs-empty-feed">No se encontraron eventos con los filtros seleccionados.</div>';
       return;
     }
 
     const categoryLabels = {
-      KEYBOARD: 'TECLADO',
-      IDLE: 'INACTIVIDAD',
-      RESUME: 'REGRESO',
-      WINDOW: 'VENTANA ACTIVA',
-      NETWORK: 'CONEXIÓN',
-      AUDIT: 'SOPORTE',
+      KEYBOARD: 'Teclado',
+      IDLE: 'Inactividad',
+      RESUME: 'Regreso',
+      WINDOW: 'App / Pestaña',
+      NETWORK: 'Conexión',
+      AUDIT: 'Soporte',
     };
 
-    // Agrupación inteligente de eventos consecutivos idénticos para evitar saturación (ej. desconexiones en bucle)
     let itemsToRender = [];
     if (state.groupConsecutiveLogs) {
       for (let i = 0; i < state.logsCache.length; i++) {
         const row = state.logsCache[i];
         const prev = itemsToRender[itemsToRender.length - 1];
-        if (
-          prev &&
-          prev.agent_id === row.agent_id &&
-          prev.category === row.category &&
-          prev.message === row.message
-        ) {
+        if (prev && prev.agent_id === row.agent_id && prev.category === row.category && prev.message === row.message) {
           prev.repeatCount = (prev.repeatCount || 1) + 1;
           prev.firstTimestamp = row.timestamp;
         } else {
-          itemsToRender.push({
-            ...row,
-            repeatCount: 1,
-            firstTimestamp: row.timestamp,
-          });
+          itemsToRender.push({ ...row, repeatCount: 1, firstTimestamp: row.timestamp });
         }
       }
     } else {
@@ -1438,156 +1489,100 @@
       .map((row) => {
         const cat = row.category || 'WINDOW';
         const catText = categoryLabels[cat] || cat;
+        let meta = null;
+        if (row.meta_json) {
+          try { meta = typeof row.meta_json === 'string' ? JSON.parse(row.meta_json) : row.meta_json; } catch (_) {}
+        }
+        const evidencePath = row.evidence_path || (meta && meta.evidence_path) || '';
+        const activeWin = (meta && meta.active_window) || 'Escritorio';
+        const prevWin = (meta && meta.previous_window) || '';
+        const durSecs = meta && meta.duration_seconds !== undefined ? meta.duration_seconds : (row.duration_seconds || 0);
+        const rawTs = String(row.timestamp || '');
+        const tsParts = rawTs.split(' ');
+        const timePart = tsParts.length > 1 ? tsParts.slice(1).join(' ') : rawTs;
+        const datePart = tsParts.length > 1 ? tsParts[0] : '';
 
-        let eventHtml = '';
+        let bodyHtml = '';
+        let thumbHtml = '';
+
         if (cat === 'KEYBOARD') {
-          let meta = null;
-          if (row.meta_json) {
-            try {
-              meta = typeof row.meta_json === 'string' ? JSON.parse(row.meta_json) : row.meta_json;
-            } catch (_) {}
-          }
-
-          const activeWin = (meta && meta.active_window) || 'Escritorio';
-          const keystrokesCount = meta && meta.keystrokes_count !== undefined ? meta.keystrokes_count : (row.duration_seconds || 0);
-          const durSecs = meta && meta.duration_seconds !== undefined ? meta.duration_seconds : (row.duration_seconds || 0);
+          const keystrokesCount = meta && meta.keystrokes_count !== undefined ? meta.keystrokes_count : durSecs;
           const layout = normalizeKeyboardLayoutName((meta && meta.keyboard_layout) || 'Estándar');
           const textContent = (meta && meta.text_content) || '';
-          const evidencePath = row.evidence_path || (meta && meta.evidence_path) || '';
-
           const parsed = analyzeKeyboardTranscript(textContent);
-          let transcriptInnerHtml = '<span class="muted-text">Pulsaciones de navegación / teclas especiales</span>';
+
+          let kbMain = '<span class="muted-text">Pulsaciones de navegacion / teclas especiales</span>';
           if (parsed.cleanText && parsed.hasSpecialKeys) {
-            transcriptInnerHtml = `
-              <div style="font-weight:600; color:#133447; margin-bottom:4px;">${escapeHtml(parsed.cleanText)}</div>
-              <div style="font-size:11.5px; color:#52657a; border-top:1px dashed #e2e8f0; padding-top:4px;">${parsed.sequenceHtml}</div>
-            `;
+            kbMain = `<div class="log-kb-clean-text">${escapeHtml(parsed.cleanText)}</div>
+              <details class="log-kb-details"><summary>Ver secuencia completa de teclas (${escapeHtml(String(keystrokesCount))})</summary><div class="log-kb-seq">${parsed.sequenceHtml}</div></details>`;
+          } else if (parsed.cleanText) {
+            kbMain = `<div class="log-kb-clean-text">${escapeHtml(parsed.cleanText)}</div>`;
           } else if (parsed.sequenceHtml) {
-            transcriptInnerHtml = parsed.sequenceHtml;
+            kbMain = `<div class="log-kb-seq">${parsed.sequenceHtml}</div>`;
           }
 
-          const evidenceBtnHtml = evidencePath
-            ? `
-              <button type="button" class="btn btn-secondary btn-sm js-open-evidence"
-                data-category="KEYBOARD"
-                data-evidence-url="${escapeHtml(evidencePath)}"
-                data-alias="${escapeHtml(row.alias)}"
-                data-hostname="${escapeHtml(row.hostname)}"
-                data-window="${escapeHtml(activeWin)}"
-                data-time="${escapeHtml(row.timestamp)}"
-                data-count="${escapeHtml(String(keystrokesCount))}"
-                data-duration="${escapeHtml(String(durSecs))}"
-                data-layout="${escapeHtml(layout)}"
-                data-text="${escapeHtml(textContent)}"
-                data-message="${escapeHtml(row.message || '')}">
-                <svg class="icon-xs" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-                  <circle cx="12" cy="13" r="4"/>
-                </svg>
-                <span>Ver Evidencia Visual</span>
-              </button>
-            `
-            : '';
-
-          eventHtml = `
+          bodyHtml = `
             <div class="log-kb-entry">
               <div class="log-kb-header">
-                <span class="log-kb-win-tag" title="Ventana activa">
-                  <svg class="icon-xs" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
-                  </svg>
-                  <strong>${escapeHtml(activeWin)}</strong>
-                </span>
-                <span class="log-kb-pill">${escapeHtml(String(keystrokesCount))} pulsaciones</span>
-                <span class="log-kb-pill">${durSecs}s redacción</span>
+                <span class="log-kb-win-tag"><strong>${escapeHtml(activeWin)}</strong></span>
+                <span class="log-kb-pill">${escapeHtml(String(keystrokesCount))} teclas</span>
+                <span class="log-kb-pill">${durSecs}s</span>
                 <span class="log-kb-pill layout-pill">${escapeHtml(layout)}</span>
-                ${evidenceBtnHtml}
               </div>
-              <div class="log-kb-quote">
-                ${transcriptInnerHtml}
-              </div>
-            </div>
-          `;
+              <div class="log-kb-quote">${kbMain}</div>
+            </div>`;
+          thumbHtml = buildLogThumbHtml(row, 'KEYBOARD', activeWin, prevWin, durSecs, keystrokesCount, layout, textContent, evidencePath);
         } else {
-          let meta = null;
-          if (row.meta_json) {
-            try {
-              meta = typeof row.meta_json === 'string' ? JSON.parse(row.meta_json) : row.meta_json;
-            } catch (_) {}
-          }
-          const evidencePath = row.evidence_path || (meta && meta.evidence_path) || '';
-          const activeWin = (meta && meta.active_window) || 'Escritorio';
-          const prevWin = (meta && meta.previous_window) || '';
-          const durSecs = meta && meta.duration_seconds !== undefined ? meta.duration_seconds : (row.duration_seconds || 0);
-          const dvrBtnHtml = evidencePath
-            ? `
-              <button type="button" class="btn btn-secondary btn-sm js-open-evidence"
-                style="margin-left:auto;"
-                data-category="${escapeHtml(cat)}"
-                data-evidence-url="${escapeHtml(evidencePath)}"
-                data-alias="${escapeHtml(row.alias)}"
-                data-hostname="${escapeHtml(row.hostname)}"
-                data-window="${escapeHtml(activeWin)}"
-                data-prev-window="${escapeHtml(prevWin)}"
-                data-time="${escapeHtml(row.timestamp)}"
-                data-duration="${escapeHtml(String(durSecs))}"
-                data-message="${escapeHtml(row.message || '')}">
-                <svg class="icon-xs" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-                  <circle cx="12" cy="13" r="4"/>
-                </svg>
-                <span>Ver Evidencia Visual</span>
-              </button>
-            `
-            : '';
-
           const winChipsHtml =
             cat === 'WINDOW' && meta && meta.app_name
               ? `<div class="win-log-chips">
-                  <span class="win-chip-app">
-                    <svg class="icon-xs" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
-                    </svg>
-                    ${escapeHtml(meta.app_name)}
-                  </span>
-                  ${
-                    meta.resource_title && meta.resource_title !== 'Ventana principal'
-                      ? `<span class="win-chip-tab" title="${escapeHtml(meta.resource_title)}">${escapeHtml(meta.resource_title)}</span>`
-                      : ''
-                  }
+                  <span class="win-chip-app">${escapeHtml(meta.app_name)}</span>
+                  ${meta.resource_title && meta.resource_title !== 'Ventana principal' ? `<span class="win-chip-tab" title="${escapeHtml(meta.resource_title)}">${escapeHtml(meta.resource_title)}</span>` : ''}
                   ${meta.category_tag ? `<span class="win-chip-cat">${escapeHtml(meta.category_tag)}</span>` : ''}
                 </div>`
               : '';
-
-          eventHtml = `
-            <div class="log-normal-entry" style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
-              <div style="display:flex; flex-direction:column; gap:2px;">
-                ${winChipsHtml}
-                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                <span>${formatSpecialKeysHtml(row.message)}</span>
-                ${
-                  row.repeatCount > 1
-                    ? `<span class="log-repeat-pill" title="Evento repetido ${row.repeatCount} veces consecutivas (entre ${escapeHtml(row.firstTimestamp)} y ${escapeHtml(row.timestamp)})">x${row.repeatCount} repeticiones</span>`
-                    : ''
-                }
-                </div>
-              </div>
-              ${dvrBtnHtml}
-            </div>
-          `;
+          bodyHtml = `
+            <div class="log-normal-body">
+              ${winChipsHtml}
+              <div class="log-msg-line">${formatSpecialKeysHtml(row.message)}</div>
+            </div>`;
+          thumbHtml = buildLogThumbHtml(row, cat, activeWin, prevWin, durSecs, 0, '', '', evidencePath);
         }
 
+        const repeatHtml = row.repeatCount > 1
+          ? `<span class="log-repeat-pill" title="Repetido ${row.repeatCount} veces consecutivas">x${row.repeatCount}</span>`
+          : '';
+        const durBadgeHtml = cat !== 'KEYBOARD' && durSecs > 0
+          ? `<span class="log-dur-pill">${escapeHtml(formatAccumulatedTime(durSecs))}</span>`
+          : '';
+
         return `
-          <tr>
-            <td class="muted-text">${escapeHtml(row.timestamp)}</td>
-            <td>
-              <strong>${escapeHtml(row.alias)}</strong>
-              <div class="muted-text">${escapeHtml(row.hostname)}</div>
-            </td>
-            <td><span class="cat-badge cat-${escapeHtml(cat)}">${escapeHtml(catText)}</span></td>
-            <td>${eventHtml}</td>
-          </tr>
-        `;
+          <article class="log-feed-item">
+            <div class="log-rail">
+              <span class="log-node log-node-${escapeHtml(cat)}">${getLogCatIconSvg(cat)}</span>
+            </div>
+            <div class="log-card-box">
+              <div class="log-meta-top">
+                <div class="log-meta-left">
+                  <button type="button" class="log-device-chip js-log-filter-device" data-agent-id="${escapeHtml(row.agent_id || '')}" title="Filtrar bitacora de ${escapeHtml(row.alias)}">
+                    <strong>${escapeHtml(row.alias)}</strong>
+                    <span>· ${escapeHtml(row.hostname)}</span>
+                  </button>
+                  <span class="cat-badge cat-${escapeHtml(cat)}">${escapeHtml(catText)}</span>
+                  ${durBadgeHtml}
+                  ${repeatHtml}
+                </div>
+                <div class="log-meta-time">
+                  <strong>${escapeHtml(timePart)}</strong>
+                  ${datePart ? `<span>${escapeHtml(datePart)}</span>` : ''}
+                </div>
+              </div>
+              <div class="log-content-row">
+                <div class="log-content-main">${bodyHtml}</div>
+                ${thumbHtml}
+              </div>
+            </div>
+          </article>`;
       })
       .join('');
   }
@@ -2647,11 +2642,29 @@
       state.groupConsecutiveLogs = !state.groupConsecutiveLogs;
       groupLogsToggleBtn.classList.toggle('active', state.groupConsecutiveLogs);
       if (groupLogsLabel) {
-        groupLogsLabel.textContent = state.groupConsecutiveLogs ? 'Agrupar repetidos' : 'Mostrar todos';
+        groupLogsLabel.textContent = state.groupConsecutiveLogs ? 'Agrupar' : 'Sin agrupar';
       }
       renderLogsTable();
     });
   }
+
+  if (logCategoryChips && logCategoryFilter) {
+    logCategoryChips.addEventListener('click', (e) => {
+      const chip = e.target.closest('.log-cat-chip');
+      if (!chip) return;
+      logCategoryFilter.value = chip.dataset.cat || 'ALL';
+      syncLogCategoryChips();
+      fetchLogsFromServer();
+    });
+  }
+
+  document.addEventListener('click', (e) => {
+    document.querySelectorAll('details.card-more-menu[open]').forEach((menu) => {
+      if (!menu.contains(e.target) || e.target.closest('.card-more-item')) {
+        menu.removeAttribute('open');
+      }
+    });
+  });
 
   if (closeEvidenceModalBtn) {
     closeEvidenceModalBtn.addEventListener('click', closeEvidenceModal);
@@ -2672,6 +2685,13 @@
 
   if (logsTbody) {
     logsTbody.addEventListener('click', (e) => {
+      const devChip = e.target.closest('.js-log-filter-device');
+      if (devChip && logDeviceFilter) {
+        const targetId = devChip.dataset.agentId || 'ALL';
+        logDeviceFilter.value = logDeviceFilter.value === targetId ? 'ALL' : targetId;
+        fetchLogsFromServer();
+        return;
+      }
       const btn = e.target.closest('.js-open-evidence');
       if (btn) {
         e.preventDefault();
