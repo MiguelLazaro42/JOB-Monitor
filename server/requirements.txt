@@ -4,4 +4,5 @@ websockets>=11.0
 jinja2>=3.1.2
 python-multipart>=0.0.6
 pydantic>=1.10.0
+Pillow>=10.0.0
 

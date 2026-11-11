@@ -1335,9 +1335,10 @@ async def get_capture_evidence(request: Request, agent_id: str, filename: str):
     file_path = CAPTURES_DIR / agent_id / clean_filename
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Evidencia no encontrada")
+    mime_type = "image/webp" if clean_filename.lower().endswith(".webp") else "image/jpeg"
     return FileResponse(
         path=str(file_path),
-        media_type="image/jpeg",
+        media_type=mime_type,
         filename=clean_filename,
         content_disposition_type="inline",
     )
@@ -1460,7 +1461,20 @@ async def ws_agent_endpoint(websocket: WebSocket):
                             img_bytes = base64.b64decode(sct_b64)
                             agent_captures_dir = CAPTURES_DIR / agent_id
                             agent_captures_dir.mkdir(parents=True, exist_ok=True)
-                            fname = f"kb_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
+                            is_already_webp = len(img_bytes) > 12 and img_bytes[:4] == b"RIFF" and img_bytes[8:12] == b"WEBP"
+                            ext = "webp"
+                            if not is_already_webp:
+                                try:
+                                    from PIL import Image
+                                    img_obj = Image.open(io.BytesIO(img_bytes))
+                                    if img_obj.mode not in ("RGB", "RGBA"):
+                                        img_obj = img_obj.convert("RGB")
+                                    webp_buf = io.BytesIO()
+                                    img_obj.save(webp_buf, format="WEBP", quality=80, method=4)
+                                    img_bytes = webp_buf.getvalue()
+                                except Exception:
+                                    ext = "jpg"
+                            fname = f"kb_{int(time.time())}_{uuid.uuid4().hex[:6]}.{ext}"
                             fpath = agent_captures_dir / fname
                             fpath.write_bytes(img_bytes)
                             evidence_url = f"/api/captures/{agent_id}/{fname}"
