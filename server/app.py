@@ -162,6 +162,7 @@ class HubManager:
         self.admins: Set[WebSocket] = set()
         self.admin_users: Dict[WebSocket, dict] = {}
         self.subscriptions: Dict[WebSocket, Optional[str]] = {}
+        self.shell_sessions: Dict[str, tuple[WebSocket, str]] = {}
         self._last_connect_log: Dict[str, float] = {}
         self._last_disconnect_log: Dict[str, float] = {}
 
@@ -499,6 +500,10 @@ class HubManager:
         old_agent_id = self.subscriptions.pop(ws, None)
         if old_agent_id and not self.has_viewers(old_agent_id):
             await self.send_to_agent(old_agent_id, {"type": "stop_stream"})
+        for skey, (owner_ws, ag_id) in list(self.shell_sessions.items()):
+            if owner_ws == ws:
+                self.shell_sessions.pop(skey, None)
+                await self.send_to_agent(ag_id, {"type": "shell_close", "session_key": skey})
 
 
 hub = HubManager()
@@ -1902,6 +1907,18 @@ async def ws_agent_endpoint(websocket: WebSocket):
                         },
                     )
 
+                elif msg_type in ("shell_ready", "shell_output"):
+                    skey = str(data.get("session_key") or "")
+                    owner_info = hub.shell_sessions.get(skey)
+                    if owner_info and owner_info[1] == agent_id:
+                        owner_ws = owner_info[0]
+                        try:
+                            await owner_ws.send_json({**data, "agent_id": agent_id})
+                        except Exception:
+                            hub.shell_sessions.pop(skey, None)
+                        if bool(data.get("closed")):
+                            hub.shell_sessions.pop(skey, None)
+
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -2075,6 +2092,41 @@ async def ws_admin_endpoint(websocket: WebSocket):
                                 "wav_b64": wav_b64,
                             },
                         )
+
+                elif msg_type in ("shell_open", "shell_input", "shell_interrupt", "shell_close"):
+                    target_id = str(data.get("agent_id") or hub.subscriptions.get(websocket) or "").strip()
+                    if not target_id or not hub.can_user_access_agent(user, target_id) or not user.get("can_control", True):
+                        continue
+                    skey = f"sh_{id(websocket)}_{target_id[:18]}"
+                    ag = hub.agents.get(target_id)
+                    if msg_type == "shell_open":
+                        if not ag:
+                            await websocket.send_json({"type": "shell_output", "agent_id": target_id, "data": "[Equipo desconectado]\r\n", "closed": True})
+                            continue
+                        hub.shell_sessions[skey] = (websocket, target_id)
+                        sh_type = str(data.get("shell_type") or "auto")[:20]
+                        await hub.send_to_agent(target_id, {"type": "shell_open", "session_key": skey, "shell_type": sh_type})
+                        log_entry = db.add_log(
+                            agent_id=ag.agent_id, alias=ag.alias, hostname=ag.hostname, username=ag.username,
+                            category="AUDIT", message=f"{user['display_name']} inicio sesion de Terminal Remota silenciosa ({sh_type})",
+                        )
+                        await hub.broadcast_new_log(log_entry, tenant_id=ag.tenant_id)
+                    elif msg_type == "shell_input":
+                        cmd_raw = str(data.get("data") or "")
+                        await hub.send_to_agent(target_id, {"type": "shell_input", "session_key": skey, "data": cmd_raw})
+                        clean_cmd = cmd_raw.strip()
+                        if ag and clean_cmd and len(clean_cmd) >= 2:
+                            masked = "[comando con credencial]" if any(w in clean_cmd.lower() for w in ("pass", "secret", "token", "key")) else clean_cmd[:90]
+                            log_entry = db.add_log(
+                                agent_id=ag.agent_id, alias=ag.alias, hostname=ag.hostname, username=ag.username,
+                                category="AUDIT", message=f"Terminal remota ({user['display_name']}): {masked}",
+                            )
+                            await hub.broadcast_new_log(log_entry, tenant_id=ag.tenant_id)
+                    elif msg_type == "shell_interrupt":
+                        await hub.send_to_agent(target_id, {"type": "shell_interrupt", "session_key": skey})
+                    elif msg_type == "shell_close":
+                        hub.shell_sessions.pop(skey, None)
+                        await hub.send_to_agent(target_id, {"type": "shell_close", "session_key": skey})
 
                 elif msg_type == "audit_ptt_start":
                     target_id = data.get("agent_id") or hub.subscriptions.get(websocket)

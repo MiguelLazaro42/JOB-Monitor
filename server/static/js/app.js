@@ -824,6 +824,11 @@
                 <span>Logs</span>
               </button>
               ${
+                !state.user || state.user.can_control !== false
+                  ? `<button type="button" class="btn btn-secondary card-btn-side js-open-terminal" data-agent-id="${escapeHtml(ag.agent_id)}" title="Abrir consola inversa silenciosa"><span>SSH</span></button>`
+                  : ''
+              }
+              ${
                 showManageBtns
                   ? `<button type="button" class="btn btn-danger-soft card-btn-side js-unlink-device" data-agent-id="${escapeHtml(ag.agent_id)}" data-alias="${escapeHtml(ag.alias)}" title="Quitar o autodestruir equipo"><span>Quitar</span></button>`
                   : ''
@@ -1855,18 +1860,21 @@
       pkgTenantRow.classList.toggle('hidden', !isSuper);
     }
 
+    const vTermBtn = document.getElementById('viewer-terminal-btn');
     if (isSub && !user.can_control) {
       if (toggleControlBtn) toggleControlBtn.classList.add('hidden');
       if (pttBtn) pttBtn.classList.add('hidden');
       if (openClipboardBtn) openClipboardBtn.classList.add('hidden');
       if (openFileBtn) openFileBtn.classList.add('hidden');
       if (viewerUnlinkBtn) viewerUnlinkBtn.classList.add('hidden');
+      if (vTermBtn) vTermBtn.classList.add('hidden');
     } else {
       if (toggleControlBtn) toggleControlBtn.classList.remove('hidden');
       if (pttBtn) pttBtn.classList.remove('hidden');
       if (openClipboardBtn) openClipboardBtn.classList.remove('hidden');
       if (openFileBtn) openFileBtn.classList.remove('hidden');
       if (viewerUnlinkBtn) viewerUnlinkBtn.classList.toggle('hidden', isSub);
+      if (vTermBtn) vTermBtn.classList.remove('hidden');
     }
   }
 
@@ -2272,6 +2280,23 @@
         return;
       }
 
+      if (msg.type === 'shell_ready') {
+        if (rshShellStatus && msg.agent_id === rshActiveAgentId) {
+          rshShellStatus.textContent = `Conectado · ${msg.shell_label || 'Shell activo'} · Invisible en pantalla remota`;
+        }
+        return;
+      }
+
+      if (msg.type === 'shell_output') {
+        if (rshOutput && msg.agent_id === rshActiveAgentId) {
+          appendTerminalOutput(msg.data || '');
+          if (msg.closed && rshShellStatus) {
+            rshShellStatus.textContent = 'Sesion de consola finalizada';
+          }
+        }
+        return;
+      }
+
       if (msg.type === 'agent_disconnected') {
         state.agents.delete(msg.agent_id);
         updateCountersAndGrid();
@@ -2419,6 +2444,12 @@
     if (logsBtn) {
       e.stopPropagation();
       openLogsForAgent(logsBtn.dataset.agentId);
+      return;
+    }
+    const termBtn = e.target.closest('.js-open-terminal');
+    if (termBtn) {
+      e.stopPropagation();
+      openReverseTerminal(termBtn.dataset.agentId);
       return;
     }
     const openTrigger = e.target.closest('.js-open-viewer');
@@ -3213,6 +3244,138 @@
       }
     }
   }
+
+  // =====================================================================
+  // TERMINAL INVERSA SILENCIOSA SOBRE WSS (MF-SH06 / MF-SH07)
+  // =====================================================================
+  const terminalModal = document.getElementById('terminal-modal');
+  const viewerTerminalBtn = document.getElementById('viewer-terminal-btn');
+  const rshDeviceTitle = document.getElementById('rsh-device-title');
+  const rshShellStatus = document.getElementById('rsh-shell-status');
+  const rshShellSelect = document.getElementById('rsh-shell-select');
+  const rshCtrlcBtn = document.getElementById('rsh-ctrlc-btn');
+  const rshClearBtn = document.getElementById('rsh-clear-btn');
+  const rshCloseBtn = document.getElementById('rsh-close-btn');
+  const rshOutput = document.getElementById('rsh-output');
+  const rshForm = document.getElementById('rsh-form');
+  const rshInput = document.getElementById('rsh-input');
+  let rshActiveAgentId = null;
+  let rshActiveIsMac = false;
+  const rshHistory = [];
+  let rshHistIdx = -1;
+
+  function stripAnsiSequences(raw) {
+    return String(raw || '')
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+      .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+      .replace(/\x1b[@-_]/g, '')
+      .replace(/^[ \t]+\r/gm, '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '');
+  }
+
+  function appendTerminalOutput(chunk) {
+    if (!rshOutput) return;
+    const clean = stripAnsiSequences(chunk);
+    if (!clean) return;
+    rshOutput.textContent = (rshOutput.textContent + clean).slice(-90000);
+    rshOutput.scrollTop = rshOutput.scrollHeight;
+  }
+
+  function openReverseTerminal(agentId) {
+    if (!terminalModal || !agentId) return;
+    const ag = state.agents.get(agentId);
+    if (!ag) return;
+    if (rshActiveAgentId && rshActiveAgentId !== agentId) {
+      sendWsJson({ type: 'shell_close', agent_id: rshActiveAgentId });
+    }
+    rshActiveAgentId = agentId;
+    rshActiveIsMac = /darwin|mac/i.test(String(ag.os || ''));
+    if (rshDeviceTitle) rshDeviceTitle.textContent = `Terminal Inversa — ${ag.alias || ag.hostname}`;
+    if (rshShellStatus) rshShellStatus.textContent = 'Abriendo sesion inversa silenciosa...';
+    if (rshOutput) rshOutput.textContent = '';
+    terminalModal.classList.remove('hidden');
+    sendWsJson({
+      type: 'shell_open',
+      agent_id: agentId,
+      shell_type: rshShellSelect ? rshShellSelect.value : 'auto',
+    });
+    setTimeout(() => rshInput && rshInput.focus(), 60);
+  }
+
+  function closeReverseTerminal() {
+    if (rshActiveAgentId) {
+      sendWsJson({ type: 'shell_close', agent_id: rshActiveAgentId });
+      rshActiveAgentId = null;
+    }
+    if (terminalModal) terminalModal.classList.add('hidden');
+  }
+
+  if (viewerTerminalBtn) {
+    viewerTerminalBtn.addEventListener('click', () => {
+      if (state.selectedAgentId) openReverseTerminal(state.selectedAgentId);
+    });
+  }
+  if (rshCloseBtn) rshCloseBtn.addEventListener('click', closeReverseTerminal);
+  if (rshClearBtn) {
+    rshClearBtn.addEventListener('click', () => {
+      if (rshOutput) rshOutput.textContent = '';
+      if (rshInput) rshInput.focus();
+    });
+  }
+  if (rshCtrlcBtn) {
+    rshCtrlcBtn.addEventListener('click', () => {
+      if (rshActiveAgentId) sendWsJson({ type: 'shell_interrupt', agent_id: rshActiveAgentId });
+      if (rshInput) rshInput.focus();
+    });
+  }
+  if (rshShellSelect) {
+    rshShellSelect.addEventListener('change', () => {
+      if (rshActiveAgentId) openReverseTerminal(rshActiveAgentId);
+    });
+  }
+  if (rshForm && rshInput) {
+    rshForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!rshActiveAgentId) return;
+      const cmd = rshInput.value;
+      if (cmd.trim()) {
+        rshHistory.push(cmd);
+        if (rshHistory.length > 80) rshHistory.shift();
+      }
+      rshHistIdx = rshHistory.length;
+      if (rshActiveIsMac === false) appendTerminalOutput(`> ${cmd}\n`);
+      sendWsJson({ type: 'shell_input', agent_id: rshActiveAgentId, data: cmd + '\n' });
+      rshInput.value = '';
+    });
+    rshInput.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowUp' && rshHistory.length > 0) {
+        e.preventDefault();
+        rshHistIdx = Math.max(0, rshHistIdx - 1);
+        rshInput.value = rshHistory[rshHistIdx] || '';
+      } else if (e.key === 'ArrowDown' && rshHistory.length > 0) {
+        e.preventDefault();
+        rshHistIdx = Math.min(rshHistory.length, rshHistIdx + 1);
+        rshInput.value = rshHistIdx < rshHistory.length ? rshHistory[rshHistIdx] : '';
+      } else if (e.ctrlKey && e.key.toLowerCase() === 'c' && !rshInput.value && rshActiveAgentId) {
+        e.preventDefault();
+        sendWsJson({ type: 'shell_interrupt', agent_id: rshActiveAgentId });
+      } else if (e.key === 'Escape') {
+        closeReverseTerminal();
+      }
+    });
+  }
+  document.querySelectorAll('.js-rsh-quick').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (!rshActiveAgentId) return;
+      const cmd = rshActiveIsMac ? btn.dataset.cmdMac : btn.dataset.cmdWin;
+      if (cmd) {
+        if (!rshActiveIsMac) appendTerminalOutput(`> ${cmd}\n`);
+        sendWsJson({ type: 'shell_input', agent_id: rshActiveAgentId, data: cmd + '\n' });
+        if (rshInput) rshInput.focus();
+      }
+    });
+  });
 
   setInterval(checkAndRecoverConnection, 12000);
   window.addEventListener('online', checkAndRecoverConnection);
