@@ -1245,8 +1245,8 @@
           }
 
           const activeWin = (meta && meta.active_window) || 'Escritorio';
-          const keystrokesCount = (meta && meta.keystrokes_count) !== undefined ? meta.keystrokes_count : (row.duration_seconds || 0);
-          const durSecs = (meta && meta.duration_seconds) !== undefined ? meta.duration_seconds : (row.duration_seconds || 0);
+          const keystrokesCount = meta && meta.keystrokes_count !== undefined ? meta.keystrokes_count : (row.duration_seconds || 0);
+          const durSecs = meta && meta.duration_seconds !== undefined ? meta.duration_seconds : (row.duration_seconds || 0);
           const layout = normalizeKeyboardLayoutName((meta && meta.keyboard_layout) || 'Estándar');
           const textContent = (meta && meta.text_content) || '';
           const evidencePath = row.evidence_path || (meta && meta.evidence_path) || '';
@@ -1314,7 +1314,7 @@
           const evidencePath = row.evidence_path || (meta && meta.evidence_path) || '';
           const activeWin = (meta && meta.active_window) || 'Escritorio';
           const prevWin = (meta && meta.previous_window) || '';
-          const durSecs = (meta && meta.duration_seconds) !== undefined ? meta.duration_seconds : (row.duration_seconds || 0);
+          const durSecs = meta && meta.duration_seconds !== undefined ? meta.duration_seconds : (row.duration_seconds || 0);
           const dvrBtnHtml = evidencePath
             ? `
               <button type="button" class="btn btn-secondary btn-sm js-open-evidence"
