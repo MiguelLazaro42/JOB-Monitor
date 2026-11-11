@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=20261110-mt" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261110-mac2" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -267,7 +267,7 @@
     </div>
   </div>
 
-  <!-- Modal Generador de Paquete Instalador de Agente Windows (.ZIP) (Fase 4) -->
+  <!-- Modal Generador de Agente Windows (.ZIP) y macOS (Comando Directo) -->
   <div id="agent-pkg-modal" class="modal-backdrop hidden">
     <div class="modal-card modal-card-wide">
       <div class="modal-header">
@@ -279,14 +279,21 @@
           </svg>
         </div>
         <div>
-          <h2>Generar Paquete Instalador (.ZIP)</h2>
+          <h2>Instalar Agente en Equipo (Windows y macOS)</h2>
+          <p class="muted-text">Preconfigurado con certificados, auto-inicio y permisos del sistema.</p>
         </div>
       </div>
 
       <form id="agent-pkg-form" class="modal-body">
-        <div>
-          <label for="pkg-alias-input" class="input-label">Alias del equipo (Opcional)</label>
-          <input id="pkg-alias-input" type="text" class="text-input" placeholder="Ej. PC Contabilidad" />
+        <div class="form-row-two">
+          <div>
+            <label for="pkg-alias-input" class="input-label">Alias del equipo (Opcional)</label>
+            <input id="pkg-alias-input" type="text" class="text-input" placeholder="Ej. Mac Direccion / PC Contabilidad" />
+          </div>
+          <div>
+            <label for="pkg-server-url-input" class="input-label">URL WebSocket del Servidor</label>
+            <input id="pkg-server-url-input" type="text" class="text-input" value="ws://{{ lan_ip }}:{{ port }}/ws/agent" required />
+          </div>
         </div>
 
         <div id="pkg-tenant-row" class="hidden">
@@ -294,9 +301,20 @@
           <select id="pkg-tenant-select" class="text-input w-full"></select>
         </div>
 
-        <div>
-          <label for="pkg-server-url-input" class="input-label">URL WebSocket del Servidor</label>
-          <input id="pkg-server-url-input" type="text" class="text-input" value="ws://{{ lan_ip }}:{{ port }}/ws/agent" required />
+        <div class="macos-cmd-box">
+          <div class="macos-cmd-header">
+            <span class="input-label">Opcion A — macOS (Instalacion directa en 1 paso sin bloqueo Gatekeeper)</span>
+            <button type="button" id="copy-macos-cmd-btn" class="btn btn-secondary btn-sm">
+              <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              <span id="copy-macos-cmd-label">Copiar comando Mac</span>
+            </button>
+          </div>
+          <input id="macos-cmd-output" type="text" class="text-input macos-cmd-input" readonly value="Generando comando..." />
+          <p class="macos-cmd-hint">
+            En el Mac abre <strong>Terminal</strong> (<code>Cmd + Espacio</code> &rarr; escribe <code>Terminal</code>), pega con <code>Cmd + V</code> y presiona <code>Enter</code>. Instala <code>JOB-Monitor Agent.app</code>, activa auto-inicio al encender el Mac y solicita permisos de Grabacion de Pantalla/Audio y Accesibilidad.
+          </p>
         </div>
 
         <div class="modal-actions">
@@ -307,7 +325,7 @@
               <polyline points="7 10 12 15 17 10"/>
               <line x1="12" y1="15" x2="12" y2="3"/>
             </svg>
-            <span>Descargar .ZIP</span>
+            <span>Opcion B — Descargar .ZIP (Windows)</span>
           </button>
         </div>
       </form>
@@ -914,8 +932,8 @@
   </section>
   </div><!-- /#app-shell -->
 
-  <script src="/static/js/audio.js?v=20261110-mt"></script>
-  <script src="/static/js/viewer.js?v=20261110-mt"></script>
-  <script src="/static/js/app.js?v=20261110-mt"></script>
+  <script src="/static/js/audio.js?v=20261110-mac2"></script>
+  <script src="/static/js/viewer.js?v=20261110-mac2"></script>
+  <script src="/static/js/app.js?v=20261110-mac2"></script>
 </body>
 </html>

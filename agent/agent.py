@@ -14,17 +14,21 @@ import socket
 import ssl
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import uuid
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional
 
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="mss")
+
 import mss
 import websockets
-from PIL import Image
+from PIL import Image, ImageDraw
 from pynput.keyboard import Controller as KeyboardController, Key, KeyCode
 from pynput.mouse import Button, Controller as MouseController
 
@@ -136,20 +140,59 @@ elif IS_MAC:
             pass
         return 0
 
+    _OBJC_LIB = None
+    _MSG_SEND_VOID = None
+    _MSG_SEND_UTF8 = None
+    _CLS_NSWORKSPACE = None
+    _SEL_SHARED_WS = None
+    _SEL_FRONTMOST_APP = None
+    _SEL_LOCALIZED_NAME = None
+    _SEL_UTF8_STRING = None
+
+    def _init_macos_objc_workspace():
+        global _OBJC_LIB, _MSG_SEND_VOID, _MSG_SEND_UTF8, _CLS_NSWORKSPACE
+        global _SEL_SHARED_WS, _SEL_FRONTMOST_APP, _SEL_LOCALIZED_NAME, _SEL_UTF8_STRING
+        if _OBJC_LIB is not None:
+            return
+        try:
+            objc_path = ctypes.util.find_library("objc")
+            if not objc_path:
+                return
+            ctypes.cdll.LoadLibrary("/System/Library/Frameworks/AppKit.framework/AppKit")
+            objc = ctypes.cdll.LoadLibrary(objc_path)
+            objc.objc_getClass.restype = ctypes.c_void_p
+            objc.objc_getClass.argtypes = [ctypes.c_char_p]
+            objc.sel_registerName.restype = ctypes.c_void_p
+            objc.sel_registerName.argtypes = [ctypes.c_char_p]
+            _MSG_SEND_VOID = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+            _MSG_SEND_UTF8 = ctypes.CFUNCTYPE(ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+            _CLS_NSWORKSPACE = objc.objc_getClass(b"NSWorkspace")
+            _SEL_SHARED_WS = objc.sel_registerName(b"sharedWorkspace")
+            _SEL_FRONTMOST_APP = objc.sel_registerName(b"frontmostApplication")
+            _SEL_LOCALIZED_NAME = objc.sel_registerName(b"localizedName")
+            _SEL_UTF8_STRING = objc.sel_registerName(b"UTF8String")
+            _OBJC_LIB = objc
+        except Exception:
+            _OBJC_LIB = False
+
     def get_active_window_title() -> str:
         try:
-            out = subprocess.check_output(
-                [
-                    "osascript",
-                    "-e",
-                    'tell application "System Events" to get name of first application process whose frontmost is true',
-                ],
-                stderr=subprocess.DEVNULL,
-                timeout=1.5,
-            ).decode("utf-8", errors="ignore").strip()
-            return out or "macOS Finder"
+            _init_macos_objc_workspace()
+            if _OBJC_LIB and _MSG_SEND_VOID and _MSG_SEND_UTF8:
+                ws = _MSG_SEND_VOID(_CLS_NSWORKSPACE, _SEL_SHARED_WS)
+                if ws:
+                    front = _MSG_SEND_VOID(ws, _SEL_FRONTMOST_APP)
+                    if front:
+                        ns_name = _MSG_SEND_VOID(front, _SEL_LOCALIZED_NAME)
+                        if ns_name:
+                            raw = _MSG_SEND_UTF8(ns_name, _SEL_UTF8_STRING)
+                            if raw:
+                                decoded = raw.decode("utf-8", errors="ignore").strip()
+                                if decoded:
+                                    return decoded[:95]
         except Exception:
-            return "macOS"
+            pass
+        return "macOS Finder"
 
     def check_macos_screen_permission(request_if_missing: bool = False) -> bool:
         try:
@@ -174,6 +217,40 @@ else:
 
     def check_macos_screen_permission(request_if_missing: bool = False) -> bool:
         return True
+
+
+def build_macos_permission_frame(width: int = 1280, height: int = 720) -> Image.Image:
+    """
+    Genera un cuadro informativo nítido cuando macOS aún no tiene activado el interruptor
+    de Grabación de Pantalla y Audio del Sistema, evitando mostrar una pantalla gris vacía.
+    """
+    w = max(640, min(1920, int(width)))
+    h = max(360, min(1080, int(height)))
+    img = Image.new("RGB", (w, h), (15, 29, 44))
+    draw = ImageDraw.Draw(img)
+
+    card_w = min(w - 80, 860)
+    card_h = min(h - 80, 340)
+    x0 = (w - card_w) // 2
+    y0 = (h - card_h) // 2
+    x1 = x0 + card_w
+    y1 = y0 + card_h
+
+    draw.rectangle([x0, y0, x1, y1], fill=(23, 45, 66), outline=(56, 189, 248), width=2)
+    draw.rectangle([x0, y0, x1, y0 + 48], fill=(19, 52, 71))
+
+    lines = [
+        ("SITAI JOB-Monitor  |  Permiso requerido en este Mac", (125, 211, 252), y0 + 16),
+        ("Para ver el escritorio en vivo y evitar pantalla gris, autoriza en el Mac:", (255, 255, 255), y0 + 74),
+        ("1. Abre Ajustes del Sistema -> Privacidad y Seguridad", (226, 232, 240), y0 + 120),
+        ("2. Entra en 'Grabacion de pantalla y audio del sistema'", (226, 232, 240), y0 + 154),
+        ("3. Activa el interruptor de 'JOB-Monitor Agent' (y tambien en 'Accesibilidad')", (52, 211, 153), y0 + 188),
+        ("La senal de video en vivo iniciara automaticamente en 3 segundos tras activarlo.", (148, 163, 184), y0 + 244),
+    ]
+    for text, color, py in lines:
+        if py + 20 < y1:
+            draw.text((x0 + 32, py), text, fill=color)
+    return img
 
 
 def extract_app_name(window_title: str) -> str:
@@ -594,6 +671,7 @@ class SilentRemoteAgent:
         self.target_fps: int = 18
         self.scale_factor: float = 1.0
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
+        self.macos_screen_ok: bool = check_macos_screen_permission(request_if_missing=False) if IS_MAC else True
 
         # Estado de monitoreo para generación de logs (Fase 2)
         self.last_window_title: str = get_active_window_title()
@@ -709,11 +787,20 @@ class SilentRemoteAgent:
         try:
             mon_idx = self.current_monitor if 0 <= self.current_monitor < len(sct.monitors) else 1
             mon = sct.monitors[mon_idx]
-            shot = sct.grab(mon)
-            img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+            if IS_MAC and not self.macos_screen_ok:
+                img = build_macos_permission_frame(1280, 720)
+            else:
+                try:
+                    shot = sct.grab(mon)
+                    img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+                except Exception:
+                    if IS_MAC:
+                        img = build_macos_permission_frame(1280, 720)
+                    else:
+                        return ""
             img.thumbnail((420, 240), Image.Resampling.BILINEAR)
             buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=50)
+            img.save(buf, format="JPEG", quality=55)
             return base64.b64encode(buf.getvalue()).decode("ascii")
         except Exception:
             return ""
@@ -723,8 +810,17 @@ class SilentRemoteAgent:
             if not (0 <= self.current_monitor < len(sct.monitors)):
                 self.current_monitor = 1
             mon = sct.monitors[self.current_monitor]
-            shot = sct.grab(mon)
-            img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+            if IS_MAC and not self.macos_screen_ok:
+                img = build_macos_permission_frame(mon["width"], mon["height"])
+            else:
+                try:
+                    shot = sct.grab(mon)
+                    img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+                except Exception:
+                    if IS_MAC:
+                        img = build_macos_permission_frame(mon["width"], mon["height"])
+                    else:
+                        return None
 
             orig_w, orig_h = img.size
             if self.scale_factor < 0.99:
@@ -976,10 +1072,17 @@ class SilentRemoteAgent:
                         stderr=subprocess.DEVNULL,
                     )
             elif IS_MAC:
+                import shutil
                 plist_path = Path.home() / "Library" / "LaunchAgents" / "mx.sitai.jobmonitor.agent.plist"
                 if plist_path.exists():
                     try:
-                         plist_path.unlink()
+                        plist_path.unlink()
+                    except Exception:
+                        pass
+                app_bundle = Path.home() / "Applications" / "JOB-Monitor Agent.app"
+                if app_bundle.exists():
+                    try:
+                        shutil.rmtree(app_bundle, ignore_errors=True)
                     except Exception:
                         pass
                 if "monitoreoempresa" in str(BASE_DIR).lower():
@@ -987,9 +1090,41 @@ class SilentRemoteAgent:
                         fp = BASE_DIR / fname
                         if fp.exists():
                             fp.unlink()
+                uid = os.getuid()
+                subprocess.Popen(
+                    f"sleep 1; launchctl bootout gui/{uid}/mx.sitai.jobmonitor.agent >/dev/null 2>&1 || true",
+                    shell=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
         except Exception:
             pass
         os._exit(0)
+
+    async def macos_permission_heal_loop(self):
+        """
+        En macOS, si el agente arrancó antes de que el usuario activara Grabación de Pantalla,
+        sondea cada 3s en un subproceso limpio. En cuanto detecta el permiso concedido,
+        termina para que LaunchAgent (KeepAlive=true) lo relance en 1s con video real activo.
+        """
+        if not IS_MAC or self.macos_screen_ok:
+            return
+        exe = sys.executable
+        is_app_bin = "JOBMonitorAgent" in os.path.basename(exe)
+        cmd = [exe, "--check-screen-only"] if is_app_bin else [exe, str(Path(__file__).resolve()), "--check-screen-only"]
+        while not self.macos_screen_ok:
+            await asyncio.sleep(3.5)
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                rc = await asyncio.wait_for(proc.wait(), timeout=3.0)
+                if rc == 0:
+                    os._exit(0)
+            except Exception:
+                pass
 
     def _build_ssl_context(self) -> Optional[ssl.SSLContext]:
         """
@@ -1029,14 +1164,14 @@ class SilentRemoteAgent:
                 ) as ws:
                     self.ws = ws
                     self.streaming = False
+                    self.macos_screen_ok = check_macos_screen_permission(request_if_missing=True) if IS_MAC else True
 
                     with mss.mss() as sct:
                         monitors = self.get_monitors_info(sct)
                         thumb = self.capture_thumbnail_b64(sct)
 
-                    has_screen = check_macos_screen_permission(request_if_missing=True)
                     os_label = f"{platform.system()} {platform.release()}"
-                    if IS_MAC and not has_screen:
+                    if IS_MAC and not self.macos_screen_ok:
                         os_label += " (Falta permiso de Pantalla)"
 
                     hello = {
@@ -1059,6 +1194,7 @@ class SilentRemoteAgent:
 
                     stream_task = asyncio.create_task(self.stream_loop())
                     telem_task = asyncio.create_task(self.telemetry_loop())
+                    perm_task = asyncio.create_task(self.macos_permission_heal_loop())
 
                     try:
                         with mss.mss() as input_sct:
@@ -1141,6 +1277,7 @@ class SilentRemoteAgent:
                     finally:
                         stream_task.cancel()
                         telem_task.cancel()
+                        perm_task.cancel()
                         self.ws = None
                         self.streaming = False
 
@@ -1186,7 +1323,11 @@ def main():
     parser.add_argument("--server", type=str, default=None, help="URL WebSocket del Servidor Central")
     parser.add_argument("--token", type=str, default=None, help="Token secreto del servidor")
     parser.add_argument("--alias", type=str, default=None, help="Alias amigable de esta PC (ej. 'PC de Miguel')")
+    parser.add_argument("--check-screen-only", action="store_true", help="Verifica permiso TCC de pantalla en macOS")
     args = parser.parse_args()
+
+    if args.check_screen_only:
+        sys.exit(0 if check_macos_screen_permission(request_if_missing=False) else 2)
 
     if not acquire_single_instance_lock():
         # Ya existe una instancia activa del agente ejecutándose en este equipo

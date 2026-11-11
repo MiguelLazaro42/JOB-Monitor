@@ -807,14 +807,57 @@ def generate_install_readme(server_url: str, alias: str = "") -> str:
         "--------------------------------------------------------------------\r\n"
         "OPCION B — INSTALACION EN MACOS:\r\n"
         "--------------------------------------------------------------------\r\n"
-        "1. Extrae este ZIP y haz doble clic en 'install_macos.command'\r\n"
-        "   (o ejecuta en Terminal: bash install_macos.command).\r\n"
-        "2. Instala en ~/.local/share/MonitoreoEmpresa y registra un\r\n"
-        "   LaunchAgent nativo (KeepAlive=true) como Watchdog automático.\r\n"
-        "3. Acepta los permisos de Grabación de Pantalla y Accesibilidad\r\n"
-        "   cuando macOS los solicite.\r\n"
-        "- Para desinstalar en macOS: ejecuta 'uninstall_macos.command'.\r\n"
+        "1. RECOMENDADO (sin bloqueo de Gatekeeper en macOS 15+):\r\n"
+        "   Usa el botón 'Copiar comando para Mac' desde '+ Agente' en el panel web,\r\n"
+        "   abre Terminal y pégalo con Cmd+V.\r\n"
+        "2. O si descargaste este ZIP en Mac, ejecuta en Terminal dentro de la carpeta:\r\n"
+        "   xattr -cr . && bash install_macos.command\r\n"
+        "3. Construye ~/Applications/JOB-Monitor Agent.app, configura auto-inicio\r\n"
+        "   al encender el Mac y solicita permisos de Pantalla/Audio y Accesibilidad.\r\n"
+        "- Para desinstalar en macOS: ejecuta 'bash uninstall_macos.command'.\r\n"
     )
+
+
+def resolve_public_http_base(request: Request) -> str:
+    lan_ip = get_local_lan_ip()
+    host_header = request.headers.get("host", f"{lan_ip}:{config.PORT}")
+    if host_header.startswith("127.0.0.1") or host_header.startswith("localhost"):
+        host_header = f"{lan_ip}:{config.PORT}"
+    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    http_scheme = "https" if forwarded_proto == "https" else "http"
+    return f"{http_scheme}://{host_header}"
+
+
+def create_macos_install_key(server_url: str, alias: str = "", tenant_id: str = "") -> str:
+    data_str = json.dumps(
+        {
+            "u": server_url,
+            "a": (alias or "").strip(),
+            "t": (tenant_id or "").strip(),
+            "exp": int(time.time()) + 86400 * 7,
+        },
+        separators=(",", ":"),
+    )
+    b64 = base64.urlsafe_b64encode(data_str.encode("utf-8")).decode("ascii").rstrip("=")
+    sig = hmac.new(config.AGENT_TOKEN.encode("utf-8"), b64.encode("ascii"), hashlib.sha256).hexdigest()[:24]
+    return f"{b64}.{sig}"
+
+
+def verify_macos_install_key(key_str: str) -> Optional[dict]:
+    if not key_str or "." not in key_str:
+        return None
+    try:
+        b64, sig = key_str.rsplit(".", 1)
+        expected = hmac.new(config.AGENT_TOKEN.encode("utf-8"), b64.encode("ascii"), hashlib.sha256).hexdigest()[:24]
+        if not hmac.compare_digest(sig, expected):
+            return None
+        pad = "=" * (-len(b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(b64 + pad).decode("utf-8"))
+        if int(payload.get("exp", 0)) < int(time.time()):
+            return None
+        return payload
+    except Exception:
+        return None
 
 
 def build_agent_package_zip(server_url: str, alias: str = "", tenant_id: str = "") -> bytes:
@@ -882,16 +925,91 @@ def build_agent_package_zip(server_url: str, alias: str = "", tenant_id: str = "
 
 @app.get("/api/agent-package-info")
 async def get_agent_package_info(request: Request):
-    """Devuelve la URL WebSocket sugerida para prellenar el modal de descarga de agente."""
+    """Devuelve la URL WebSocket sugerida y el comando directo macOS para prellenar el modal."""
     user = verify_admin_access(request)
+    default_ws = resolve_default_ws_url(request)
+    http_base = resolve_public_http_base(request)
+    target_tid = MASTER_TENANT_ID if user["role"] == "superadmin" else user["tenant_id"]
+    key = create_macos_install_key(server_url=default_ws, alias="", tenant_id=target_tid)
     return {
         "ok": True,
-        "default_ws_url": resolve_default_ws_url(request),
+        "default_ws_url": default_ws,
         "lan_ip": get_local_lan_ip(),
         "port": config.PORT,
         "tenant_id": user["tenant_id"],
         "tenants": db.list_tenants() if user["role"] == "superadmin" else [],
+        "macos_command": f'curl -fsSL "{http_base}/api/macos-setup.sh?k={key}" | bash',
     }
+
+
+@app.get("/api/macos-install-command")
+async def get_macos_install_command(
+    request: Request,
+    server_url: Optional[str] = Query(None),
+    alias: Optional[str] = Query(""),
+    tenant_id: Optional[str] = Query(None),
+):
+    """Genera un comando de 1 línea para Terminal en macOS libre de bloqueo Gatekeeper (com.apple.quarantine)."""
+    user = verify_admin_access(request)
+    default_ws = resolve_default_ws_url(request)
+    final_ws_url = normalize_ws_url(server_url or "", default_ws)
+    clean_alias = (alias or "").strip()
+    target_tid = ((tenant_id or "").strip() or MASTER_TENANT_ID) if user["role"] == "superadmin" else user["tenant_id"]
+    http_base = resolve_public_http_base(request)
+    key = create_macos_install_key(server_url=final_ws_url, alias=clean_alias, tenant_id=target_tid)
+    cmd = f'curl -fsSL "{http_base}/api/macos-setup.sh?k={key}" | bash'
+    return {
+        "ok": True,
+        "command": cmd,
+    }
+
+
+@app.get("/api/macos-setup.sh")
+async def serve_macos_setup_script(request: Request, k: str = Query(...)):
+    """Sirve el script bootstrapper para macOS autenticado mediante token HMAC efímero."""
+    payload = verify_macos_install_key(k)
+    if not payload:
+        raise HTTPException(status_code=403, detail="Enlace de instalacion expirado o invalido")
+    http_base = resolve_public_http_base(request)
+    pkg_url = f"{http_base}/api/macos-package.zip?k={k}"
+    script = (
+        "#!/usr/bin/env bash\n"
+        "set -e\n"
+        "TMP_DIR=\"$(mktemp -d /tmp/jobmonitor-setup.XXXXXX)\"\n"
+        "cleanup() { rm -rf \"$TMP_DIR\"; }\n"
+        "trap cleanup EXIT\n"
+        "echo \"Descargando instalador nativo SITAI JOB-Monitor para macOS...\"\n"
+        f"curl -fsSL \"{pkg_url}\" -o \"$TMP_DIR/pkg.zip\"\n"
+        "unzip -q \"$TMP_DIR/pkg.zip\" -d \"$TMP_DIR\"\n"
+        "chmod +x \"$TMP_DIR/JOB-Monitor-Agent/install_macos.command\"\n"
+        "bash \"$TMP_DIR/JOB-Monitor-Agent/install_macos.command\"\n"
+    )
+    return Response(
+        content=script,
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/api/macos-package.zip")
+async def serve_macos_package_zip(k: str = Query(...)):
+    """Descarga directa por curl del paquete preconfigurado para macOS (sin com.apple.quarantine)."""
+    payload = verify_macos_install_key(k)
+    if not payload:
+        raise HTTPException(status_code=403, detail="Enlace de instalacion expirado o invalido")
+    zip_bytes = build_agent_package_zip(
+        server_url=str(payload.get("u") or ""),
+        alias=str(payload.get("a") or ""),
+        tenant_id=str(payload.get("t") or ""),
+    )
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="JOB-Monitor-Agent-macOS.zip"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @app.get("/api/download-agent")

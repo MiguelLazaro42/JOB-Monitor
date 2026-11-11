@@ -126,6 +126,10 @@
   const closeUserModalBtn = document.getElementById('close-user-modal-btn');
   const pkgTenantRow = document.getElementById('pkg-tenant-row');
   const pkgTenantSelect = document.getElementById('pkg-tenant-select');
+  const openAgentPkgBtn = document.getElementById('open-agent-pkg-btn');
+  const macosCmdOutput = document.getElementById('macos-cmd-output');
+  const copyMacosCmdBtn = document.getElementById('copy-macos-cmd-btn');
+  const copyMacosCmdLabel = document.getElementById('copy-macos-cmd-label');
 
   // Fase 3: Panel Lateral de Chat
   const chatSidebar = document.getElementById('chat-sidebar');
@@ -1813,13 +1817,41 @@
     });
   }
 
-  // Eventos de Fase 4: Generador de Paquete Instalador (.ZIP) para Windows
-  const openAgentPkgBtn = document.getElementById('open-agent-pkg-btn');
+  // Eventos de Fase 4: Generador de Paquete Instalador (.ZIP) y Comando Directo macOS
   const agentPkgModal = document.getElementById('agent-pkg-modal');
   const closeAgentPkgBtn = document.getElementById('close-agent-pkg-btn');
   const agentPkgForm = document.getElementById('agent-pkg-form');
   const pkgAliasInput = document.getElementById('pkg-alias-input');
   const pkgServerUrlInput = document.getElementById('pkg-server-url-input');
+  let macosCmdDebounce = null;
+
+  async function refreshMacosInstallCommand() {
+    if (!macosCmdOutput || !state.password) return;
+    try {
+      const params = new URLSearchParams();
+      if (pkgServerUrlInput && pkgServerUrlInput.value.trim()) {
+        params.set('server_url', pkgServerUrlInput.value.trim());
+      }
+      if (pkgAliasInput && pkgAliasInput.value.trim()) {
+        params.set('alias', pkgAliasInput.value.trim());
+      }
+      if (pkgTenantSelect && pkgTenantSelect.value) {
+        params.set('tenant_id', pkgTenantSelect.value);
+      }
+      const res = await authFetch(`/api/macos-install-command?${params.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.command) {
+          macosCmdOutput.value = data.command;
+        }
+      }
+    } catch (_) {}
+  }
+
+  function scheduleMacosCmdRefresh() {
+    if (macosCmdDebounce) clearTimeout(macosCmdDebounce);
+    macosCmdDebounce = setTimeout(refreshMacosInstallCommand, 220);
+  }
 
   if (openAgentPkgBtn && agentPkgModal) {
     openAgentPkgBtn.addEventListener('click', async () => {
@@ -1830,6 +1862,10 @@
         if (info && info.default_ws_url && pkgServerUrlInput && !pkgServerUrlInput.dataset.userEdited) {
           pkgServerUrlInput.value = info.default_ws_url;
         }
+        if (info && info.macos_command && macosCmdOutput) {
+          macosCmdOutput.value = info.macos_command;
+        }
+        await refreshMacosInstallCommand();
       } catch (_) {}
     });
   }
@@ -1837,6 +1873,35 @@
   if (pkgServerUrlInput) {
     pkgServerUrlInput.addEventListener('input', () => {
       pkgServerUrlInput.dataset.userEdited = 'true';
+      scheduleMacosCmdRefresh();
+    });
+  }
+
+  if (pkgAliasInput) {
+    pkgAliasInput.addEventListener('input', scheduleMacosCmdRefresh);
+  }
+
+  if (pkgTenantSelect) {
+    pkgTenantSelect.addEventListener('change', scheduleMacosCmdRefresh);
+  }
+
+  if (copyMacosCmdBtn && macosCmdOutput) {
+    copyMacosCmdBtn.addEventListener('click', async () => {
+      const cmdText = (macosCmdOutput.value || '').trim();
+      if (!cmdText || cmdText.startsWith('Generando')) return;
+      try {
+        await navigator.clipboard.writeText(cmdText);
+      } catch (_) {
+        macosCmdOutput.focus();
+        macosCmdOutput.select();
+        document.execCommand('copy');
+      }
+      if (copyMacosCmdLabel) {
+        copyMacosCmdLabel.textContent = 'Comando copiado';
+        setTimeout(() => {
+          copyMacosCmdLabel.textContent = 'Copiar comando Mac';
+        }, 2200);
+      }
     });
   }
 

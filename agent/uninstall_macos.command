@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # ==============================================================================
-#  JOB-Monitor — Desinstalador de Agente Corporativo para macOS
+#  SITAI JOB-Monitor — Desinstalador de Agente Corporativo para macOS
 # ==============================================================================
 set -e
 
-xattr -dr com.apple.quarantine "$(dirname "$0")" 2>/dev/null || true
+xattr -cr "$(dirname "$0")" 2>/dev/null || true
 cd "$(dirname "$0")"
 
 INSTALL_DIR="$HOME/.local/share/MonitoreoEmpresa"
+APP_BUNDLE="$HOME/Applications/JOB-Monitor Agent.app"
 PLIST_LABEL="mx.sitai.jobmonitor.agent"
 PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 CURRENT_UID=$(id -u)
@@ -25,12 +26,13 @@ if [ -f "$PLIST_PATH" ]; then
 fi
 
 echo "[2/3] Cerrando procesos activos del agente..."
+pkill -f "JOBMonitorAgent" >/dev/null 2>&1 || true
 pkill -f "MonitoreoEmpresa/agent.py" >/dev/null 2>&1 || true
 
-echo "[3/3] Eliminando archivos en $INSTALL_DIR..."
+echo "[3/3] Eliminando aplicacion '$APP_BUNDLE' y archivos en '$INSTALL_DIR'..."
+rm -rf "$APP_BUNDLE"
 rm -rf "$INSTALL_DIR"
 
 echo ""
-echo "  [OK] El agente y su Watchdog han sido desinstalados de este Mac."
+echo "  [OK] El agente y su auto-inicio han sido desinstalados de este Mac."
 echo ""
-
