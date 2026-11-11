@@ -193,15 +193,68 @@ codesign --force --deep --sign - --identifier "$PLIST_LABEL" "$APP_BUNDLE" >/dev
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f -R -trusted "$APP_BUNDLE" >/dev/null 2>&1 || \
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_BUNDLE" >/dev/null 2>&1 || true
 
-echo "[4/5] Registrando 'JOB-Monitor Agent' en Privacidad y Seguridad de macOS..."
+echo "[4/5] Registrando 'JOB-Monitor Agent' y solicitando permisos en macOS..."
 rm -f "$STATUS_JSON"
 open -n -a "$APP_BUNDLE" --args --request-permissions >/dev/null 2>&1 || true
-for _ in 1 2 3 4 5 6 7 8; do
+for _ in 1 2 3 4 5 6 7 8 9 10; do
     if [ -f "$STATUS_JSON" ]; then
         break
     fi
     sleep 0.5
 done
+
+# Verificar estado inicial de permisos TCC (Grabacion de Pantalla y Accesibilidad)
+SCREEN_OK=$("$VENV_PY" -c "import json, pathlib; p=pathlib.Path('$STATUS_JSON'); d=json.loads(p.read_text()) if p.exists() else {}; print('1' if d.get('screen') else '0')")
+AX_OK=$("$VENV_PY" -c "import json, pathlib; p=pathlib.Path('$STATUS_JSON'); d=json.loads(p.read_text()) if p.exists() else {}; print('1' if d.get('accessibility') else '0')")
+
+# Si falta algun permiso, guiar interactivamente al usuario en pantalla y esperar a que los conceda
+if [ "$SCREEN_OK" != "1" ] || [ "$AX_OK" != "1" ]; then
+    echo ""
+    echo "===================================================================="
+    echo "  AUTORIZACION DE PERMISOS REQUERIDA EN ESTE MAC"
+    echo "===================================================================="
+    if [ "$SCREEN_OK" != "1" ]; then
+        echo "  -> [1] Grabacion de pantalla y audio del sistema: PENDIENTE"
+        open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" >/dev/null 2>&1 || true
+    else
+        echo "  -> [1] Grabacion de pantalla y audio del sistema: CONCEDIDO"
+    fi
+    if [ "$AX_OK" != "1" ]; then
+        echo "  -> [2] Accesibilidad (Teclado y Eventos)       : PENDIENTE"
+        if [ "$SCREEN_OK" = "1" ]; then
+            open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" >/dev/null 2>&1 || true
+        fi
+    else
+        echo "  -> [2] Accesibilidad (Teclado y Eventos)       : CONCEDIDO"
+    fi
+
+    # Mostrar alerta nativa de macOS al frente para que el usuario sepa exactamente que activar
+    osascript -e 'display dialog "Para completar la instalación de SITAI JOB-Monitor en este Mac, activa los siguientes permisos en Ajustes del Sistema:\n\n1. Grabación de pantalla y audio del sistema -> Activa \"JOB-Monitor Agent\"\n2. Accesibilidad -> Activa \"JOB-Monitor Agent\"\n\n(Si macOS te pide \"Salir y volver a abrir\", haz clic en esa opción; el instalador detectará los permisos automáticamente)." with title "SITAI JOB-Monitor — Permisos Requeridos" buttons {"Abrir Ajustes y Continuar"} default button 1 with icon caution giving up after 25' >/dev/null 2>&1 &
+
+    echo ""
+    echo "  Esperando a que actives los interruptores de 'JOB-Monitor Agent'..."
+    echo "  (El instalador detectara el cambio automaticamente en cuanto los actives)"
+    OPENED_AX_PANE=0
+    for _ in $(seq 1 45); do
+        rm -f "$STATUS_JSON"
+        "$APP_EXEC" --check-permissions >/dev/null 2>&1 || true
+        SCREEN_OK=$("$VENV_PY" -c "import json, pathlib; p=pathlib.Path('$STATUS_JSON'); d=json.loads(p.read_text()) if p.exists() else {}; print('1' if d.get('screen') else '0')")
+        AX_OK=$("$VENV_PY" -c "import json, pathlib; p=pathlib.Path('$STATUS_JSON'); d=json.loads(p.read_text()) if p.exists() else {}; print('1' if d.get('accessibility') else '0')")
+
+        if [ "$SCREEN_OK" = "1" ] && [ "$AX_OK" = "1" ]; then
+            echo "  [OK] Ambos permisos (Grabacion de Pantalla y Accesibilidad) han sido concedidos."
+            break
+        fi
+        # Si ya activo Grabacion de Pantalla y solo falta Accesibilidad, abrirle automaticamente el panel de Accesibilidad
+        if [ "$SCREEN_OK" = "1" ] && [ "$AX_OK" != "1" ] && [ "$OPENED_AX_PANE" = "0" ]; then
+            OPENED_AX_PANE=1
+            echo "  [OK] Grabacion de Pantalla activada. Abriendo panel de Accesibilidad..."
+            open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" >/dev/null 2>&1 || true
+            open -n -a "$APP_BUNDLE" --args --request-permissions >/dev/null 2>&1 || true
+        fi
+        sleep 2
+    done
+fi
 
 echo "[5/5] Activando auto-arranque al encender el Mac y conectando al servidor..."
 cat > "$PLIST_PATH" <<EOF

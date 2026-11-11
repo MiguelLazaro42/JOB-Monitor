@@ -2148,10 +2148,26 @@ def main():
     parser.add_argument("--token", type=str, default=None, help="Token secreto del servidor")
     parser.add_argument("--alias", type=str, default=None, help="Alias amigable de esta PC (ej. 'PC de Miguel')")
     parser.add_argument("--check-screen-only", action="store_true", help="Verifica permiso TCC de pantalla en macOS")
+    parser.add_argument("--check-permissions", action="store_true", help="Verifica permisos TCC de pantalla y accesibilidad en macOS")
+    parser.add_argument("--request-permissions", action="store_true", help="Solicita permisos TCC de pantalla y accesibilidad en macOS")
     args = parser.parse_args()
 
     if args.check_screen_only:
         sys.exit(0 if check_macos_screen_permission(request_if_missing=False) else 2)
+
+    if args.check_permissions or args.request_permissions:
+        req = bool(args.request_permissions)
+        scr_ok = check_macos_screen_permission(request_if_missing=req)
+        ax_ok = check_macos_accessibility_permission(request_if_missing=req)
+        try:
+            status_path = BASE_DIR / "permissions_status.json"
+            status_path.write_text(
+                json.dumps({"screen": bool(scr_ok), "accessibility": bool(ax_ok)}, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        sys.exit(0 if (scr_ok and ax_ok) else 2)
 
     if not acquire_single_instance_lock():
         # Ya existe una instancia activa del agente ejecutándose en este equipo
