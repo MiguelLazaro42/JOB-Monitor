@@ -26,6 +26,7 @@
     currentView: 'wall',
     selectedAgentId: null,
     logsCache: [],
+    groupConsecutiveLogs: true,
     timezone: 'America/Merida',
     lastWsActivityAt: Date.now(),
   };
@@ -176,6 +177,19 @@
   const logSearchInput = document.getElementById('log-search-input');
   const exportCsvBtn = document.getElementById('export-csv-btn');
   const logsTbody = document.getElementById('logs-tbody');
+  const logsCounterBadge = document.getElementById('logs-counter-badge');
+  const groupLogsToggleBtn = document.getElementById('group-logs-toggle-btn');
+  const groupLogsLabel = document.getElementById('group-logs-label');
+
+  // Modal de Evidencia Visual de Actividad de Teclado (MF-08)
+  const evidenceModal = document.getElementById('evidence-modal');
+  const closeEvidenceModalBtn = document.getElementById('close-evidence-modal-btn');
+  const evidenceModalCloseBtn = document.getElementById('evidence-modal-close-btn');
+  const evidenceModalTitle = document.getElementById('evidence-modal-title');
+  const evidenceModalSubtitle = document.getElementById('evidence-modal-subtitle');
+  const evidenceMetaContainer = document.getElementById('evidence-meta-container');
+  const evidenceImagePreview = document.getElementById('evidence-image-preview');
+  const evidenceDownloadLink = document.getElementById('evidence-download-link');
 
   // Función para obtener la fecha YYYY-MM-DD en la zona horaria configurada (por defecto America/Merida)
   function getTodayInTimezone(tz) {
@@ -715,13 +729,77 @@
     }
   }
 
+  function formatSpecialKeysHtml(text) {
+    if (!text) return '';
+    const safe = escapeHtml(text);
+    return safe.replace(/\[([A-Za-z0-9ÁÉÍÓÚáéíóúñÑ_↑↓←→\s]+)\]/g, '<kbd class="kb-key">[$1]</kbd>');
+  }
+
+  function openEvidenceModal(data) {
+    if (!evidenceModal) return;
+    if (evidenceModalTitle) {
+      evidenceModalTitle.textContent = `Evidencia: ${data.alias} (${data.hostname})`;
+    }
+    if (evidenceModalSubtitle) {
+      evidenceModalSubtitle.textContent = `Registrado el ${data.time} • Pausa de 15s tras redacción activa`;
+    }
+    if (evidenceMetaContainer) {
+      evidenceMetaContainer.innerHTML = `
+        <div class="evidence-meta-item">
+          <span class="evidence-meta-label">Ventana Activa</span>
+          <span class="evidence-meta-val">${escapeHtml(data.window || 'Escritorio')}</span>
+        </div>
+        <div class="evidence-meta-item">
+          <span class="evidence-meta-label">Pulsaciones</span>
+          <span class="evidence-meta-val">${escapeHtml(String(data.count || 0))} teclas</span>
+        </div>
+        <div class="evidence-meta-item">
+          <span class="evidence-meta-label">Duración</span>
+          <span class="evidence-meta-val">${escapeHtml(String(data.duration || 0))}s</span>
+        </div>
+        <div class="evidence-meta-item">
+          <span class="evidence-meta-label">Distribución / Idioma</span>
+          <span class="evidence-meta-val">${escapeHtml(data.layout || 'Estándar')}</span>
+        </div>
+        <div class="evidence-meta-item full-width">
+          <span class="evidence-meta-label">Texto / Ráfaga Transcrita</span>
+          <div class="log-kb-quote" style="margin-top:4px;">${formatSpecialKeysHtml(data.text || '(Pulsaciones especiales sin texto imprimible)')}</div>
+        </div>
+      `;
+    }
+    if (evidenceImagePreview) {
+      evidenceImagePreview.src = data.url || '';
+    }
+    if (evidenceDownloadLink) {
+      evidenceDownloadLink.href = data.url || '#';
+      const cleanAlias = (data.alias || 'equipo').replace(/[^a-zA-Z0-9_-]/g, '_');
+      evidenceDownloadLink.download = `evidencia_${cleanAlias}_${Date.now()}.jpg`;
+    }
+    evidenceModal.classList.remove('hidden');
+  }
+
+  function closeEvidenceModal() {
+    if (evidenceModal) {
+      evidenceModal.classList.add('hidden');
+      if (evidenceImagePreview) {
+        evidenceImagePreview.src = '';
+      }
+    }
+  }
+
   function renderLogsTable() {
+    if (logsCounterBadge) {
+      const count = state.logsCache ? state.logsCache.length : 0;
+      logsCounterBadge.textContent = `${count} evento${count !== 1 ? 's' : ''}`;
+    }
+
     if (!state.logsCache || state.logsCache.length === 0) {
       logsTbody.innerHTML = '<tr><td colspan="4" class="empty-row">No se encontraron eventos con los filtros seleccionados.</td></tr>';
       return;
     }
 
     const categoryLabels = {
+      KEYBOARD: 'TECLADO',
       IDLE: 'INACTIVIDAD',
       RESUME: 'REGRESO',
       WINDOW: 'VENTANA ACTIVA',
@@ -729,10 +807,110 @@
       AUDIT: 'SOPORTE',
     };
 
-    logsTbody.innerHTML = state.logsCache
+    // Agrupación inteligente de eventos consecutivos idénticos para evitar saturación (ej. desconexiones en bucle)
+    let itemsToRender = [];
+    if (state.groupConsecutiveLogs) {
+      for (let i = 0; i < state.logsCache.length; i++) {
+        const row = state.logsCache[i];
+        const prev = itemsToRender[itemsToRender.length - 1];
+        if (
+          prev &&
+          prev.agent_id === row.agent_id &&
+          prev.category === row.category &&
+          prev.message === row.message
+        ) {
+          prev.repeatCount = (prev.repeatCount || 1) + 1;
+          prev.firstTimestamp = row.timestamp;
+        } else {
+          itemsToRender.push({
+            ...row,
+            repeatCount: 1,
+            firstTimestamp: row.timestamp,
+          });
+        }
+      }
+    } else {
+      itemsToRender = state.logsCache.map((r) => ({ ...r, repeatCount: 1, firstTimestamp: r.timestamp }));
+    }
+
+    logsTbody.innerHTML = itemsToRender
       .map((row) => {
         const cat = row.category || 'WINDOW';
         const catText = categoryLabels[cat] || cat;
+
+        let eventHtml = '';
+        if (cat === 'KEYBOARD') {
+          let meta = null;
+          if (row.meta_json) {
+            try {
+              meta = typeof row.meta_json === 'string' ? JSON.parse(row.meta_json) : row.meta_json;
+            } catch (_) {}
+          }
+
+          const activeWin = (meta && meta.active_window) || 'Escritorio';
+          const keystrokesCount = (meta && meta.keystrokes_count) !== undefined ? meta.keystrokes_count : (row.duration_seconds || 0);
+          const durSecs = (meta && meta.duration_seconds) !== undefined ? meta.duration_seconds : (row.duration_seconds || 0);
+          const layout = (meta && meta.keyboard_layout) || 'Estándar';
+          const textContent = (meta && meta.text_content) || '';
+          const evidencePath = row.evidence_path || (meta && meta.evidence_path) || '';
+
+          const formattedText = textContent
+            ? formatSpecialKeysHtml(textContent)
+            : '<span class="muted-text">Pulsaciones de navegación / teclas especiales</span>';
+
+          const evidenceBtnHtml = evidencePath
+            ? `
+              <button type="button" class="btn btn-secondary btn-sm js-open-evidence"
+                data-evidence-url="${escapeHtml(evidencePath)}"
+                data-alias="${escapeHtml(row.alias)}"
+                data-hostname="${escapeHtml(row.hostname)}"
+                data-window="${escapeHtml(activeWin)}"
+                data-time="${escapeHtml(row.timestamp)}"
+                data-count="${escapeHtml(String(keystrokesCount))}"
+                data-duration="${escapeHtml(String(durSecs))}"
+                data-layout="${escapeHtml(layout)}"
+                data-text="${escapeHtml(textContent)}">
+                <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                  <circle cx="12" cy="13" r="4"/>
+                </svg>
+                <span>Ver Evidencia Visual</span>
+              </button>
+            `
+            : '';
+
+          eventHtml = `
+            <div class="log-kb-entry">
+              <div class="log-kb-header">
+                <span class="log-kb-win-tag" title="Ventana activa">
+                  <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+                  </svg>
+                  <strong>${escapeHtml(activeWin)}</strong>
+                </span>
+                <span class="log-kb-pill">${escapeHtml(String(keystrokesCount))} pulsaciones</span>
+                <span class="log-kb-pill">${durSecs}s redacción</span>
+                <span class="log-kb-pill layout-pill">${escapeHtml(layout)}</span>
+                ${evidenceBtnHtml}
+              </div>
+              <div class="log-kb-quote">
+                ${formattedText}
+              </div>
+            </div>
+          `;
+        } else {
+          eventHtml = `
+            <div class="log-normal-entry">
+              <span>${formatSpecialKeysHtml(row.message)}</span>
+              ${
+                row.repeatCount > 1
+                  ? `<span class="log-repeat-pill" title="Evento repetido ${row.repeatCount} veces consecutivas (entre ${escapeHtml(row.firstTimestamp)} y ${escapeHtml(row.timestamp)})">x${row.repeatCount} repeticiones</span>`
+                  : ''
+              }
+            </div>
+          `;
+        }
+
         return `
           <tr>
             <td class="muted-text">${escapeHtml(row.timestamp)}</td>
@@ -741,7 +919,7 @@
               <div class="muted-text">${escapeHtml(row.hostname)}</div>
             </td>
             <td><span class="cat-badge cat-${escapeHtml(cat)}">${escapeHtml(catText)}</span></td>
-            <td>${escapeHtml(row.message)}</td>
+            <td>${eventHtml}</td>
           </tr>
         `;
       })
@@ -1714,6 +1892,54 @@
     });
     window.location.href = `/api/logs/export-csv?${params.toString()}`;
   });
+
+  if (groupLogsToggleBtn) {
+    groupLogsToggleBtn.addEventListener('click', () => {
+      state.groupConsecutiveLogs = !state.groupConsecutiveLogs;
+      groupLogsToggleBtn.classList.toggle('active', state.groupConsecutiveLogs);
+      if (groupLogsLabel) {
+        groupLogsLabel.textContent = state.groupConsecutiveLogs ? 'Agrupar repetidos' : 'Mostrar todos';
+      }
+      renderLogsTable();
+    });
+  }
+
+  if (closeEvidenceModalBtn) {
+    closeEvidenceModalBtn.addEventListener('click', closeEvidenceModal);
+  }
+  if (evidenceModalCloseBtn) {
+    evidenceModalCloseBtn.addEventListener('click', closeEvidenceModal);
+  }
+  if (evidenceModal) {
+    evidenceModal.addEventListener('click', (e) => {
+      if (e.target === evidenceModal) closeEvidenceModal();
+    });
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && evidenceModal && !evidenceModal.classList.contains('hidden')) {
+      closeEvidenceModal();
+    }
+  });
+
+  if (logsTbody) {
+    logsTbody.addEventListener('click', (e) => {
+      const btn = e.target.closest('.js-open-evidence');
+      if (btn) {
+        e.preventDefault();
+        openEvidenceModal({
+          url: btn.dataset.evidenceUrl,
+          alias: btn.dataset.alias,
+          hostname: btn.dataset.hostname,
+          window: btn.dataset.window,
+          time: btn.dataset.time,
+          count: btn.dataset.count,
+          duration: btn.dataset.duration,
+          layout: btn.dataset.layout,
+          text: btn.dataset.text,
+        });
+      }
+    });
+  }
 
   // Eventos de Fase 3: Chat Lateral y Mensajes Rápidos
   if (toggleChatSidebarBtn && chatSidebar) {

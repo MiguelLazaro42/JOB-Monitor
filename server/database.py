@@ -192,6 +192,13 @@ class DatabaseManager:
                 if "tenant_id" not in cols:
                     conn.execute(f"ALTER TABLE devices ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '{MASTER_TENANT_ID}'")
 
+                # Migración automática segura para soporte de auditoría de teclado y evidencias visuales
+                log_cols = [r["name"] for r in conn.execute("PRAGMA table_info(device_logs)").fetchall()]
+                if "evidence_path" not in log_cols:
+                    conn.execute("ALTER TABLE device_logs ADD COLUMN evidence_path TEXT NULL")
+                if "meta_json" not in log_cols:
+                    conn.execute("ALTER TABLE device_logs ADD COLUMN meta_json TEXT NULL")
+
                 default_tz = getattr(config, "DEFAULT_TIMEZONE", "America/Merida")
                 conn.execute(
                     "INSERT OR IGNORE INTO system_settings (key, value) VALUES ('timezone', ?)",
@@ -671,6 +678,8 @@ class DatabaseManager:
         category: str,
         message: str,
         duration_seconds: Optional[int] = None,
+        evidence_path: Optional[str] = None,
+        meta_json: Optional[str] = None,
     ) -> dict:
         now_str = self._now_dt().strftime("%Y-%m-%d %H:%M:%S")
         with self._lock:
@@ -678,10 +687,10 @@ class DatabaseManager:
             try:
                 cur = conn.execute(
                     """
-                    INSERT INTO device_logs (timestamp, agent_id, alias, hostname, username, category, message, duration_seconds)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO device_logs (timestamp, agent_id, alias, hostname, username, category, message, duration_seconds, evidence_path, meta_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (now_str, agent_id, alias, hostname, username, category, message, duration_seconds),
+                    (now_str, agent_id, alias, hostname, username, category, message, duration_seconds, evidence_path, meta_json),
                 )
                 log_id = cur.lastrowid
                 conn.commit()
@@ -695,6 +704,8 @@ class DatabaseManager:
                     "category": category,
                     "message": message,
                     "duration_seconds": duration_seconds,
+                    "evidence_path": evidence_path,
+                    "meta_json": meta_json,
                 }
             finally:
                 conn.close()

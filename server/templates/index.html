@@ -395,6 +395,56 @@
     </div>
   </div>
 
+  <!-- Modal de Evidencia Visual de Actividad de Teclado (MF-08) -->
+  <div id="evidence-modal" class="modal-backdrop hidden">
+    <div class="modal-card modal-card-wide" style="max-width: 920px;">
+      <div class="modal-header">
+        <div style="display:flex; align-items:center; gap:12px;">
+          <div class="brand-badge" style="background:#f5f3ff; color:#7c3aed;">
+            <svg class="icon-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="4" width="20" height="16" rx="2"/>
+              <line x1="6" y1="8" x2="6.01" y2="8"/>
+              <line x1="10" y1="8" x2="10.01" y2="8"/>
+              <line x1="14" y1="8" x2="14.01" y2="8"/>
+              <line x1="18" y1="8" x2="18.01" y2="8"/>
+              <line x1="8" y1="12" x2="16" y2="12"/>
+              <line x1="6" y1="16" x2="18" y2="16"/>
+            </svg>
+          </div>
+          <div>
+            <h2 id="evidence-modal-title">Evidencia de Actividad de Teclado</h2>
+            <p id="evidence-modal-subtitle" class="muted-text">Captura automática al segundo 15 de pausa en la redacción.</p>
+          </div>
+        </div>
+        <button type="button" id="close-evidence-modal-btn" class="modal-close-icon" aria-label="Cerrar">
+          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="modal-body" style="display:flex; flex-direction:column; gap:16px;">
+        <!-- Metadatos de la sesión de escritura -->
+        <div id="evidence-meta-container" class="evidence-meta-grid"></div>
+
+        <!-- Vista de la captura en alta resolución -->
+        <div class="evidence-image-container">
+          <img id="evidence-image-preview" src="" alt="Captura de pantalla de evidencia" />
+        </div>
+      </div>
+
+      <div class="modal-actions" style="justify-content: space-between;">
+        <a id="evidence-download-link" href="#" target="_blank" download="evidencia_teclado.jpg" class="btn btn-secondary btn-sm">
+          <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          <span>Descargar Evidencia JPG</span>
+        </a>
+        <button type="button" id="evidence-modal-close-btn" class="btn btn-primary btn-sm">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Barra Superior Corporativa SITAI (#133447) en 3 Zonas Balanceadas -->
   <header class="topbar">
     <div class="topbar-inner">
@@ -801,7 +851,10 @@
   <section id="view-logs" class="main-container hidden">
     <div class="panel-card">
       <div class="panel-card-header">
-        <h2>Bitácora de Eventos</h2>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <h2>Bitácora de Eventos</h2>
+          <span id="logs-counter-badge" class="badge-pill muted-badge">0 eventos</span>
+        </div>
         <div class="panel-controls">
           <div class="control-select-wrap">
             <select id="log-device-filter" class="toolbar-select">
@@ -812,6 +865,7 @@
           <div class="control-select-wrap">
             <select id="log-category-filter" class="toolbar-select">
               <option value="ALL">Todas las categorías</option>
+              <option value="KEYBOARD">Teclado / Redacción</option>
               <option value="IDLE">Inactividad</option>
               <option value="RESUME">Regreso</option>
               <option value="WINDOW">Ventana</option>
@@ -824,8 +878,15 @@
             <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
             </svg>
-            <input id="log-search-input" type="text" placeholder="Filtrar..." />
+            <input id="log-search-input" type="text" placeholder="Filtrar eventos o palabras..." />
           </div>
+
+          <button id="group-logs-toggle-btn" type="button" class="btn btn-secondary btn-sm active" title="Agrupar eventos repetitivos consecutivos para una bitácora limpia y organizada">
+            <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 6h16M4 12h16M4 18h16"/>
+            </svg>
+            <span id="group-logs-label">Agrupar repetidos</span>
+          </button>
 
           <button id="export-csv-btn" type="button" class="btn btn-secondary btn-sm">
             <span>CSV</span>
@@ -840,7 +901,7 @@
               <th style="width: 155px;">Hora</th>
               <th style="width: 200px;">Equipo</th>
               <th style="width: 120px;">Tipo</th>
-              <th>Evento</th>
+              <th>Evento / Evidencia Visual</th>
             </tr>
           </thead>
           <tbody id="logs-tbody">
