@@ -82,10 +82,7 @@ echo "  SITAI JOB-Monitor — Instalador Nativo para macOS (Intel y Apple M)"
 echo "===================================================================="
 echo ""
 
-# Detener instancia previa y desregistrar bundle anterior si existia
-if [ -d "$APP_BUNDLE" ]; then
-    "$LSREG" -u "$APP_BUNDLE" >/dev/null 2>&1 || true
-fi
+# Detener instancia previa del servicio antes de actualizar scripts
 launchctl bootout "gui/$CURRENT_UID/$PLIST_LABEL" >/dev/null 2>&1 || true
 launchctl unload "$PLIST_PATH" >/dev/null 2>&1 || true
 pkill -f "JOBMonitorAgent" >/dev/null 2>&1 || true
@@ -180,11 +177,14 @@ payload = {
 out_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 PYRT
 
-echo "[3/5] Instalando aplicacion nativa en '$APP_BUNDLE'..."
-rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_MACOS_DIR" "$APP_BUNDLE/Contents/Resources"
+echo "[3/5] Verificando aplicacion nativa en '$APP_BUNDLE'..."
+if [ ! -f "$SRC_DIR/JOBMonitorAgent_macos" ]; then
+    echo "[ERROR] No se encontro el binario nativo JOBMonitorAgent_macos en el paquete."
+    exit 1
+fi
 
-cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
+TMP_PLIST="$INSTALL_DIR/Info.plist.expected"
+cat > "$TMP_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -202,9 +202,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.1</string>
+    <string>2.4</string>
     <key>CFBundleVersion</key>
-    <string>2.1.0</string>
+    <string>2.4.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>LSUIElement</key>
@@ -216,26 +216,45 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
     <key>NSMicrophoneUsageDescription</key>
     <string>JOB-Monitor utiliza funciones de audio para soporte y asistencia remota.</string>
     <key>NSAppleEventsUsageDescription</key>
-    <string>JOB-Monitor supervisa la actividad del equipo corporativo.</string>
+    <string>JOB-Monitor supervisa la actividad de aplicaciones y ventanas del equipo corporativo.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>JOB-Monitor permite soporte y gestion remota de archivos en el Escritorio.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>JOB-Monitor permite soporte y gestion remota de archivos en Documentos.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>JOB-Monitor permite soporte y gestion remota de archivos en Descargas.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>JOB-Monitor permite soporte remoto sobre unidades externas conectadas.</string>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>JOB-Monitor permite soporte remoto sobre unidades de red conectadas.</string>
 </dict>
 </plist>
 EOF
 
-if [ -f "$SRC_DIR/AppIcon.icns" ]; then
-    cp -f "$SRC_DIR/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+NEED_REBUILD_APP=1
+if [ -x "$APP_EXEC" ] && [ -f "$APP_BUNDLE/Contents/Info.plist" ]; then
+    if cmp -s "$SRC_DIR/JOBMonitorAgent_macos" "$APP_EXEC" && cmp -s "$TMP_PLIST" "$APP_BUNDLE/Contents/Info.plist"; then
+        NEED_REBUILD_APP=0
+    fi
 fi
 
-if [ -f "$SRC_DIR/JOBMonitorAgent_macos" ]; then
+if [ "$NEED_REBUILD_APP" = "1" ]; then
+    if [ -d "$APP_BUNDLE" ]; then
+        "$LSREG" -u "$APP_BUNDLE" >/dev/null 2>&1 || true
+        rm -rf "$APP_BUNDLE"
+    fi
+    mkdir -p "$APP_MACOS_DIR" "$APP_BUNDLE/Contents/Resources"
+    cp -f "$TMP_PLIST" "$APP_BUNDLE/Contents/Info.plist"
+    if [ -f "$SRC_DIR/AppIcon.icns" ]; then
+        cp -f "$SRC_DIR/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+    fi
     cp -f "$SRC_DIR/JOBMonitorAgent_macos" "$APP_EXEC"
     chmod 755 "$APP_EXEC"
-else
-    echo "[ERROR] No se encontro el binario nativo JOBMonitorAgent_macos en el paquete."
-    exit 1
+    xattr -cr "$APP_BUNDLE" 2>/dev/null || true
+    codesign --force --deep --sign - --identifier "$PLIST_LABEL" "$APP_BUNDLE" >/dev/null 2>&1 || true
+    "$LSREG" -f -R -trusted "$APP_BUNDLE" >/dev/null 2>&1 || "$LSREG" -f "$APP_BUNDLE" >/dev/null 2>&1 || true
 fi
-
-xattr -cr "$APP_BUNDLE" 2>/dev/null || true
-codesign --force --deep --sign - --identifier "$PLIST_LABEL" "$APP_BUNDLE" >/dev/null 2>&1 || true
-"$LSREG" -f -R -trusted "$APP_BUNDLE" >/dev/null 2>&1 || "$LSREG" -f "$APP_BUNDLE" >/dev/null 2>&1 || true
+rm -f "$TMP_PLIST" 2>/dev/null || true
 
 # Preparar LaunchAgent y trampa EXIT para garantizar que el servicio SIEMPRE quede activo
 cat > "$PLIST_PATH" <<EOF

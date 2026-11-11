@@ -235,7 +235,7 @@ REM  MF-05: Detener instancias previas del agente antes de actualizar
 REM ============================================================================
 :mf_05_stop_previous_agent
 echo [MF-05] Verificando procesos previos del agente en la sesion actual...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$curSess = (Get-Process -Id $PID).SessionId; Get-CimInstance Win32_Process | Where-Object { $_.SessionId -eq $curSess -and ($_.Name -eq 'pythonw.exe' -or $_.Name -eq 'python.exe' -or $_.Name -eq 'wscript.exe') -and ($_.CommandLine -like '*MonitoreoEmpresa*' -or $_.CommandLine -like '*ServicioMonitoreoCorporativo*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$curSess = (Get-Process -Id $PID).SessionId; Get-CimInstance Win32_Process | Where-Object { $_.SessionId -eq $curSess -and ($_.Name -eq 'pythonw.exe' -or $_.Name -eq 'python.exe' -or $_.Name -eq 'wscript.exe') -and ($_.CommandLine -like '*MonitoreoEmpresa*' -or $_.CommandLine -like '*ServicioMonitoreoCorporativo*') } | ForEach-Object { cmd /c "taskkill /F /T /PID $($_.ProcessId)" >$null 2>&1 }" >nul 2>&1
 exit /b 0
 
 
