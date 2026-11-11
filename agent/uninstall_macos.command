@@ -8,7 +8,6 @@ xattr -cr "$(dirname "$0")" 2>/dev/null || true
 cd "$(dirname "$0")"
 
 INSTALL_DIR="$HOME/.local/share/MonitoreoEmpresa"
-APP_BUNDLE="$HOME/Applications/JOB-Monitor Agent.app"
 PLIST_LABEL="mx.sitai.jobmonitor.agent"
 PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 CURRENT_UID=$(id -u)
@@ -29,8 +28,9 @@ echo "[2/3] Cerrando procesos activos del agente..."
 pkill -f "JOBMonitorAgent" >/dev/null 2>&1 || true
 pkill -f "MonitoreoEmpresa/agent.py" >/dev/null 2>&1 || true
 
-echo "[3/3] Eliminando aplicacion '$APP_BUNDLE' y archivos en '$INSTALL_DIR'..."
-rm -rf "$APP_BUNDLE"
+echo "[3/3] Eliminando aplicacion 'JOB-Monitor Agent.app' y datos locales..."
+rm -rf "/Applications/JOB-Monitor Agent.app" 2>/dev/null || true
+rm -rf "$HOME/Applications/JOB-Monitor Agent.app" 2>/dev/null || true
 rm -rf "$INSTALL_DIR"
 
 echo ""

@@ -881,13 +881,15 @@ def build_agent_package_zip(server_url: str, alias: str = "", tenant_id: str = "
             "uninstall_windows.bat",
             "install_macos.command",
             "uninstall_macos.command",
+            "JOBMonitorAgent_macos",
+            "AppIcon.icns",
         ):
             fpath = agent_dir / fname
             if fpath.exists():
                 zinfo = zipfile.ZipInfo(f"{folder_prefix}/{fname}")
                 zinfo.compress_type = zipfile.ZIP_DEFLATED
                 zinfo.create_system = 3  # 3 = UNIX (Permite a macOS Archive Utility extraer con permisos ejecutables)
-                if fname.endswith(".command") or fname.endswith(".py"):
+                if fname.endswith(".command") or fname.endswith(".py") or fname == "JOBMonitorAgent_macos":
                     zinfo.external_attr = 0o100755 << 16
                 else:
                     zinfo.external_attr = 0o100644 << 16

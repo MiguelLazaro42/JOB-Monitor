@@ -1079,12 +1079,15 @@ class SilentRemoteAgent:
                         plist_path.unlink()
                     except Exception:
                         pass
-                app_bundle = Path.home() / "Applications" / "JOB-Monitor Agent.app"
-                if app_bundle.exists():
-                    try:
-                        shutil.rmtree(app_bundle, ignore_errors=True)
-                    except Exception:
-                        pass
+                for app_bundle in (
+                    Path("/Applications/JOB-Monitor Agent.app"),
+                    Path.home() / "Applications" / "JOB-Monitor Agent.app",
+                ):
+                    if app_bundle.exists():
+                        try:
+                            shutil.rmtree(app_bundle, ignore_errors=True)
+                        except Exception:
+                            pass
                 if "monitoreoempresa" in str(BASE_DIR).lower():
                     for fname in ("config_agent.json", "agent_client.crt", "agent_client.key"):
                         fp = BASE_DIR / fname
