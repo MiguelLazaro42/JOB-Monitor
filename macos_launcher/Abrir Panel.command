@@ -8,12 +8,26 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SERVER_DIR="$PROJECT_DIR/server"
 DATA_DIR="$PROJECT_DIR/data"
+
+if [[ -f "$PROJECT_DIR/.env" ]]; then
+  set -a
+  source "$PROJECT_DIR/.env"
+  set +a
+fi
+
 PORT="${RA_PORT:-5080}"
-PANEL_URL="${RA_PANEL_URL:-http://127.0.0.1:$PORT}"
+VPS_HOST="${RA_VPS_HOST:-192.168.103.72}"
+PANEL_URL="${RA_PANEL_URL:-http://$VPS_HOST:$PORT}"
 
 mkdir -p "$DATA_DIR"
 
-# Mini-Función C1.1: Verificar si el servidor ya está respondiendo
+# Mini-Función C1.0: Si el VPS central (192.168.103.72) está en línea, abrir directamente su panel
+if curl -fsS --max-time 2 "http://$VPS_HOST:$PORT/api/health" >/dev/null 2>&1; then
+  open "$PANEL_URL"
+  exit 0
+fi
+
+# Mini-Función C1.1: Verificar si el servidor local ya está respondiendo
 is_server_ready() {
   curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1
 }

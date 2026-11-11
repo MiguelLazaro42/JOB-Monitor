@@ -1,18 +1,16 @@
 [Unit]
-Description=JOB-Monitor - Servidor Central de Monitoreo y Asistencia Corporativa
+Description=SITAI JOB-Monitor - Monitoreo de Actividad y Asistencia Remota
 After=network.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=/opt/JOB-Monitor/server
-Environment="RA_HOST=127.0.0.1"
-Environment="RA_PORT=5080"
-Environment="RA_ADMIN_PASS=admin123"
-Environment="RA_AGENT_TOKEN=ra-secret-token-2026"
-ExecStart=/opt/JOB-Monitor/.venv/bin/python /opt/JOB-Monitor/server/app.py --host 127.0.0.1 --port 5080 --no-browser
+EnvironmentFile=/opt/JOB-Monitor/.env
+ExecStart=/opt/JOB-Monitor/.venv/bin/python /opt/JOB-Monitor/server/app.py --host 0.0.0.0 --port 5080 --no-browser
 Restart=always
 RestartSec=3
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target

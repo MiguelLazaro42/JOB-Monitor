@@ -7,7 +7,15 @@ Toda la arquitectura detallada, esquemas de base de datos, contratos WebSocket y
 
 ---
 
-## Estado Actual: Fases 1, 2 y 3 Completadas
+## Estado Actual: Fases 1, 2, 3 y 4 Completadas (Desplegado en VPS `192.168.103.72`)
+
+### Servidor VPS en Producción
+- **Host / IP del Servidor:** `192.168.103.72` (Alias SSH: `Job-Monitor`)
+- **Panel Web Central:** `http://192.168.103.72:5080`
+- **Endpoint WebSocket de Agentes:** `ws://192.168.103.72:5080/ws/agent` (con verificación mTLS X.509)
+- **Ruta en el VPS:** `/opt/JOB-Monitor` (administrado por `systemd` como servicio `job-monitor.service`)
+
+---
 
 ### Fase 1: Núcleo de Conexión Inversa, Visor Multi-Monitor y Control Remoto
 - **Servidor Central (`server/app.py`):** FastAPI + WebSockets (`/ws/agent` y `/ws/admin`) con gestión de streaming bajo demanda (0% consumo de ancho de banda continuo cuando nadie observa un equipo).
@@ -43,19 +51,26 @@ Toda la arquitectura detallada, esquemas de base de datos, contratos WebSocket y
 
 ---
 
-## Inicio Rápido
+## Inicio Rápido y Conexión al VPS (`192.168.103.72`)
 
-### 1. Instalar e iniciar el Servidor Central / Panel
+### 1. Acceso al Panel en el VPS (`Job-Monitor`)
+
+- **URL del Panel Web:** `http://192.168.103.72:5080`
+- **Acceso SSH al servidor:**
+  ```bash
+  ssh Job-Monitor
+  systemctl status job-monitor
+  ```
+
+### 2. Ejecutar en entorno local (Desarrollo)
 
 ```bash
 bash install.sh
 ./start.sh
 ```
 
-El panel se abrirá automáticamente en `http://127.0.0.1:5060` (Contraseña por defecto: `admin123`, configurable mediante la variable de entorno `RA_ADMIN_PASS`).
-
-### 2. Conectar un Agente de prueba
+### 3. Conectar un Agente apuntando al VPS (`192.168.103.72`)
 
 ```bash
-.venv/bin/python agent/agent.py --server "ws://127.0.0.1:5060/ws/agent" --alias "PC de Miguel - Dirección"
+.venv/bin/python agent/agent.py --server "ws://192.168.103.72:5080/ws/agent" --alias "PC de Miguel - Dirección"
 ```
