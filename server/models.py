@@ -51,10 +51,12 @@ class AgentConnection:
         tenant_name: str = "SITAI Global",
     ):
         self.agent_id: str = agent_id
+        self.raw_agent_id: str = str(info.get("agent_id") or agent_id)
+        self.raw_alias: str = str(info.get("alias") or "").strip()
         self.websocket: WebSocket = websocket
         self.hostname: str = info.get("hostname", "PC-Desconocida")
         self.username: str = info.get("username", "usuario")
-        self.alias: str = saved_alias or info.get("alias") or f"{self.hostname} ({self.username})"
+        self.alias: str = saved_alias or self.raw_alias or f"{self.hostname} ({self.username})"
         self.os_name: str = info.get("os", "Windows")
         self.local_ip: str = info.get("local_ip", "")
         self.tenant_id: str = tenant_id or "sitai-master"
@@ -62,10 +64,16 @@ class AgentConnection:
         self.monitors: List[dict] = info.get("monitors", [])
         self.current_monitor: int = int(info.get("current_monitor", 1))
         self.idle_seconds: int = int(info.get("idle_seconds", 0))
-        self.active_window: str = info.get("active_window", "Escritorio")
+        self.session_id: Optional[int] = int(info["session_id"]) if info.get("session_id") is not None else None
+        self.is_background_session: bool = bool(info.get("session_background", False)) or (not bool(info.get("thumbnail")))
+        raw_win = info.get("active_window", "Escritorio")
+        if self.is_background_session and raw_win in ("Escritorio", ""):
+            self.active_window: str = "Sesión en 2º plano (Cambio de usuario)"
+        else:
+            self.active_window: str = raw_win
         self.connected_at: float = time.time()
         self.last_seen: float = time.time()
-        self.thumbnail_b64: Optional[str] = info.get("thumbnail")
+        self.thumbnail_b64: Optional[str] = info.get("thumbnail") or None
         self.stream_quality: int = 65
         self.stream_fps: int = 18
 
@@ -92,6 +100,8 @@ class AgentConnection:
             "idle_seconds": self.idle_seconds,
             "activity_status": self.activity_status,
             "active_window": self.active_window,
+            "session_id": self.session_id,
+            "is_background_session": self.is_background_session,
             "connected_at": self.connected_at,
             "last_seen": self.last_seen,
             "stream_quality": self.stream_quality,

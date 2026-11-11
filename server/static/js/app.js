@@ -490,6 +490,16 @@
         const monCount = Math.max(1, (ag.monitors || []).filter((m) => m.id > 0).length);
         const thumbSrc = ag.thumbnail ? `data:image/jpeg;base64,${ag.thumbnail}` : '';
         const cardExtra = ag.activity_status === 'away' ? 'card-away' : '';
+        const isBgSession = Boolean(ag.is_background_session);
+        const placeholderHtml = isBgSession
+          ? `<div class="screen-offline-placeholder" style="flex-direction:column; gap:6px; padding:12px; text-align:center;">
+               <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:22px;height:22px;opacity:0.75;">
+                 <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 8h10"/><path d="M7 12h6"/>
+               </svg>
+               <span>Sesión de Windows en 2º plano</span>
+               <small style="font-size:11px; opacity:0.75;">Otro usuario tiene la pantalla activa</small>
+             </div>`
+          : `<div class="screen-offline-placeholder"><span>Capturando pantalla...</span></div>`;
 
         return `
           <article class="agent-card ${cardExtra}" data-agent-id="${escapeHtml(ag.agent_id)}">
@@ -497,14 +507,17 @@
               ${
                 thumbSrc
                   ? `<img src="${thumbSrc}" alt="${escapeHtml(ag.alias)}" />`
-                  : `<div class="screen-offline-placeholder"><span>Capturando pantalla...</span></div>`
+                  : placeholderHtml
               }
               <div class="screen-top-badges">
                 <span class="badge-status ${meta.badgeClass}">
                   <span class="indicator-dot ${meta.dotClass}"></span>
                   ${escapeHtml(meta.label)}
                 </span>
-                <span class="screen-mon-pill">${monCount}M</span>
+                <div style="display:flex; gap:4px; align-items:center;">
+                  ${isBgSession ? `<span class="screen-mon-pill" title="Esta sesión de usuario está en segundo plano en Windows">2º Plano</span>` : ''}
+                  <span class="screen-mon-pill">${monCount}M</span>
+                </div>
               </div>
             </div>
 

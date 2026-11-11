@@ -135,7 +135,12 @@ if not exist "%INSTALL_DIR%" (
 if "%IS_ADMIN%"=="1" (
     icacls "%INSTALL_DIR%" /grant "*S-1-5-32-545:(OI)(CI)M" /T /C /Q >nul 2>&1
 )
-echo [MF-02] Directorio destino preparado: %INSTALL_DIR%
+for /f "delims=" %%S in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "$u = ($env:ORIG_USER -split '\\')[-1]; $s = ($u -replace '[^a-zA-Z0-9_-]','_').ToLower().Trim('_'); if ($s) { Write-Output $s } else { Write-Output 'default' }" 2^>nul') do set "SAFE_USER_SLUG=%%S"
+if not "%SAFE_USER_SLUG%"=="" if not "%SAFE_USER_SLUG%"=="default" (
+    set "TASK_BOOT=ServicioMonitoreoCorporativo_%SAFE_USER_SLUG%"
+    set "TASK_CRON=ServicioMonitoreoCorporativoWatchdog_%SAFE_USER_SLUG%"
+)
+echo [MF-02] Directorio destino preparado: %INSTALL_DIR% (Usuario: %ORIG_USER%)
 exit /b 0
 
 
@@ -229,13 +234,13 @@ REM ============================================================================
 REM  MF-05: Detener instancias previas del agente antes de actualizar
 REM ============================================================================
 :mf_05_stop_previous_agent
-echo [MF-05] Verificando procesos previos del agente...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'pythonw.exe' -or $_.Name -eq 'python.exe' -or $_.Name -eq 'wscript.exe') -and ($_.CommandLine -like '*MonitoreoEmpresa*' -or $_.CommandLine -like '*ServicioMonitoreoCorporativo*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+echo [MF-05] Verificando procesos previos del agente en la sesion actual...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$curSess = (Get-Process -Id $PID).SessionId; Get-CimInstance Win32_Process | Where-Object { $_.SessionId -eq $curSess -and ($_.Name -eq 'pythonw.exe' -or $_.Name -eq 'python.exe' -or $_.Name -eq 'wscript.exe') -and ($_.CommandLine -like '*MonitoreoEmpresa*' -or $_.CommandLine -like '*ServicioMonitoreoCorporativo*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 exit /b 0
 
 
 REM ============================================================================
-REM  MF-06: Copiar codigo, configuracion y certificados + conservar agent_id
+REM  MF-06: Copiar codigo, configuracion y certificados + identidad por usuario
 REM ============================================================================
 :mf_06_deploy_files_and_certs
 echo [MF-06] Desplegando archivos y certificados en %INSTALL_DIR%...
@@ -261,7 +266,7 @@ if exist "%SCRIPT_DIR%agent_client.key" (
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -Path $env:INSTALL_DIR -Recurse | Unblock-File -ErrorAction SilentlyContinue" >nul 2>&1
 
 if exist "%OLD_CFG%" if exist "%INSTALL_DIR%\config_agent.json" (
-    "%PYTHON_EXE%" -c "import json, os, pathlib; p1=pathlib.Path(os.environ['OLD_CFG']); p2=pathlib.Path(os.environ['INSTALL_DIR'])/'config_agent.json'; c1=json.loads(p1.read_text('utf-8')); c2=json.loads(p2.read_text('utf-8')); [c2.setdefault(k, c1[k]) for k in ('agent_id','alias') if c1.get(k)]; p2.write_text(json.dumps(c2, indent=2, ensure_ascii=False), 'utf-8'); p1.unlink(missing_ok=True)" >nul 2>&1
+    "%PYTHON_EXE%" -c "import json, os, pathlib; p1=pathlib.Path(os.environ['OLD_CFG']); p2=pathlib.Path(os.environ['INSTALL_DIR'])/'config_agent.json'; u=os.environ.get('ORIG_USER','').split('\\')[-1].strip(); c1=json.loads(p1.read_text('utf-8')); c2=json.loads(p2.read_text('utf-8')); same_u=(not c1.get('owner_username') or c1.get('owner_username','').lower()==u.lower()); same_a=(not c2.get('alias') or c2.get('alias')==c1.get('alias')); [c2.setdefault(k, c1[k]) for k in ('agent_id','alias') if c1.get(k) and same_u and same_a]; c2['owner_username']=u or c1.get('owner_username',''); p2.write_text(json.dumps(c2, indent=2, ensure_ascii=False), 'utf-8'); p1.unlink(missing_ok=True)" >nul 2>&1
 )
 exit /b 0
 

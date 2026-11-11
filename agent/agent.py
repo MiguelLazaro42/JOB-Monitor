@@ -124,6 +124,42 @@ if IS_WINDOWS:
         except Exception:
             return "Escritorio"
 
+    def get_windows_session_context() -> tuple[Optional[int], str, bool]:
+        """
+        Obtiene (session_id, username_real, is_background_session) de la sesión interactiva de Windows
+        usando WTSQuerySessionInformationW, incluso cuando el proceso fue iniciado con token UAC elevado.
+        """
+        sess_id_val: Optional[int] = None
+        real_user = ""
+        is_bg = False
+        try:
+            sess_dword = ctypes.c_uint32(0)
+            if ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(sess_dword)):
+                sess_id_val = int(sess_dword.value)
+                wts = ctypes.windll.wtsapi32
+                buf_ptr = ctypes.c_void_p()
+                bytes_ret = ctypes.c_uint32(0)
+                # WTSUserName = 5
+                if wts.WTSQuerySessionInformationW(0, sess_id_val, 5, ctypes.byref(buf_ptr), ctypes.byref(bytes_ret)):
+                    if buf_ptr.value:
+                        real_user = ctypes.wstring_at(buf_ptr.value).strip()
+                    wts.WTSFreeMemory(buf_ptr)
+                # WTSConnectState = 8 (0 == WTSActive)
+                buf_state = ctypes.c_void_p()
+                if wts.WTSQuerySessionInformationW(0, sess_id_val, 8, ctypes.byref(buf_state), ctypes.byref(bytes_ret)):
+                    if buf_state.value:
+                        state_code = ctypes.cast(buf_state.value, ctypes.POINTER(ctypes.c_int)).contents.value
+                        is_bg = state_code != 0
+                    wts.WTSFreeMemory(buf_state)
+        except Exception:
+            pass
+        if not real_user:
+            try:
+                real_user = getpass.getuser()
+            except Exception:
+                real_user = "usuario"
+        return sess_id_val, real_user, is_bg
+
 elif IS_MAC:
     def get_idle_seconds() -> int:
         try:
@@ -208,6 +244,13 @@ elif IS_MAC:
             pass
         return True
 
+    def get_windows_session_context() -> tuple[Optional[int], str, bool]:
+        try:
+            u = getpass.getuser()
+        except Exception:
+            u = "usuario"
+        return None, u, False
+
 else:
     def get_idle_seconds() -> int:
         return 0
@@ -217,6 +260,13 @@ else:
 
     def check_macos_screen_permission(request_if_missing: bool = False) -> bool:
         return True
+
+    def get_windows_session_context() -> tuple[Optional[int], str, bool]:
+        try:
+            u = getpass.getuser()
+        except Exception:
+            u = "usuario"
+        return None, u, False
 
 
 def build_macos_permission_frame(width: int = 1280, height: int = 720) -> Image.Image:
@@ -246,6 +296,46 @@ def build_macos_permission_frame(width: int = 1280, height: int = 720) -> Image.
         ("2. Entra en 'Grabacion de pantalla y audio del sistema'", (226, 232, 240), y0 + 154),
         ("3. Activa el interruptor de 'JOB-Monitor Agent' (y tambien en 'Accesibilidad')", (52, 211, 153), y0 + 188),
         ("La senal de video en vivo iniciara automaticamente en 3 segundos tras activarlo.", (148, 163, 184), y0 + 244),
+    ]
+    for text, color, py in lines:
+        if py + 20 < y1:
+            draw.text((x0 + 32, py), text, fill=color)
+    return img
+
+
+def build_windows_background_session_frame(
+    width: int = 1280,
+    height: int = 720,
+    username: str = "usuario",
+    session_id: Optional[int] = None,
+) -> Image.Image:
+    """
+    Genera un cuadro informativo nítido cuando una sesión de usuario de Windows se encuentra
+    en segundo plano (Cambio rápido de usuario / Sesión bloqueada sin GPU activa).
+    """
+    w = max(640, min(1920, int(width)))
+    h = max(360, min(1080, int(height)))
+    img = Image.new("RGB", (w, h), (15, 23, 42))
+    draw = ImageDraw.Draw(img)
+
+    card_w = min(w - 80, 820)
+    card_h = min(h - 80, 290)
+    x0 = (w - card_w) // 2
+    y0 = (h - card_h) // 2
+    x1 = x0 + card_w
+    y1 = y0 + card_h
+
+    draw.rectangle([x0, y0, x1, y1], fill=(30, 41, 59), outline=(96, 165, 250), width=2)
+    draw.rectangle([x0, y0, x1, y0 + 48], fill=(15, 32, 57))
+
+    sess_lbl = f" (Sesion ID {session_id})" if session_id is not None else ""
+    lines = [
+        (f"SITAI JOB-Monitor  |  Sesion de Windows en 2o Plano{sess_lbl}", (147, 197, 253), y0 + 16),
+        (f"El usuario '{username}' tiene la sesion iniciada pero no esta en pantalla.", (255, 255, 255), y0 + 76),
+        ("Causas habituales en Windows Multi-Usuario:", (203, 213, 225), y0 + 122),
+        ("- Otro usuario de este equipo tiene activa la consola fisica (Cambio de usuario).", (148, 163, 184), y0 + 154),
+        ("- O bien la pantalla de inicio de sesion de Windows (Winlogon) esta bloqueada.", (148, 163, 184), y0 + 184),
+        ("El video en vivo se reanudara automaticamente en cuanto esta sesion vuelva al frente.", (52, 211, 153), y0 + 234),
     ]
     for text, color, py in lines:
         if py + 20 < y1:
@@ -321,26 +411,61 @@ def generate_hardware_agent_id(hostname: str, username: str) -> str:
     return f"{hostname.upper()}-{short_hash}-{inst_suffix}"
 
 
+def _sanitize_user_slug(username: str) -> str:
+    slug = "".join(c if (c.isalnum() or c in ("-", "_")) else "_" for c in (username or "user").lower()).strip("_")
+    return slug or "user"
+
+
 def load_or_create_agent_config(cli_server: Optional[str], cli_token: Optional[str], cli_alias: Optional[str]) -> dict:
     hostname = socket.gethostname()
-    try:
-        username = getpass.getuser()
-    except Exception:
-        username = "usuario"
+    sess_id, username, _ = get_windows_session_context()
+    safe_user = _sanitize_user_slug(username)
+    user_cfg_path = BASE_DIR / f"config_agent_{safe_user}.json"
 
-    cfg = {
-        "agent_id": generate_hardware_agent_id(hostname, username),
-        "alias": f"PC de {username} ({hostname})",
-        "server_url": DEFAULT_SERVER_URL,
-        "token": DEFAULT_TOKEN,
-    }
-
+    shared_loaded: dict = {}
     if CONFIG_PATH.exists():
         try:
-            loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            cfg.update(loaded)
+            shared_loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         except Exception:
-            pass
+            shared_loaded = {}
+
+    user_loaded: dict = {}
+    if user_cfg_path.exists():
+        try:
+            user_loaded = json.loads(user_cfg_path.read_text(encoding="utf-8"))
+        except Exception:
+            user_loaded = {}
+
+    default_alias = f"PC de {username} ({hostname})"
+    cfg = {
+        "agent_id": generate_hardware_agent_id(hostname, username),
+        "alias": default_alias,
+        "server_url": str(shared_loaded.get("server_url") or DEFAULT_SERVER_URL),
+        "token": str(shared_loaded.get("token") or DEFAULT_TOKEN),
+        "tenant_id": str(shared_loaded.get("tenant_id") or ""),
+        "owner_username": username,
+    }
+    for k in ("mtls_cert", "mtls_key"):
+        if shared_loaded.get(k):
+            cfg[k] = shared_loaded[k]
+
+    if user_loaded.get("agent_id"):
+        cfg["agent_id"] = user_loaded["agent_id"]
+        cfg["alias"] = user_loaded.get("alias") or shared_loaded.get("alias") or default_alias
+    else:
+        shared_owner = str(shared_loaded.get("owner_username") or "").strip()
+        if shared_loaded.get("agent_id") and (not shared_owner or shared_owner.lower() == username.lower()):
+            cfg["agent_id"] = shared_loaded["agent_id"]
+            cfg["alias"] = shared_loaded.get("alias") or default_alias
+            shared_loaded["owner_username"] = username
+            try:
+                CONFIG_PATH.write_text(json.dumps(shared_loaded, indent=2, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
+        elif shared_loaded.get("alias"):
+            other_auto = f"PC de {shared_owner} ({hostname})" if shared_owner else ""
+            if shared_loaded["alias"] != other_auto:
+                cfg["alias"] = shared_loaded["alias"]
 
     if cli_server:
         cfg["server_url"] = cli_server
@@ -350,10 +475,19 @@ def load_or_create_agent_config(cli_server: Optional[str], cli_token: Optional[s
         cfg["alias"] = cli_alias
 
     try:
-        CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+        user_cfg_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
 
+    if not CONFIG_PATH.exists():
+        try:
+            CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+    cfg["_user_config_path"] = str(user_cfg_path)
+    cfg["_session_id"] = sess_id
+    cfg["_username"] = username
     return cfg
 
 
@@ -658,10 +792,10 @@ class SilentRemoteAgent:
         self.server_url: str = cfg["server_url"]
         self.token: str = cfg["token"]
         self.hostname: str = socket.gethostname()
-        try:
-            self.username: str = getpass.getuser()
-        except Exception:
-            self.username = "usuario"
+        sess_id, real_user, _ = get_windows_session_context()
+        self.session_id: Optional[int] = cfg.get("_session_id", sess_id)
+        self.username: str = str(cfg.get("_username") or real_user or "usuario")
+        self.user_config_path: Path = Path(cfg.get("_user_config_path") or str(CONFIG_PATH))
 
         self.mouse = MouseController()
         self.keyboard = KeyboardController()
@@ -750,13 +884,26 @@ class SilentRemoteAgent:
                 "error": str(e),
             }
 
+    def _persist_user_cfg(self):
+        clean_cfg = {k: v for k, v in self.cfg.items() if not str(k).startswith("_")}
+        try:
+            self.user_config_path.write_text(json.dumps(clean_cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
     def save_alias_locally(self, new_alias: str):
         self.alias = new_alias
         self.cfg["alias"] = new_alias
-        try:
-            CONFIG_PATH.write_text(json.dumps(self.cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            pass
+        self._persist_user_cfg()
+
+    def save_assigned_identity(self, new_agent_id: str, new_alias: str = ""):
+        if new_agent_id:
+            self.agent_id = new_agent_id
+            self.cfg["agent_id"] = new_agent_id
+        if new_alias:
+            self.alias = new_alias
+            self.cfg["alias"] = new_alias
+        self._persist_user_cfg()
 
     def get_local_ip(self) -> str:
         try:
@@ -821,6 +968,13 @@ class SilentRemoteAgent:
                 except Exception:
                     if IS_MAC:
                         img = build_macos_permission_frame(mon["width"], mon["height"])
+                    elif IS_WINDOWS:
+                        img = build_windows_background_session_frame(
+                            mon["width"],
+                            mon["height"],
+                            username=self.username,
+                            session_id=self.session_id,
+                        )
                     else:
                         return None
 
@@ -1021,6 +1175,7 @@ class SilentRemoteAgent:
                     self.max_idle_reached = 0
 
                 try:
+                    _, _, is_bg = get_windows_session_context() if IS_WINDOWS else (None, self.username, False)
                     payload = {
                         "type": "telemetry",
                         "idle_seconds": idle_secs,
@@ -1030,10 +1185,15 @@ class SilentRemoteAgent:
                         "away_alert": away_alert_triggered,
                         "current_monitor": self.current_monitor,
                         "monitors": self.get_monitors_info(sct),
+                        "session_id": self.session_id,
+                        "session_background": is_bg,
                         "log_events": log_events,
                     }
                     if tick % 3 == 1:
-                        payload["thumbnail"] = self.capture_thumbnail_b64(sct)
+                        thumb_b64 = self.capture_thumbnail_b64(sct)
+                        payload["thumbnail"] = thumb_b64
+                        if IS_WINDOWS and not thumb_b64:
+                            payload["session_background"] = True
                     await asyncio.wait_for(self.ws.send(json.dumps(payload)), timeout=8.0)
                 except Exception:
                     try:
@@ -1193,6 +1353,7 @@ class SilentRemoteAgent:
                     if IS_MAC and not self.macos_screen_ok:
                         os_label += " (Falta permiso de Pantalla)"
 
+                    _, _, is_bg = get_windows_session_context() if IS_WINDOWS else (None, self.username, False)
                     hello = {
                         "type": "register",
                         "token": self.token,
@@ -1201,6 +1362,8 @@ class SilentRemoteAgent:
                         "tenant_id": str(self.cfg.get("tenant_id") or ""),
                         "hostname": self.hostname,
                         "username": self.username,
+                        "session_id": self.session_id,
+                        "session_background": is_bg or (IS_WINDOWS and not bool(thumb)),
                         "os": os_label,
                         "local_ip": self.get_local_ip(),
                         "monitors": monitors,
@@ -1249,6 +1412,11 @@ class SilentRemoteAgent:
                                     new_alias = data.get("alias", "").strip()
                                     if new_alias:
                                         self.save_alias_locally(new_alias)
+                                elif mtype == "assign_agent_id":
+                                    assigned_id = str(data.get("agent_id") or "").strip()
+                                    assigned_alias = str(data.get("alias") or "").strip()
+                                    if assigned_id:
+                                        self.save_assigned_identity(assigned_id, assigned_alias)
                                 elif mtype == "mouse":
                                     self.handle_mouse_event(data, input_sct)
                                 elif mtype == "key":

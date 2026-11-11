@@ -101,7 +101,41 @@ class HubManager:
         tid = ag.tenant_id if ag else (db.get_device_tenant(agent_id) or MASTER_TENANT_ID)
         return user.get("tenant_id") == tid
 
+    async def _is_agent_ws_alive(self, conn: AgentConnection) -> bool:
+        if time.time() - conn.last_seen > 16.0:
+            return False
+        try:
+            await asyncio.wait_for(conn.websocket.send_json({"type": "ping"}), timeout=1.2)
+            return True
+        except Exception:
+            return False
+
+    async def resolve_effective_agent_id(self, raw_agent_id: str, ws: WebSocket, info: dict) -> str:
+        """
+        Desambiguación automática multi-sesión (Windows Fast User Switching / Multi-usuario):
+        Si dos sesiones de usuario en la misma PC comparten el mismo config_agent.json
+        (mismo raw_agent_id), detecta que la primera conexión sigue activa y asigna a la
+        segunda sesión el identificador derivado '{raw_agent_id}-S2', evitando desconexiones en bucle.
+        """
+        old = self.agents.get(raw_agent_id)
+        if not old or old.websocket == ws:
+            return raw_agent_id
+
+        if not await self._is_agent_ws_alive(old):
+            return raw_agent_id
+
+        for slot_idx in range(2, 10):
+            candidate_id = f"{raw_agent_id}-S{slot_idx}"
+            slot_conn = self.agents.get(candidate_id)
+            if not slot_conn or slot_conn.websocket == ws:
+                return candidate_id
+            if not await self._is_agent_ws_alive(slot_conn):
+                return candidate_id
+
+        return f"{raw_agent_id}-S2"
+
     async def register_agent(self, agent_id: str, ws: WebSocket, info: dict) -> AgentConnection:
+        raw_agent_id = str(info.get("agent_id") or agent_id)
         old = self.agents.get(agent_id)
         if old and old.websocket != ws:
             try:
@@ -110,10 +144,24 @@ class HubManager:
                 pass
 
         saved_alias = db.get_saved_alias(agent_id)
+        reported_alias = str(info.get("alias") or "").strip()
+        fallback_alias = reported_alias or f"{info.get('hostname', 'PC')} ({info.get('username', 'usuario')})"
+        if not saved_alias and agent_id != raw_agent_id:
+            primary_alias = db.get_saved_alias(raw_agent_id) or ""
+            if reported_alias and reported_alias != primary_alias:
+                fallback_alias = reported_alias
+            else:
+                base_lbl = primary_alias or fallback_alias
+                suffix_num = agent_id.rsplit("-S", 1)[-1] if "-S" in agent_id else "2"
+                fallback_alias = f"{base_lbl} (Sesión {suffix_num})"
+
         reported_tid = str(info.get("tenant_id") or "").strip()
+        if not reported_tid and agent_id != raw_agent_id:
+            reported_tid = db.get_device_tenant(raw_agent_id) or ""
+
         final_tid = db.upsert_device(
             agent_id=agent_id,
-            alias=saved_alias or info.get("alias") or f"{info.get('hostname', 'PC')} ({info.get('username', 'usuario')})",
+            alias=saved_alias or fallback_alias,
             hostname=info.get("hostname", "PC-Desconocida"),
             username=info.get("username", "usuario"),
             os_version=info.get("os", "Windows"),
@@ -126,11 +174,21 @@ class HubManager:
             agent_id,
             ws,
             info,
-            saved_alias=saved_alias,
+            saved_alias=saved_alias or fallback_alias,
             tenant_id=final_tid,
             tenant_name=tenant_names.get(final_tid, final_tid),
         )
         self.agents[agent_id] = conn
+
+        if agent_id != raw_agent_id:
+            await self.send_to_agent(
+                agent_id,
+                {
+                    "type": "assign_agent_id",
+                    "agent_id": agent_id,
+                    "alias": conn.alias,
+                },
+            )
 
         mon_count = max(1, len([m for m in conn.monitors if m.get("id", 0) > 0]))
         log_entry = db.add_log(
@@ -1260,8 +1318,9 @@ async def ws_agent_endpoint(websocket: WebSocket):
             await websocket.close(code=1008)
             return
 
-        agent_id = str(hello.get("agent_id") or f"{hello.get('hostname', 'PC')}-{hello.get('username', 'user')}")
-        if db.is_device_revoked(agent_id):
+        raw_agent_id = str(hello.get("agent_id") or f"{hello.get('hostname', 'PC')}-{hello.get('username', 'user')}")
+        agent_id = await hub.resolve_effective_agent_id(raw_agent_id, websocket, hello)
+        if db.is_device_revoked(agent_id) or db.is_device_revoked(raw_agent_id):
             await websocket.send_json({"type": "self_destruct"})
             await websocket.close(code=1008)
             return
@@ -1283,14 +1342,33 @@ async def ws_agent_endpoint(websocket: WebSocket):
                 agent.last_seen = time.time()
 
                 if msg_type == "telemetry":
+                    was_bg = agent.is_background_session
                     agent.idle_seconds = int(data.get("idle_seconds", 0))
-                    agent.active_window = data.get("active_window", "Escritorio")
+                    raw_win = data.get("active_window", "Escritorio")
                     if "monitors" in data:
                         agent.monitors = data["monitors"]
                     if "current_monitor" in data:
                         agent.current_monitor = int(data["current_monitor"])
-                    if "thumbnail" in data and data["thumbnail"]:
-                        agent.thumbnail_b64 = data["thumbnail"]
+                    if "session_id" in data and data["session_id"] is not None:
+                        agent.session_id = int(data["session_id"])
+                    if "session_background" in data:
+                        agent.is_background_session = bool(data["session_background"])
+                    if "thumbnail" in data:
+                        if data["thumbnail"]:
+                            agent.thumbnail_b64 = data["thumbnail"]
+                            if "session_background" not in data:
+                                agent.is_background_session = False
+                        else:
+                            if "session_background" not in data:
+                                agent.is_background_session = True
+                    elif was_bg and (agent.idle_seconds < 15 or raw_win not in ("Escritorio", "")):
+                        # Si la sesión en 2º plano acaba de retomar foco/entrada, solicitar miniatura inmediata
+                        await hub.send_to_agent(agent_id, {"type": "capture_thumbnail"})
+
+                    if agent.is_background_session and raw_win in ("Escritorio", ""):
+                        agent.active_window = "Sesión en 2º plano (Cambio de usuario)"
+                    else:
+                        agent.active_window = raw_win
 
                     delta_secs = int(data.get("delta_seconds", 4))
                     app_name = data.get("app_name") or agent.active_window
