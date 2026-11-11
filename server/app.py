@@ -483,7 +483,7 @@ def verify_admin_access(request: Request) -> dict:
 
 
 @app.post("/api/login")
-async def admin_login(request: Request):
+async def admin_login(request: Request, response: Response):
     """Valida usuario y contraseña (Super Admin, Usuario Principal o Sub-usuario) y devuelve token de sesión."""
     try:
         body = await request.json()
@@ -497,6 +497,13 @@ async def admin_login(request: Request):
     session_token = create_session_token(user)
     tenant_names = db.get_tenant_name_map()
     user["tenant_name"] = tenant_names.get(user["tenant_id"], user["tenant_id"])
+    response.set_cookie(
+        key="ra_admin_pass",
+        value=session_token,
+        max_age=86400 * 30,
+        httponly=False,
+        samesite="lax",
+    )
     return {
         "ok": True,
         "username": user["username"],
@@ -1323,7 +1330,12 @@ async def get_capture_evidence(request: Request, agent_id: str, filename: str):
     file_path = CAPTURES_DIR / agent_id / clean_filename
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Evidencia no encontrada")
-    return FileResponse(path=str(file_path), media_type="image/jpeg", filename=clean_filename)
+    return FileResponse(
+        path=str(file_path),
+        media_type="image/jpeg",
+        filename=clean_filename,
+        content_disposition_type="inline",
+    )
 
 
 @app.websocket("/ws/agent")

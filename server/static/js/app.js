@@ -31,6 +31,12 @@
     lastWsActivityAt: Date.now(),
   };
 
+  if (state.password) {
+    try {
+      document.cookie = `ra_admin_pass=${encodeURIComponent(state.password)}; path=/; max-age=2592000; SameSite=Lax`;
+    } catch (_) {}
+  }
+
   // Referencias DOM Generales y Login
   const appShell = document.getElementById('app-shell');
   const authModal = document.getElementById('auth-modal');
@@ -767,11 +773,20 @@
         </div>
       `;
     }
+    let imgUrl = data.url || '';
+    if (imgUrl && state.password) {
+      const sep = imgUrl.includes('?') ? '&' : '?';
+      imgUrl = `${imgUrl}${sep}admin_pass=${encodeURIComponent(state.password)}`;
+    }
     if (evidenceImagePreview) {
-      evidenceImagePreview.src = data.url || '';
+      evidenceImagePreview.alt = 'Cargando captura de pantalla...';
+      evidenceImagePreview.onerror = function () {
+        this.alt = 'No se pudo cargar la imagen de evidencia visual.';
+      };
+      evidenceImagePreview.src = imgUrl;
     }
     if (evidenceDownloadLink) {
-      evidenceDownloadLink.href = data.url || '#';
+      evidenceDownloadLink.href = imgUrl || '#';
       const cleanAlias = (data.alias || 'equipo').replace(/[^a-zA-Z0-9_-]/g, '_');
       evidenceDownloadLink.download = `evidencia_${cleanAlias}_${Date.now()}.jpg`;
     }
@@ -1433,6 +1448,9 @@
     state.password = '';
     state.user = null;
     state.authenticated = false;
+    try {
+      document.cookie = 'ra_admin_pass=; path=/; max-age=0; SameSite=Lax';
+    } catch (_) {}
     sessionStorage.removeItem('ra_session_user');
     sessionStorage.removeItem('ra_session_pass');
     sessionStorage.removeItem('ra_session_user_obj');
@@ -1660,6 +1678,9 @@
 
       sessionStorage.setItem('ra_session_user', state.username);
       sessionStorage.setItem('ra_session_pass', state.password);
+      try {
+        document.cookie = `ra_admin_pass=${encodeURIComponent(state.password)}; path=/; max-age=2592000; SameSite=Lax`;
+      } catch (_) {}
       if (state.user) {
         sessionStorage.setItem('ra_session_user_obj', JSON.stringify(state.user));
       }
