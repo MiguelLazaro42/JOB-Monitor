@@ -3,7 +3,8 @@
 #  SITAI JOB-Monitor — Instalador Universal Autonomo para macOS (Intel & M1-M4)
 #  - No requiere Xcode Command Line Tools ni Python preinstalado (usa uv 3.12)
 #  - Instala aplicacion nativa Mach-O en /Applications/JOB-Monitor Agent.app
-#  - Registra LaunchAgent permanente al encender el Mac y permisos TCC nativos
+#  - Limpia hashes TCC obsoletos si existia una version previa instalada
+#  - Registra LaunchAgent permanente al encender el Mac y permisos TCC reales
 # ==============================================================================
 set -e
 
@@ -18,12 +19,15 @@ PLIST_PATH="$PLIST_DIR/$PLIST_LABEL.plist"
 STATUS_JSON="$INSTALL_DIR/permissions_status.json"
 RUNTIME_JSON="$INSTALL_DIR/runtime_paths.json"
 CURRENT_UID=$(id -u)
+LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+AGENT_ACTIVATED=0
 
-# Instalar en /Applications (ruta estandar de macOS visible en Ajustes del Sistema y Finder)
 if [ -w "/Applications" ]; then
     APPS_DIR="/Applications"
-    # Limpiar posible copia antigua en ~/Applications para evitar rutas duplicadas en LaunchServices
-    rm -rf "$HOME/Applications/JOB-Monitor Agent.app" 2>/dev/null || true
+    if [ -d "$HOME/Applications/JOB-Monitor Agent.app" ]; then
+        "$LSREG" -u "$HOME/Applications/JOB-Monitor Agent.app" >/dev/null 2>&1 || true
+        rm -rf "$HOME/Applications/JOB-Monitor Agent.app" 2>/dev/null || true
+    fi
 else
     APPS_DIR="$HOME/Applications"
     mkdir -p "$APPS_DIR"
@@ -33,12 +37,55 @@ APP_BUNDLE="$APPS_DIR/JOB-Monitor Agent.app"
 APP_MACOS_DIR="$APP_BUNDLE/Contents/MacOS"
 APP_EXEC="$APP_MACOS_DIR/JOBMonitorAgent"
 
+# Micro-funcion M1: Consultar permisos reales del .app via LaunchServices
+# (NUNCA ejecutar $APP_EXEC directo desde bash, porque macOS tccd evalua a Terminal.app como proceso responsable)
+probe_app_permissions() {
+    rm -f "$STATUS_JSON"
+    open -n -a "$APP_BUNDLE" --args --check-permissions >/dev/null 2>&1 || true
+    for _ in 1 2 3 4 5 6 7 8; do
+        if [ -f "$STATUS_JSON" ]; then
+            break
+        fi
+        sleep 0.2
+    done
+    SCREEN_OK=$("$VENV_PY" -c "import json, pathlib; p=pathlib.Path('$STATUS_JSON'); d=json.loads(p.read_text()) if p.exists() else {}; print('1' if d.get('screen') else '0')" 2>/dev/null || echo "0")
+    AX_OK=$("$VENV_PY" -c "import json, pathlib; p=pathlib.Path('$STATUS_JSON'); d=json.loads(p.read_text()) if p.exists() else {}; print('1' if d.get('accessibility') else '0')" 2>/dev/null || echo "0")
+}
+
+# Micro-funcion M2: Registrar el .app en TCC (Grabacion de Pantalla + Accesibilidad + Audio)
+request_app_permissions() {
+    rm -f "$STATUS_JSON"
+    open -n -a "$APP_BUNDLE" --args --request-permissions >/dev/null 2>&1 || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if [ -f "$STATUS_JSON" ]; then
+            break
+        fi
+        sleep 0.4
+    done
+    SCREEN_OK=$("$VENV_PY" -c "import json, pathlib; p=pathlib.Path('$STATUS_JSON'); d=json.loads(p.read_text()) if p.exists() else {}; print('1' if d.get('screen') else '0')" 2>/dev/null || echo "0")
+    AX_OK=$("$VENV_PY" -c "import json, pathlib; p=pathlib.Path('$STATUS_JSON'); d=json.loads(p.read_text()) if p.exists() else {}; print('1' if d.get('accessibility') else '0')" 2>/dev/null || echo "0")
+}
+
+# Micro-funcion M3: Activar LaunchAgent de forma garantizada incluso si el usuario cierra con Ctrl+C
+activate_launchagent() {
+    if [ "$AGENT_ACTIVATED" = "1" ] || [ ! -f "$PLIST_PATH" ]; then
+        return 0
+    fi
+    AGENT_ACTIVATED=1
+    launchctl bootstrap "gui/$CURRENT_UID" "$PLIST_PATH" >/dev/null 2>&1 || launchctl load -w "$PLIST_PATH" >/dev/null 2>&1 || true
+    launchctl enable "gui/$CURRENT_UID/$PLIST_LABEL" >/dev/null 2>&1 || true
+    launchctl kickstart -k "gui/$CURRENT_UID/$PLIST_LABEL" >/dev/null 2>&1 || true
+}
+
 echo "===================================================================="
 echo "  SITAI JOB-Monitor — Instalador Nativo para macOS (Intel y Apple M)"
 echo "===================================================================="
 echo ""
 
-# Detener instancia previa si existia
+# Detener instancia previa y desregistrar bundle anterior si existia
+if [ -d "$APP_BUNDLE" ]; then
+    "$LSREG" -u "$APP_BUNDLE" >/dev/null 2>&1 || true
+fi
 launchctl bootout "gui/$CURRENT_UID/$PLIST_LABEL" >/dev/null 2>&1 || true
 launchctl unload "$PLIST_PATH" >/dev/null 2>&1 || true
 pkill -f "JOBMonitorAgent" >/dev/null 2>&1 || true
@@ -46,11 +93,7 @@ pkill -f "JOBMonitorAgent" >/dev/null 2>&1 || true
 echo "[1/5] Preparando archivos del agente en $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR/bin" "$PLIST_DIR"
 
-OLD_CFG_BACKUP=""
-if [ -f "$INSTALL_DIR/config_agent.json" ]; then
-    OLD_CFG_BACKUP="$INSTALL_DIR/config_agent.prev.json"
-    cp -f "$INSTALL_DIR/config_agent.json" "$OLD_CFG_BACKUP"
-fi
+rm -f "$INSTALL_DIR"/config_agent*.json 2>/dev/null || true
 
 cp -f "$SRC_DIR/agent.py" "$INSTALL_DIR/agent.py"
 cp -f "$SRC_DIR/requirements-agent.txt" "$INSTALL_DIR/requirements-agent.txt"
@@ -89,7 +132,6 @@ if [ -x "$UV_BIN" ]; then
     fi
 fi
 
-# Respaldo en caso de red cerrada sin acceso a GitHub: buscar Python local real sin disparar Xcode stub
 if [ "$VENV_READY" -eq 0 ]; then
     SYS_PY=""
     for cand in \
@@ -115,28 +157,6 @@ fi
 
 VENV_PY="$INSTALL_DIR/.venv/bin/python"
 
-# Conservar agent_id previo si existia instalacion anterior
-if [ -n "$OLD_CFG_BACKUP" ] && [ -f "$OLD_CFG_BACKUP" ] && [ -f "$INSTALL_DIR/config_agent.json" ]; then
-    "$VENV_PY" - "$OLD_CFG_BACKUP" "$INSTALL_DIR/config_agent.json" <<'PYMERGE'
-import json, sys
-from pathlib import Path
-old_p, cur_p = Path(sys.argv[1]), Path(sys.argv[2])
-try:
-    old_cfg = json.loads(old_p.read_text(encoding="utf-8"))
-    cur_cfg = json.loads(cur_p.read_text(encoding="utf-8"))
-    if old_cfg.get("agent_id") and not cur_cfg.get("agent_id"):
-        cur_cfg["agent_id"] = old_cfg["agent_id"]
-    if old_cfg.get("alias") and not cur_cfg.get("alias"):
-        cur_cfg["alias"] = old_cfg["alias"]
-    cur_p.write_text(json.dumps(cur_cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-except Exception:
-    pass
-finally:
-    old_p.unlink(missing_ok=True)
-PYMERGE
-fi
-
-# Generar runtime_paths.json para el binario nativo Mach-O Universal
 "$VENV_PY" - "$INSTALL_DIR" "$RUNTIME_JSON" <<'PYRT'
 import json, pathlib, site, sys, sysconfig
 install_dir = pathlib.Path(sys.argv[1]).resolve()
@@ -215,20 +235,9 @@ fi
 
 xattr -cr "$APP_BUNDLE" 2>/dev/null || true
 codesign --force --deep --sign - --identifier "$PLIST_LABEL" "$APP_BUNDLE" >/dev/null 2>&1 || true
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f -R -trusted "$APP_BUNDLE" >/dev/null 2>&1 || \
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_BUNDLE" >/dev/null 2>&1 || true
+"$LSREG" -f -R -trusted "$APP_BUNDLE" >/dev/null 2>&1 || "$LSREG" -f "$APP_BUNDLE" >/dev/null 2>&1 || true
 
-echo "[4/5] Registrando 'JOB-Monitor Agent' en Privacidad y Seguridad de macOS..."
-rm -f "$STATUS_JSON"
-open -n -a "$APP_BUNDLE" --args --request-permissions >/dev/null 2>&1 || true
-for _ in 1 2 3 4 5 6 7 8; do
-    if [ -f "$STATUS_JSON" ]; then
-        break
-    fi
-    sleep 0.5
-done
-
-echo "[5/5] Activando auto-arranque al encender el Mac y conectando al servidor..."
+# Preparar LaunchAgent y trampa EXIT para garantizar que el servicio SIEMPRE quede activo
 cat > "$PLIST_PATH" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -263,41 +272,78 @@ cat > "$PLIST_PATH" <<EOF
 </dict>
 </plist>
 EOF
+trap 'activate_launchagent' EXIT INT TERM
 
-launchctl bootstrap "gui/$CURRENT_UID" "$PLIST_PATH" >/dev/null 2>&1 || launchctl load -w "$PLIST_PATH" >/dev/null 2>&1 || true
-launchctl enable "gui/$CURRENT_UID/$PLIST_LABEL" >/dev/null 2>&1 || true
-launchctl kickstart -k "gui/$CURRENT_UID/$PLIST_LABEL" >/dev/null 2>&1 || true
+echo "[4/5] Verificando y registrando permisos nativos en Privacidad y Seguridad..."
+SCREEN_OK="0"
+AX_OK="0"
+probe_app_permissions
 
-SCREEN_OK=$("$VENV_PY" -c "import json, pathlib; p=pathlib.Path('$STATUS_JSON'); d=json.loads(p.read_text()) if p.exists() else {}; print('1' if d.get('screen') else '0')")
-AX_OK=$("$VENV_PY" -c "import json, pathlib; p=pathlib.Path('$STATUS_JSON'); d=json.loads(p.read_text()) if p.exists() else {}; print('1' if d.get('accessibility') else '0')")
+# Si habia una version previa con CDHash distinto, limpiar el registro obsoleto de TCC antes de registrar el nuevo
+if [ "$SCREEN_OK" != "1" ]; then
+    tccutil reset ScreenCapture "$PLIST_LABEL" >/dev/null 2>&1 || true
+fi
+if [ "$AX_OK" != "1" ]; then
+    tccutil reset Accessibility "$PLIST_LABEL" >/dev/null 2>&1 || true
+fi
+
+if [ "$SCREEN_OK" != "1" ] || [ "$AX_OK" != "1" ]; then
+    request_app_permissions
+fi
+
+if [ "$SCREEN_OK" != "1" ] || [ "$AX_OK" != "1" ]; then
+    echo ""
+    echo "===================================================================="
+    echo "  AUTORIZACION DE PERMISOS REQUERIDA EN ESTE MAC"
+    echo "===================================================================="
+    if [ "$SCREEN_OK" != "1" ]; then
+        echo "  -> [1] Grabacion de pantalla y audio del sistema: PENDIENTE"
+        open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" >/dev/null 2>&1 || true
+    else
+        echo "  -> [1] Grabacion de pantalla y audio del sistema: CONCEDIDO"
+    fi
+    if [ "$AX_OK" != "1" ]; then
+        echo "  -> [2] Accesibilidad (Teclado y Control Remoto) : PENDIENTE"
+        if [ "$SCREEN_OK" = "1" ]; then
+            open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" >/dev/null 2>&1 || true
+        fi
+    else
+        echo "  -> [2] Accesibilidad (Teclado y Control Remoto) : CONCEDIDO"
+    fi
+
+    osascript -e 'display dialog "Activa los interruptores de \"JOB-Monitor Agent\" en Ajustes del Sistema:\n\n1. Grabación de pantalla y audio del sistema\n2. Accesibilidad\n\nEl instalador detectará cada interruptor automáticamente en 2 segundos." with title "SITAI JOB-Monitor — Permisos Requeridos" buttons {"Entendido"} default button 1 with icon caution giving up after 20' >/dev/null 2>&1 &
+
+    echo ""
+    echo "  Esperando a que actives los interruptores de 'JOB-Monitor Agent'..."
+    OPENED_AX_PANE=0
+    for _ in $(seq 1 45); do
+        probe_app_permissions
+
+        if [ "$SCREEN_OK" = "1" ] && [ "$AX_OK" = "1" ]; then
+            echo "  [OK] Ambos permisos (Grabacion de Pantalla y Accesibilidad) han sido concedidos."
+            break
+        fi
+        if [ "$SCREEN_OK" = "1" ] && [ "$AX_OK" != "1" ] && [ "$OPENED_AX_PANE" = "0" ]; then
+            OPENED_AX_PANE=1
+            echo "  [OK] Grabacion de Pantalla activada. Abriendo panel de Accesibilidad..."
+            open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" >/dev/null 2>&1 || true
+        fi
+        sleep 2
+    done
+fi
+
+echo "[5/5] Activando auto-arranque al encender el Mac y conectando al servidor..."
+activate_launchagent
 
 echo ""
 echo "===================================================================="
 echo "  AGENTE CONECTADO Y AUTO-INICIO CONFIGURADO EXITOSAMENTE"
 echo "  - Ruta de la App  : $APP_BUNDLE"
 echo "  - Auto-inicio Mac : Activo al encender/iniciar sesion (KeepAlive)"
-echo "===================================================================="
-
-if [ "$SCREEN_OK" != "1" ] || [ "$AX_OK" != "1" ]; then
-    echo ""
-    echo "  ULTIMO PASO EN ESTE MAC (Para ver imagen en vivo y control remoto):"
-    if [ "$SCREEN_OK" != "1" ]; then
-        echo "  1. En Ajustes del Sistema -> Grabacion de pantalla y audio del sistema:"
-        echo "     - Activa el interruptor de 'JOB-Monitor Agent'."
-        echo "     - Si no aparece en la lista, pulsa el boton [ + ] abajo y elige:"
-        echo "       Aplicaciones -> JOB-Monitor Agent"
-        open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" >/dev/null 2>&1 || true
-    fi
-    if [ "$AX_OK" != "1" ]; then
-        echo "  2. En Ajustes del Sistema -> Privacidad y Seguridad -> Accesibilidad:"
-        echo "     - Activa el interruptor de 'JOB-Monitor Agent' (o agregalo con [ + ] desde Aplicaciones)."
-        if [ "$SCREEN_OK" = "1" ]; then
-            open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" >/dev/null 2>&1 || true
-        fi
-    fi
-    echo ""
-    echo "  (En cuanto enciendas el interruptor, el video en vivo comenzara solo en 3 segundos)."
+if [ "$SCREEN_OK" = "1" ] && [ "$AX_OK" = "1" ]; then
+    echo "  - Permisos macOS  : Pantalla/Audio y Accesibilidad ACTIVOS"
 else
-    echo "  [OK] Permisos de Pantalla/Audio y Accesibilidad activos."
+    echo "  - Permisos macOS  : En cuanto actives el interruptor, se aplicara en ~3s"
 fi
+echo "===================================================================="
 echo ""
