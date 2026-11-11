@@ -37,6 +37,151 @@
     } catch (_) {}
   }
 
+  // Inyección defensiva de estilos críticos para el modal de evidencia y chips <kbd> (evita fallos por caché intermedia)
+  (function injectKeyboardAuditStyles() {
+    if (document.getElementById('kb-audit-fallback-css')) return;
+    const st = document.createElement('style');
+    st.id = 'kb-audit-fallback-css';
+    st.textContent = `
+      .modal-close-icon {
+        margin-left: auto;
+        width: 34px;
+        height: 34px;
+        border-radius: 9px;
+        border: 1px solid #dce3ec;
+        background: #f3f6fa;
+        color: #52657a;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        flex-shrink: 0;
+        transition: all 0.15s ease;
+        padding: 0;
+      }
+      .modal-close-icon:hover {
+        background: #fee2e2;
+        border-color: #fecaca;
+        color: #e11d48;
+      }
+      .modal-close-icon svg {
+        width: 16px;
+        height: 16px;
+        display: block;
+        flex-shrink: 0;
+      }
+      .kb-transcript-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 4px;
+      }
+      .kb-clean-box {
+        background: #ffffff;
+        border: 1px solid #ddd6fe;
+        border-left: 3.5px solid #7c3aed;
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-size: 13px;
+        font-weight: 500;
+        color: #133447;
+        line-height: 1.55;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .kb-raw-box {
+        background: #f8fafc;
+        border: 1px solid #dce3ec;
+        border-radius: 8px;
+        padding: 7px 11px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 12px;
+        color: #334155;
+        line-height: 1.75;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .kb-box-caption {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #52657a;
+        margin-bottom: 3px;
+      }
+      .kb-key {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 1px 7px;
+        margin: 1px 2px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 11px;
+        font-weight: 700;
+        background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%);
+        color: #334155;
+        border: 1px solid #cbd5e1;
+        border-bottom: 2px solid #94a3b8;
+        border-radius: 5px;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+        line-height: 1.4;
+        vertical-align: baseline;
+        white-space: nowrap;
+      }
+      .kb-key svg {
+        width: 11px;
+        height: 11px;
+        stroke-width: 2.2;
+        flex-shrink: 0;
+        display: inline-block;
+      }
+      .kb-key-mult {
+        font-style: normal;
+        font-size: 10px;
+        font-weight: 800;
+        padding: 0 4px;
+        margin-left: 1px;
+        border-radius: 999px;
+        background: rgba(15, 23, 42, 0.09);
+        color: inherit;
+      }
+      .kb-key.kb-key-delete {
+        background: linear-gradient(180deg, #fff1f2 0%, #ffe4e6 100%);
+        color: #be123c;
+        border-color: #fda4af;
+        border-bottom-color: #f43f5e;
+      }
+      .kb-key.kb-key-action {
+        background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
+        color: #1d4ed8;
+        border-color: #93c5fd;
+        border-bottom-color: #3b82f6;
+      }
+      .kb-key.kb-key-nav {
+        background: linear-gradient(180deg, #f5f3ff 0%, #ede9fe 100%);
+        color: #6d28d9;
+        border-color: #c4b5fd;
+        border-bottom-color: #8b5cf6;
+      }
+      .kb-key.kb-key-shortcut {
+        background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%);
+        color: #047857;
+        border-color: #6ee7b7;
+        border-bottom-color: #10b981;
+      }
+      .kb-key.kb-key-mod {
+        background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%);
+        color: #475569;
+        border-color: #cbd5e1;
+        border-bottom-color: #64748b;
+      }
+    `;
+    document.head.appendChild(st);
+  })();
+
   // Referencias DOM Generales y Login
   const appShell = document.getElementById('app-shell');
   const authModal = document.getElementById('auth-modal');
@@ -735,10 +880,177 @@
     }
   }
 
+  function normalizeKeyboardLayoutName(rawLayout) {
+    const val = (rawLayout || '').trim();
+    if (!val || val === 'C' || val === 'POSIX' || val === 'Estándar') {
+      return 'Español (Estándar)';
+    }
+    if (val === 'Latin American') return 'Español (Latinoamérica)';
+    return val;
+  }
+
+  function renderKeyCapHtml(rawKeyName, mult) {
+    const cleanName = String(rawKeyName || '').replace(/^\[|\]$/g, '').trim();
+    const count = mult && mult > 1 ? mult : 1;
+    const multHtml = count > 1 ? `<em class="kb-key-mult">×${count}</em>` : '';
+
+    let cls = 'kb-key-mod';
+    let label = cleanName;
+    let title = `Tecla: ${cleanName}`;
+    let svg = '';
+
+    if (cleanName === 'Borrar' || cleanName === 'Supr') {
+      cls = 'kb-key-delete';
+      label = cleanName;
+      title = cleanName === 'Borrar' ? 'Retroceso / Borrar carácter anterior (Backspace)' : 'Suprimir carácter (Delete)';
+      svg = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 4H8l-7 8 7 8h13a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z"/><line x1="18" y1="9" x2="12" y2="15"/><line x1="12" y1="9" x2="18" y2="15"/></svg>';
+    } else if (cleanName === 'Enter') {
+      cls = 'kb-key-action';
+      label = 'Enter';
+      title = 'Salto de línea / Confirmar (Enter)';
+      svg = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>';
+    } else if (cleanName === 'Tab') {
+      cls = 'kb-key-action';
+      label = 'Tab';
+      title = 'Tabulador (Tab)';
+      svg = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>';
+    } else if (cleanName === 'Espacio') {
+      cls = 'kb-key-action';
+      label = 'Espacio';
+      title = 'Barra espaciadora';
+    } else if (cleanName === 'RePág' || cleanName === 'AvPág') {
+      cls = 'kb-key-nav';
+      label = cleanName;
+      title = cleanName === 'RePág' ? 'Retroceder Página (Page Up)' : 'Avanzar Página (Page Down)';
+      svg = cleanName === 'RePág'
+        ? '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="17 11 12 6 7 11"/><polyline points="17 18 12 13 7 18"/></svg>'
+        : '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="7 13 12 18 17 13"/><polyline points="7 6 12 11 17 6"/></svg>';
+    } else if (cleanName.includes('Arriba') || cleanName.includes('Abajo') || cleanName.includes('Izquierda') || cleanName.includes('Derecha')) {
+      cls = 'kb-key-nav';
+      label = cleanName.replace(/^[↑↓←→]\s*/, '');
+      title = `Cursor: ${label}`;
+      if (cleanName.includes('Arriba')) {
+        svg = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>';
+      } else if (cleanName.includes('Abajo')) {
+        svg = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>';
+      } else if (cleanName.includes('Izquierda')) {
+        svg = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>';
+      } else {
+        svg = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>';
+      }
+    } else if (cleanName === 'Inicio' || cleanName === 'Fin' || cleanName === 'Esc' || cleanName === 'Insert') {
+      cls = 'kb-key-nav';
+      label = cleanName;
+      title = `Tecla de navegación: ${cleanName}`;
+    } else if (cleanName.includes('+')) {
+      cls = 'kb-key-shortcut';
+      const actionMap = {
+        'CMD+C': 'Cmd + C (Copiar)',
+        'CMD+V': 'Cmd + V (Pegar)',
+        'CMD+X': 'Cmd + X (Cortar)',
+        'CMD+Z': 'Cmd + Z (Deshacer)',
+        'CTRL+C': 'Ctrl + C (Copiar)',
+        'CTRL+V': 'Ctrl + V (Pegar)',
+        'CTRL+X': 'Ctrl + X (Cortar)',
+        'CTRL+Z': 'Ctrl + Z (Deshacer)',
+      };
+      const up = cleanName.toUpperCase();
+      label = actionMap[up] || cleanName;
+      title = `Atajo de teclado: ${label}`;
+      svg = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3H6a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3V6a3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3h12a3 3 0 0 0 3-3 3 3 0 0 0-3-3z"/></svg>';
+    }
+
+    if ( count > 1 ) {
+      title += ` (repetido ${count} veces)`;
+    }
+
+    return `<kbd class="kb-key ${cls}" title="${escapeHtml(title)}">${svg}<span>${escapeHtml(label)}</span>${multHtml}</kbd>`;
+  }
+
+  function analyzeKeyboardTranscript(rawText) {
+    if (!rawText) {
+      return { cleanText: '', sequenceHtml: '', hasSpecialKeys: false };
+    }
+    // 1. Limpiar el espacio artificial simple alrededor de [Token] generado por versiones previas del agente
+    let norm = String(rawText).replace(/ ?(\[[A-Za-z0-9ÁÉÍÓÚáéíóúñÑ_↑↓←→\s]+\]) ?/g, '$1');
+    // 2. Unificar atajos comunes [Cmd] c / [Ctrl] v
+    norm = norm.replace(/\[(Cmd|Ctrl)\]\s*([cvxzaCVXZA])(?![a-zA-Záéíóúñ])/g, '[$1+$2]');
+
+    // 3. Tokenizar en [Token], saltos de línea o texto normal
+    const rawParts = norm.split(/(\[[A-Za-z0-9ÁÉÍÓÚáéíóúñÑ+_↑↓←→\s]+\]|\n)/g).filter(Boolean);
+
+    const cleanChars = [];
+    const seqItems = [];
+    let hasSpecialKeys = false;
+
+    for (let i = 0; i < rawParts.length; i++) {
+      const part = rawParts[i];
+      if (part === '\n') {
+        cleanChars.push('\n');
+        const prev = seqItems[seqItems.length - 1];
+        if (!prev || prev.type !== 'key' || prev.key !== 'Enter') {
+          hasSpecialKeys = true;
+          seqItems.push({ type: 'key', key: 'Enter', count: 1 });
+        }
+      } else if (part.startsWith('[') && part.endsWith(']')) {
+        const k = part.slice(1, -1).trim();
+        // Ignorar modificadores redundantes (BloqMayús / Shift suelto) que ensucian cada mayúscula
+        if (k === 'BloqMayús' || k === 'Shift') {
+          continue;
+        }
+        if (k === 'Espacio') {
+          cleanChars.push(' ');
+          seqItems.push({ type: 'text', val: ' ' });
+          continue;
+        }
+        hasSpecialKeys = true;
+        if (k === 'Borrar') {
+          cleanChars.pop();
+        } else if (k === 'Enter') {
+          cleanChars.push('\n');
+        } else if (k === 'Tab') {
+          cleanChars.push(' ');
+        }
+        const prev = seqItems[seqItems.length - 1];
+        if (prev && prev.type === 'key' && prev.key === k) {
+          prev.count += 1;
+        } else {
+          seqItems.push({ type: 'key', key: k, count: 1 });
+        }
+      } else {
+        for (const ch of part) {
+          cleanChars.push(ch);
+        }
+        seqItems.push({ type: 'text', val: part });
+      }
+    }
+
+    const cleanText = cleanChars
+      .join('')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n[ \t]+/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+
+    const sequenceHtml = seqItems
+      .map((item) => {
+        if (item.type === 'key') {
+          return renderKeyCapHtml(item.key, item.count);
+        }
+        return escapeHtml(item.val);
+      })
+      .join('');
+
+    return {
+      cleanText,
+      sequenceHtml,
+      hasSpecialKeys,
+    };
+  }
+
   function formatSpecialKeysHtml(text) {
     if (!text) return '';
-    const safe = escapeHtml(text);
-    return safe.replace(/\[([A-Za-z0-9ÁÉÍÓÚáéíóúñÑ_↑↓←→\s]+)\]/g, '<kbd class="kb-key">[$1]</kbd>');
+    return analyzeKeyboardTranscript(text).sequenceHtml;
   }
 
   function openEvidenceModal(data) {
@@ -749,6 +1061,25 @@
     if (evidenceModalSubtitle) {
       evidenceModalSubtitle.textContent = `Registrado el ${data.time} • Pausa de 15s tras redacción activa`;
     }
+    const parsed = analyzeKeyboardTranscript(data.text || '');
+    const cleanLayout = normalizeKeyboardLayoutName(data.layout);
+    const cleanBlockHtml = parsed.cleanText
+      ? `
+        <div>
+          <div class="kb-box-caption">Texto Final Redactado (Limpio)</div>
+          <div class="kb-clean-box">${escapeHtml(parsed.cleanText)}</div>
+        </div>
+      `
+      : '';
+    const sequenceBlockHtml = parsed.sequenceHtml
+      ? `
+        <div>
+          <div class="kb-box-caption">${parsed.hasSpecialKeys ? 'Secuencia de Pulsaciones y Teclas Especiales' : 'Transcripción'}</div>
+          <div class="kb-raw-box">${parsed.sequenceHtml}</div>
+        </div>
+      `
+      : '<div class="kb-raw-box muted-text">(Pulsaciones especiales sin texto imprimible)</div>';
+
     if (evidenceMetaContainer) {
       evidenceMetaContainer.innerHTML = `
         <div class="evidence-meta-item">
@@ -765,11 +1096,13 @@
         </div>
         <div class="evidence-meta-item">
           <span class="evidence-meta-label">Distribución / Idioma</span>
-          <span class="evidence-meta-val">${escapeHtml(data.layout || 'Estándar')}</span>
+          <span class="evidence-meta-val">${escapeHtml(cleanLayout)}</span>
         </div>
         <div class="evidence-meta-item full-width">
-          <span class="evidence-meta-label">Texto / Ráfaga Transcrita</span>
-          <div class="log-kb-quote" style="margin-top:4px;">${formatSpecialKeysHtml(data.text || '(Pulsaciones especiales sin texto imprimible)')}</div>
+          <div class="kb-transcript-stack">
+            ${cleanBlockHtml}
+            ${parsed.hasSpecialKeys || !parsed.cleanText ? sequenceBlockHtml : ''}
+          </div>
         </div>
       `;
     }
@@ -865,13 +1198,20 @@
           const activeWin = (meta && meta.active_window) || 'Escritorio';
           const keystrokesCount = (meta && meta.keystrokes_count) !== undefined ? meta.keystrokes_count : (row.duration_seconds || 0);
           const durSecs = (meta && meta.duration_seconds) !== undefined ? meta.duration_seconds : (row.duration_seconds || 0);
-          const layout = (meta && meta.keyboard_layout) || 'Estándar';
+          const layout = normalizeKeyboardLayoutName((meta && meta.keyboard_layout) || 'Estándar');
           const textContent = (meta && meta.text_content) || '';
           const evidencePath = row.evidence_path || (meta && meta.evidence_path) || '';
 
-          const formattedText = textContent
-            ? formatSpecialKeysHtml(textContent)
-            : '<span class="muted-text">Pulsaciones de navegación / teclas especiales</span>';
+          const parsed = analyzeKeyboardTranscript(textContent);
+          let transcriptInnerHtml = '<span class="muted-text">Pulsaciones de navegación / teclas especiales</span>';
+          if (parsed.cleanText && parsed.hasSpecialKeys) {
+            transcriptInnerHtml = `
+              <div style="font-weight:600; color:#133447; margin-bottom:4px;">${escapeHtml(parsed.cleanText)}</div>
+              <div style="font-size:11.5px; color:#52657a; border-top:1px dashed #e2e8f0; padding-top:4px;">${parsed.sequenceHtml}</div>
+            `;
+          } else if (parsed.sequenceHtml) {
+            transcriptInnerHtml = parsed.sequenceHtml;
+          }
 
           const evidenceBtnHtml = evidencePath
             ? `
@@ -885,7 +1225,7 @@
                 data-duration="${escapeHtml(String(durSecs))}"
                 data-layout="${escapeHtml(layout)}"
                 data-text="${escapeHtml(textContent)}">
-                <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <svg class="icon-xs" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
                   <circle cx="12" cy="13" r="4"/>
                 </svg>
@@ -898,7 +1238,7 @@
             <div class="log-kb-entry">
               <div class="log-kb-header">
                 <span class="log-kb-win-tag" title="Ventana activa">
-                  <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <svg class="icon-xs" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
                   </svg>
                   <strong>${escapeHtml(activeWin)}</strong>
@@ -909,7 +1249,7 @@
                 ${evidenceBtnHtml}
               </div>
               <div class="log-kb-quote">
-                ${formattedText}
+                ${transcriptInnerHtml}
               </div>
             </div>
           `;

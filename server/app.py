@@ -451,6 +451,11 @@ async def index(request: Request):
             "lan_ip": get_local_lan_ip(),
             "port": config.PORT,
         },
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
     )
 
 
