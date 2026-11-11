@@ -5,6 +5,7 @@ import ctypes
 import ctypes.util
 import getpass
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -20,6 +21,7 @@ import threading
 import time
 import uuid
 import warnings
+import zlib
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -47,6 +49,72 @@ else:
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config_agent.json"
+OFFLINE_VAULT_DIR = BASE_DIR / "offline_vault"
+
+# Clave Pública Asimétrica RSA-2048 de SITAI para Cifrado Unidireccional de Bóveda Offline (.sitai)
+# El cliente SOLO posee (SITAI_RSA_PUB_N, SITAI_RSA_PUB_E) y jamás puede descifrar los archivos .sitai.
+# Únicamente el servidor central posee el exponente privado D necesario para abrirlos.
+SITAI_MAGIC_HEADER = b"SITAI01\x00"
+SITAI_RSA_PUB_E = 65537
+SITAI_RSA_PUB_N = int(
+    "e4ceaf9ce8fb52cd99b3ca633b3568fcaea40a7244e40c7f4335671b915fa729"
+    "e9f9abd6245259dee6449aad5203b07f367990377dee3e851107f60e178bae1f"
+    "79d90c2293d114f0fed232ccd9c9b484632b07190e47126ab67cc9651a208bdb"
+    "ed8bbff87895408024b25b05b1050a946562398089f70074d498b4423f1aa9a2"
+    "013fdbe2154a7342d69a751791a5cafbd8b753cdcda1ecd711bad96cf5aca997"
+    "11848e6a6e6f4d16fc04be3b627aeffc9f12ed3e4ad3452f465d7a86a43d1785"
+    "696d82ef3b1b1891b1c565cf680a69aa0a8b641206407cf555dbe34b3109aad4"
+    "8eca8dfe0939acd2b68dbd82d28b63f4ccb9a975eec949242d61fa43ce3514f5",
+    16,
+)
+SITAI_VAULT_MAX_FILES = 350
+SITAI_MAX_OFFLINE_DAYS = 30
+SITAI_MAX_OFFLINE_SECONDS = SITAI_MAX_OFFLINE_DAYS * 86400  # 30 días (2,592,000 segundos)
+
+
+def _sitai_keystream_xor(data: bytes, enc_key: bytes, nonce: bytes) -> bytes:
+    out = bytearray(len(data))
+    prefix = enc_key + nonce
+    mv = memoryview(data)
+    for i in range(0, len(data), 32):
+        blk = hashlib.sha256(prefix + (i >> 5).to_bytes(4, "big")).digest()
+        chunk = mv[i : i + 32]
+        clen = len(chunk)
+        out[i : i + clen] = (
+            int.from_bytes(chunk, "big") ^ int.from_bytes(blk[:clen], "big")
+        ).to_bytes(clen, "big")
+    return bytes(out)
+
+
+def encrypt_sitai_packet(payload_dict: dict) -> bytes:
+    """
+    Comprime (zlib) y cifra un diccionario de evento con una llave efímera aleatoria de 256 bits,
+    encapsulando la semilla mediante RSA-2048 (PKCS#1 v1.5) con la clave pública del servidor.
+    """
+    plain_json = json.dumps(payload_dict, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    compressed = zlib.compress(plain_json, level=6)
+
+    master_seed = os.urandom(32)
+    nonce = os.urandom(16)
+    enc_key = hashlib.sha256(master_seed + b":sitai-enc:" + nonce).digest()
+    mac_key = hashlib.sha256(master_seed + b":sitai-mac:" + nonce).digest()
+
+    ciphertext = _sitai_keystream_xor(compressed, enc_key, nonce)
+    mac_tag = hmac.new(mac_key, nonce + ciphertext, hashlib.sha256).digest()
+
+    # Relleno aleatorio no nulo tipo PKCS#1 v1.5 para bloque de 256 bytes (2048 bits)
+    pad_len = 256 - 3 - len(master_seed)
+    pad = bytearray()
+    while len(pad) < pad_len:
+        b = os.urandom(pad_len - len(pad))
+        pad.extend(x for x in b if x != 0)
+    padded_block = b"\x00\x02" + bytes(pad[:pad_len]) + b"\x00" + master_seed
+    m_int = int.from_bytes(padded_block, "big")
+    c_int = pow(m_int, SITAI_RSA_PUB_E, SITAI_RSA_PUB_N)
+    rsa_cipher = c_int.to_bytes(256, "big")
+
+    return SITAI_MAGIC_HEADER + rsa_cipher + nonce + mac_tag + ciphertext
+
 
 DEFAULT_SERVER_URL = os.environ.get("RA_SERVER_URL", "ws://127.0.0.1:5080/ws/agent")
 DEFAULT_TOKEN = os.environ.get("RA_AGENT_TOKEN", "ra-secret-token-2026")
@@ -1044,6 +1112,122 @@ class SilentRemoteAgent:
         self._keystrokes_buffer: List[str] = []
         self._typing_debounce_timer: Optional[threading.Timer] = None
         self._typing_lock = threading.Lock()
+        self._vault_lock = threading.Lock()
+        self._last_contact_persist_ts: float = 0.0
+        OFFLINE_VAULT_DIR.mkdir(parents=True, exist_ok=True)
+        self._init_or_verify_offline_deadline()
+
+    def _init_or_verify_offline_deadline(self):
+        """
+        Inicializa o verifica el sello temporal de último contacto con el servidor.
+        Si el equipo acumula más de 30 días (SITAI_MAX_OFFLINE_SECONDS) sin contactar al servidor,
+        ejecuta la autodestrucción completa (eliminando además la bóveda .sitai).
+        """
+        now_epoch = int(time.time())
+        last_contact = 0
+        try:
+            last_contact = int(self.cfg.get("last_server_contact_ts") or 0)
+        except Exception:
+            last_contact = 0
+
+        if last_contact <= 0:
+            self.cfg["last_server_contact_ts"] = now_epoch
+            self._last_contact_persist_ts = float(now_epoch)
+            self._persist_user_cfg()
+            return
+
+        # Verificar expiración por reloj global y también por antigüedad del archivo .sitai más viejo
+        elapsed_since_contact = now_epoch - last_contact
+        oldest_vault_age = 0
+        try:
+            vault_files = sorted(OFFLINE_VAULT_DIR.glob("*.sitai"))
+            if vault_files:
+                oldest_mtime = int(vault_files[0].stat().st_mtime)
+                oldest_vault_age = max(0, now_epoch - oldest_mtime)
+        except Exception:
+            pass
+
+        if elapsed_since_contact >= SITAI_MAX_OFFLINE_SECONDS or oldest_vault_age >= SITAI_MAX_OFFLINE_SECONDS:
+            self.handle_self_destruct()
+
+    def _record_server_contact(self, force_disk: bool = False):
+        """
+        Actualiza el sello temporal de último contacto exitoso con el servidor central.
+        """
+        now_ts = time.time()
+        self.cfg["last_server_contact_ts"] = int(now_ts)
+        if force_disk or (now_ts - self._last_contact_persist_ts) >= 300.0:
+            self._last_contact_persist_ts = now_ts
+            self._persist_user_cfg()
+
+    def _save_to_sitai_vault(self, payload_dict: dict) -> Optional[Path]:
+        """
+        Cifra un evento con la llave pública RSA-2048 del servidor y lo guarda en disco con extensión .sitai.
+        El archivo resultante es matemáticamente indescifrable en el equipo cliente.
+        """
+        with self._vault_lock:
+            try:
+                OFFLINE_VAULT_DIR.mkdir(parents=True, exist_ok=True)
+                encrypted_bytes = encrypt_sitai_packet(payload_dict)
+                ts_ms = int(time.time() * 1000)
+                fname = f"ev_{ts_ms}_{uuid.uuid4().hex[:6]}.sitai"
+                fpath = OFFLINE_VAULT_DIR / fname
+                tmp_path = OFFLINE_VAULT_DIR / f".{fname}.tmp"
+                tmp_path.write_bytes(encrypted_bytes)
+                tmp_path.replace(fpath)
+
+                # Rotación FIFO preventiva para acotar espacio máximo en disco
+                vault_files = sorted(OFFLINE_VAULT_DIR.glob("*.sitai"))
+                if len(vault_files) > SITAI_VAULT_MAX_FILES:
+                    for old_f in vault_files[: len(vault_files) - SITAI_VAULT_MAX_FILES]:
+                        try:
+                            old_f.unlink()
+                        except Exception:
+                            pass
+                return fpath
+            except Exception:
+                return None
+
+    async def _send_or_vault_event(self, payload_dict: dict):
+        """
+        Intenta despachar el evento por WebSocket en tiempo real; si el equipo está sin internet
+        o sin contacto con el servidor, lo cifra inmediatamente en un contenedor local .sitai.
+        """
+        if self.ws:
+            try:
+                await asyncio.wait_for(self.ws.send(json.dumps(payload_dict)), timeout=8.0)
+                return
+            except Exception:
+                pass
+        self._save_to_sitai_vault(payload_dict)
+
+    async def sync_offline_vault_loop(self):
+        """
+        Revisa continuamente la bóveda local en busca de contenedores .sitai pendientes y los
+        transmite al servidor en orden cronológico en cuanto hay conexión activa.
+        """
+        while True:
+            await asyncio.sleep(3.5)
+            if not self.ws:
+                continue
+            try:
+                vault_files = sorted(OFFLINE_VAULT_DIR.glob("*.sitai"))
+                for vf in vault_files[:8]:
+                    if not self.ws:
+                        break
+                    try:
+                        raw_bytes = vf.read_bytes()
+                        msg = {
+                            "type": "sitai_encrypted_event",
+                            "filename": vf.name,
+                            "data_b64": base64.b64encode(raw_bytes).decode("ascii"),
+                        }
+                        await asyncio.wait_for(self.ws.send(json.dumps(msg)), timeout=12.0)
+                        await asyncio.sleep(0.35)
+                    except Exception:
+                        break
+            except Exception:
+                pass
 
     def _handle_raw_key_event(self, key_repr: str, ts: float):
         """Callback invocado por MF-01 KeyboardEventHook."""
@@ -1069,6 +1253,41 @@ class SilentRemoteAgent:
             self._typing_debounce_timer = threading.Timer(15.0, self._on_typing_idle_timeout)
             self._typing_debounce_timer.daemon = True
             self._typing_debounce_timer.start()
+
+    def capture_evidence_webp(self, sct: Optional[mss.base.MSSBase] = None) -> tuple[str, str]:
+        """
+        Captura la pantalla actual en alta resolución y la comprime en formato WebP (calidad 80, método 4).
+        Si el equipo tiene múltiples monitores conectados, captura automáticamente el escritorio combinado
+        completo (monitors[0]) para que la evidencia DVR abarque todas las pantallas simultáneamente.
+        """
+        screenshot_b64 = ""
+        screenshot_fmt = "webp"
+        try:
+            if sct is not None:
+                mon_count = max(1, len(sct.monitors) - 1)
+                mon = sct.monitors[0] if mon_count > 1 else sct.monitors[min(self.current_monitor, len(sct.monitors) - 1)]
+                raw_grab = sct.grab(mon)
+            else:
+                with mss.mss() as local_sct:
+                    mon_count = max(1, len(local_sct.monitors) - 1)
+                    mon = local_sct.monitors[0] if mon_count > 1 else local_sct.monitors[min(self.current_monitor, len(local_sct.monitors) - 1)]
+                    raw_grab = local_sct.grab(mon)
+            img = Image.frombytes("RGB", raw_grab.size, raw_grab.bgra, "raw", "BGRX")
+            max_w = 3200 if mon_count > 1 else 1920
+            if img.width > max_w:
+                ratio = float(max_w) / img.width
+                img = img.resize((max_w, int(img.height * ratio)), Image.LANCZOS)
+            buf = io.BytesIO()
+            try:
+                img.save(buf, format="WEBP", quality=80, method=4)
+            except Exception:
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=78, optimize=True)
+                screenshot_fmt = "jpg"
+            screenshot_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        except Exception:
+            pass
+        return screenshot_b64, screenshot_fmt
 
     def _on_typing_idle_timeout(self):
         """MF-04 & MF-05: Cierre de Sesión al expirar 15s sin pulsaciones y captura de pantalla."""
@@ -1102,29 +1321,9 @@ class SilentRemoteAgent:
             self._typing_debounce_timer = None
 
         # MF-05: Captura de Pantalla en Alta Resolución con mss al segundo 15 (Compresión WebP sin pérdida visual)
-        screenshot_b64 = ""
-        screenshot_fmt = "webp"
-        try:
-            with mss.mss() as sct:
-                mon_idx = min(self.current_monitor, len(sct.monitors) - 1)
-                mon = sct.monitors[mon_idx]
-                raw_grab = sct.grab(mon)
-                img = Image.frombytes("RGB", raw_grab.size, raw_grab.bgra, "raw", "BGRX")
-                if img.width > 1920:
-                    ratio = 1920.0 / img.width
-                    img = img.resize((1920, int(img.height * ratio)), Image.LANCZOS)
-                buf = io.BytesIO()
-                try:
-                    img.save(buf, format="WEBP", quality=80, method=4)
-                except Exception:
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG", quality=78, optimize=True)
-                    screenshot_fmt = "jpg"
-                screenshot_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        except Exception:
-            pass
+        screenshot_b64, screenshot_fmt = self.capture_evidence_webp()
 
-        # MF-06: Despacho asíncrono al WebSocket
+        # MF-06: Despacho asíncrono al WebSocket o cifrado inmediato en Bóveda Offline (.sitai)
         payload = {
             "type": "keyboard_event",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1140,7 +1339,9 @@ class SilentRemoteAgent:
         }
 
         if self.loop and self.ws:
-            asyncio.run_coroutine_threadsafe(self._safe_ws_send(json.dumps(payload)), self.loop)
+            asyncio.run_coroutine_threadsafe(self._send_or_vault_event(payload), self.loop)
+        else:
+            self._save_to_sitai_vault(payload)
 
     def _on_user_chat_reply(self, text: str):
         if self.loop and self.ws:
@@ -1441,12 +1642,11 @@ class SilentRemoteAgent:
             last_tick_time = time.monotonic()
             while True:
                 await asyncio.sleep(4.0)
-                if not self.ws:
-                    break
                 tick += 1
                 now_mono = time.monotonic()
                 delta_secs = max(1, round(now_mono - last_tick_time))
                 last_tick_time = now_mono
+                now_ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                 idle_secs = get_idle_seconds()
                 current_win = get_active_window_title()
@@ -1456,13 +1656,17 @@ class SilentRemoteAgent:
                 away_alert_triggered = False
 
                 # 1. Detectar cambio de ventana activa
+                prev_win_title = self.last_window_title
                 if current_win != self.last_window_title:
                     prev_duration = max(1, round(now_mono - self.window_started_at))
                     if prev_duration >= 2:
                         log_events.append({
                             "category": "WINDOW",
-                            "message": f"Cambió a '{current_win}' (permanencia previa en '{self.last_window_title}': {format_duration_es(prev_duration)})",
+                            "message": f"Cambió a '{current_win}' (permanencia previa en '{prev_win_title}': {format_duration_es(prev_duration)})",
                             "duration_seconds": prev_duration,
+                            "timestamp": now_ts_str,
+                            "active_window": current_win,
+                            "previous_window": prev_win_title,
                         })
                     self.last_window_title = current_win
                     self.window_started_at = now_mono
@@ -1476,6 +1680,8 @@ class SilentRemoteAgent:
                             "category": "IDLE",
                             "message": f"Equipo entró en estado inactivo tras 3 minutos sin entrada (Ventana: {current_win})",
                             "duration_seconds": idle_secs,
+                            "timestamp": now_ts_str,
+                            "active_window": current_win,
                         })
                     if idle_secs >= 600 and not self.was_away_10m:
                         self.was_away_10m = True
@@ -1484,53 +1690,89 @@ class SilentRemoteAgent:
                             "category": "IDLE",
                             "message": f"Alerta de ausencia prolongada: superó 10 minutos sin movimiento de mouse ni teclado (Ventana: {current_win})",
                             "duration_seconds": idle_secs,
+                            "timestamp": now_ts_str,
+                            "active_window": current_win,
                         })
                 elif idle_secs < 15 and self.was_idle_3m:
                     log_events.append({
                         "category": "RESUME",
                         "message": f"El usuario retomó actividad después de {format_duration_es(self.max_idle_reached)} de inactividad",
                         "duration_seconds": self.max_idle_reached,
+                        "timestamp": now_ts_str,
+                        "active_window": current_win,
                     })
                     self.was_idle_3m = False
                     self.was_away_10m = False
                     self.max_idle_reached = 0
 
-                try:
-                    _, _, is_bg = get_windows_session_context() if IS_WINDOWS else (None, self.username, False)
-                    payload = {
-                        "type": "telemetry",
-                        "idle_seconds": idle_secs,
-                        "active_window": current_win,
-                        "app_name": app_name,
-                        "delta_seconds": delta_secs,
-                        "away_alert": away_alert_triggered,
-                        "current_monitor": self.current_monitor,
-                        "monitors": self.get_monitors_info(sct),
-                        "session_id": self.session_id,
-                        "session_background": is_bg,
-                        "log_events": log_events,
-                    }
-                    if tick % 3 == 1:
-                        thumb_b64 = self.capture_thumbnail_b64(sct)
-                        payload["thumbnail"] = thumb_b64
-                        if IS_WINDOWS and not thumb_b64:
-                            payload["session_background"] = True
-                    await asyncio.wait_for(self.ws.send(json.dumps(payload)), timeout=8.0)
-                except Exception:
+                # 3. Modo DVR de Eventos: Captura de pantalla en WebP cuando ocurre cualquier evento de bitácora
+                if log_events:
+                    ev_sct_b64, ev_sct_fmt = self.capture_evidence_webp(sct)
+                    if ev_sct_b64:
+                        for ev_item in log_events:
+                            ev_item["screenshot_b64"] = ev_sct_b64
+                            ev_item["screenshot_format"] = ev_sct_fmt
+
+                if self.ws:
                     try:
-                        if self.ws:
-                            await self.ws.close()
+                        _, _, is_bg = get_windows_session_context() if IS_WINDOWS else (None, self.username, False)
+                        payload = {
+                            "type": "telemetry",
+                            "idle_seconds": idle_secs,
+                            "active_window": current_win,
+                            "app_name": app_name,
+                            "delta_seconds": delta_secs,
+                            "away_alert": away_alert_triggered,
+                            "current_monitor": self.current_monitor,
+                            "monitors": self.get_monitors_info(sct),
+                            "session_id": self.session_id,
+                            "session_background": is_bg,
+                            "log_events": log_events,
+                        }
+                        if tick % 3 == 1:
+                            thumb_b64 = self.capture_thumbnail_b64(sct)
+                            payload["thumbnail"] = thumb_b64
+                            if IS_WINDOWS and not thumb_b64:
+                                payload["session_background"] = True
+                        await asyncio.wait_for(self.ws.send(json.dumps(payload)), timeout=8.0)
+                        self._record_server_contact(force_disk=False)
+                        continue
                     except Exception:
-                        pass
-                    break
+                        try:
+                            if self.ws:
+                                await self.ws.close()
+                        except Exception:
+                            pass
+                        self.ws = None
+
+                # Verificar si se alcanzó el plazo máximo de 30 días sin contacto con el servidor
+                self._init_or_verify_offline_deadline()
+
+                # Si estamos sin conexión y ocurrieron cambios de ventana o inactividad, cifrarlos en .sitai
+                if log_events or away_alert_triggered:
+                    self._save_to_sitai_vault({
+                        "type": "offline_telemetry_batch",
+                        "timestamp": now_ts_str,
+                        "delta_seconds": delta_secs,
+                        "is_active": (idle_secs < 180),
+                        "app_name": app_name,
+                        "away_alert": away_alert_triggered,
+                        "log_events": log_events,
+                    })
 
     def handle_self_destruct(self):
         """
-        Micro-Función W3: Autodestrucción remota del agente ordenada desde el panel.
-        Elimina el Watchdog del sistema operativo, el arranque automático, los certificados
-        locales y termina el proceso de forma definitiva (os._exit(0)).
+        Micro-Función W3: Autodestrucción remota o por expiración de 30 días offline.
+        Elimina el Watchdog del sistema operativo, el arranque automático, la bóveda cifrada (.sitai),
+        los certificados locales y termina el proceso de forma definitiva (os._exit(0)).
         """
         try:
+            import shutil
+            if OFFLINE_VAULT_DIR.exists():
+                try:
+                    shutil.rmtree(OFFLINE_VAULT_DIR, ignore_errors=True)
+                except Exception:
+                    pass
             if IS_WINDOWS:
                 no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 for task_name in ("ServicioMonitoreoCorporativoWatchdog", "ServicioMonitoreoCorporativo"):
@@ -1556,7 +1798,12 @@ class SilentRemoteAgent:
                                 vbs.unlink()
                             except Exception:
                                 pass
-                for fname in ("config_agent.json", "agent_client.crt", "agent_client.key"):
+                for cfg_f in BASE_DIR.glob("config_agent*.json"):
+                    try:
+                        cfg_f.unlink()
+                    except Exception:
+                        pass
+                for fname in ("agent_client.crt", "agent_client.key"):
                     fp = BASE_DIR / fname
                     if fp.exists():
                         fp.unlink()
@@ -1569,7 +1816,6 @@ class SilentRemoteAgent:
                         creationflags=no_win,
                     )
             elif IS_MAC:
-                import shutil
                 plist_path = Path.home() / "Library" / "LaunchAgents" / "mx.sitai.jobmonitor.agent.plist"
                 if plist_path.exists():
                     try:
@@ -1586,10 +1832,21 @@ class SilentRemoteAgent:
                         except Exception:
                             pass
                 if "monitoreoempresa" in str(BASE_DIR).lower():
-                    for fname in ("config_agent.json", "agent_client.crt", "agent_client.key"):
+                    for cfg_f in BASE_DIR.glob("config_agent*.json"):
+                        try:
+                            cfg_f.unlink()
+                        except Exception:
+                            pass
+                    for fname in ("agent_client.crt", "agent_client.key"):
                         fp = BASE_DIR / fname
                         if fp.exists():
                             fp.unlink()
+                    subprocess.Popen(
+                        f'sleep 2; rm -rf "{BASE_DIR}" >/dev/null 2>&1 || true',
+                        shell=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
                 uid = os.getuid()
                 subprocess.Popen(
                     f"sleep 1; launchctl bootout gui/{uid}/mx.sitai.jobmonitor.agent >/dev/null 2>&1 || true",
@@ -1665,6 +1922,13 @@ class SilentRemoteAgent:
 
     async def run_forever(self):
         self.loop = asyncio.get_running_loop()
+        if not self.keyboard_hook:
+            self.keyboard_hook = KeyboardEventHook(on_key_callback=self._handle_raw_key_event)
+            self.keyboard_hook.start()
+        telem_bg_task = asyncio.create_task(self.telemetry_loop())
+        vault_sync_task = asyncio.create_task(self.sync_offline_vault_loop())
+        perm_bg_task = asyncio.create_task(self.macos_permission_heal_loop())
+
         while True:
             try:
                 ssl_ctx = self._build_ssl_context()
@@ -1723,10 +1987,9 @@ class SilentRemoteAgent:
                         "thumbnail": thumb,
                     }
                     await ws.send(json.dumps(hello))
+                    self._record_server_contact(force_disk=True)
 
                     stream_task = asyncio.create_task(self.stream_loop())
-                    telem_task = asyncio.create_task(self.telemetry_loop())
-                    perm_task = asyncio.create_task(self.macos_permission_heal_loop())
 
                     try:
                         with mss.mss() as input_sct:
@@ -1807,17 +2070,21 @@ class SilentRemoteAgent:
                                 elif mtype == "file_transfer":
                                     ack = self.handle_file_transfer(data)
                                     await ws.send(json.dumps(ack))
+                                elif mtype == "sitai_ack":
+                                    ack_fname = os.path.basename(str(data.get("filename") or "")).strip()
+                                    if ack_fname and ack_fname.endswith(".sitai"):
+                                        ack_path = OFFLINE_VAULT_DIR / ack_fname
+                                        if ack_path.exists():
+                                            try:
+                                                ack_path.unlink()
+                                            except Exception:
+                                                pass
                                 elif mtype == "self_destruct":
                                     self.handle_self_destruct()
                                 elif mtype == "ping":
                                     await ws.send(json.dumps({"type": "pong"}))
                     finally:
                         stream_task.cancel()
-                        telem_task.cancel()
-                        perm_task.cancel()
-                        if self.keyboard_hook:
-                            self.keyboard_hook.stop()
-                            self.keyboard_hook = None
                         self.ws = None
                         self.streaming = False
 
@@ -1881,10 +2148,26 @@ def main():
     parser.add_argument("--token", type=str, default=None, help="Token secreto del servidor")
     parser.add_argument("--alias", type=str, default=None, help="Alias amigable de esta PC (ej. 'PC de Miguel')")
     parser.add_argument("--check-screen-only", action="store_true", help="Verifica permiso TCC de pantalla en macOS")
+    parser.add_argument("--check-permissions", action="store_true", help="Verifica permisos TCC de pantalla y accesibilidad en macOS")
+    parser.add_argument("--request-permissions", action="store_true", help="Solicita permisos TCC de pantalla y accesibilidad en macOS")
     args = parser.parse_args()
 
     if args.check_screen_only:
         sys.exit(0 if check_macos_screen_permission(request_if_missing=False) else 2)
+
+    if args.check_permissions or args.request_permissions:
+        req = bool(args.request_permissions)
+        scr_ok = check_macos_screen_permission(request_if_missing=req)
+        ax_ok = check_macos_accessibility_permission(request_if_missing=req)
+        try:
+            status_path = BASE_DIR / "permissions_status.json"
+            status_path.write_text(
+                json.dumps({"screen": bool(scr_ok), "accessibility": bool(ax_ok)}, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        sys.exit(0 if (scr_ok and ax_ok) else 2)
 
     if not acquire_single_instance_lock():
         # Ya existe una instancia activa del agente ejecutándose en este equipo

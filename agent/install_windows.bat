@@ -244,10 +244,7 @@ REM  MF-06: Copiar codigo, configuracion y certificados + identidad por usuario
 REM ============================================================================
 :mf_06_deploy_files_and_certs
 echo [MF-06] Desplegando archivos y certificados en %INSTALL_DIR%...
-set "OLD_CFG=%INSTALL_DIR%\config_agent.prev.json"
-if exist "%INSTALL_DIR%\config_agent.json" (
-    copy /y "%INSTALL_DIR%\config_agent.json" "%OLD_CFG%" >nul 2>&1
-)
+del /f /q "%INSTALL_DIR%\config_agent*.json" >nul 2>&1
 
 copy /y "%SCRIPT_DIR%agent.py" "%INSTALL_DIR%\agent.py" >nul
 if errorlevel 1 exit /b 1
@@ -264,10 +261,6 @@ if exist "%SCRIPT_DIR%agent_client.key" (
 )
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -Path $env:INSTALL_DIR -Recurse | Unblock-File -ErrorAction SilentlyContinue" >nul 2>&1
-
-if exist "%OLD_CFG%" if exist "%INSTALL_DIR%\config_agent.json" (
-    "%PYTHON_EXE%" -c "import json, os, pathlib; p1=pathlib.Path(os.environ['OLD_CFG']); p2=pathlib.Path(os.environ['INSTALL_DIR'])/'config_agent.json'; u=os.environ.get('ORIG_USER','').split('\\')[-1].strip(); c1=json.loads(p1.read_text('utf-8')); c2=json.loads(p2.read_text('utf-8')); same_u=(not c1.get('owner_username') or c1.get('owner_username','').lower()==u.lower()); same_a=(not c2.get('alias') or c2.get('alias')==c1.get('alias')); [c2.setdefault(k, c1[k]) for k in ('agent_id','alias') if c1.get(k) and same_u and same_a]; c2['owner_username']=u or c1.get('owner_username',''); p2.write_text(json.dumps(c2, indent=2, ensure_ascii=False), 'utf-8'); p1.unlink(missing_ok=True)" >nul 2>&1
-)
 exit /b 0
 
 

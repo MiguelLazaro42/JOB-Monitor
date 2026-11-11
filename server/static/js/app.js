@@ -534,26 +534,56 @@
     const offlineList = rawOfflineList.filter((ag) => tFilter === 'ALL' || ag.tenant_id === tFilter);
     const allItems = [...onlineList, ...offlineList];
 
-    if (navOnlineBadge) {
-      navOnlineBadge.textContent = String(onlineList.length);
+    function computeHardwareGroupKey(item) {
+      const hostClean = (item.hostname || '').trim().toLowerCase();
+      const ipClean = (item.local_ip || '').trim().toLowerCase();
+      if (hostClean && !['equipo registrado', 'pc-desconocida', 'unknown', '---'].includes(hostClean)) {
+        const ipPart = ipClean && ipClean !== '---' ? ipClean : 'lan';
+        return `hw__${hostClean}__${ipPart}`;
+      }
+      if (item.agent_id) {
+        return `${item.agent_id.replace(/-S\d+$/, '')}__${hostClean}`;
+      }
+      return 'unknown';
     }
 
     let activeCount = 0;
     let idleCount = 0;
     let awayCount = 0;
+    let onlineGroupsCount = 0;
+    let offlineGroupsCount = 0;
 
-    onlineList.forEach((ag) => {
-      if (ag.activity_status === 'active') activeCount += 1;
-      else if (ag.activity_status === 'idle') idleCount += 1;
-      else awayCount += 1;
+    // Recalcular contadores por equipo físico (y no duplicar por cada usuario interno de la misma PC)
+    const allHardwareGroups = new Map();
+    allItems.forEach((item) => {
+      const gKey = computeHardwareGroupKey(item);
+      if (!allHardwareGroups.has(gKey)) {
+        allHardwareGroups.set(gKey, []);
+      }
+      allHardwareGroups.get(gKey).push(item);
     });
 
-    countTotal.textContent = String(allItems.length);
+    allHardwareGroups.forEach((gList) => {
+      const onlineMembers = gList.filter((x) => !x.is_offline_card);
+      if (onlineMembers.length === 0) {
+        offlineGroupsCount += 1;
+      } else {
+        onlineGroupsCount += 1;
+        if (onlineMembers.some((x) => x.activity_status === 'active')) activeCount += 1;
+        else if (onlineMembers.some((x) => x.activity_status === 'idle')) idleCount += 1;
+        else awayCount += 1;
+      }
+    });
+
+    if (navOnlineBadge) {
+      navOnlineBadge.textContent = String(onlineGroupsCount);
+    }
+    countTotal.textContent = String(allHardwareGroups.size);
     countActive.textContent = String(activeCount);
     countIdle.textContent = String(idleCount);
     countAway.textContent = String(awayCount);
     if (countOffline) {
-      countOffline.textContent = String(offlineList.length);
+      countOffline.textContent = String(offlineGroupsCount);
     }
 
     if (allItems.length === 0) {
@@ -578,11 +608,10 @@
     const showManageBtns = canManageDevices();
     const showTenantPill = isSuperAdmin();
 
-    // Agrupación por Hardware / PC Física (soporta multi-sesión de Windows de forma elegante)
+    // Agrupación por Hardware / PC Física (soporta multi-sesión / multi-usuario en la misma PC dentro de una sola tarjeta)
     const hardwareGroups = new Map();
     filtered.forEach((item) => {
-      const rawId = item.agent_id ? item.agent_id.replace(/-S\d+$/, '') : item.agent_id;
-      const groupKey = `${rawId}__${(item.hostname || '').toLowerCase()}`;
+      const groupKey = computeHardwareGroupKey(item);
       if (!hardwareGroups.has(groupKey)) {
         hardwareGroups.set(groupKey, []);
       }
@@ -606,16 +635,21 @@
 
         const isMultiSession = groupItems.length > 1;
 
-        // Construir barra de pestañas superior si esta PC tiene 2 o más sesiones
+        // Construir barra de pestañas superior si esta PC tiene 2 o más sesiones / usuarios
         let sessionTabsHtml = '';
         if (isMultiSession) {
+          const allSameAlias = groupItems.every(
+            (it) => (it.alias || '').trim().toLowerCase() === (groupItems[0].alias || '').trim().toLowerCase()
+          );
           const tabsButtons = groupItems
             .map((item, idx) => {
               const isCur = item.agent_id === ag.agent_id;
               const isBg = Boolean(item.is_background_session);
               const isOff = Boolean(item.is_offline_card);
-              let sessionLabel = item.alias || `Sesión ${idx + 1}`;
-              if (item.username && !sessionLabel.toLowerCase().includes(item.username.toLowerCase())) {
+              let sessionLabel = item.alias || `Usuario ${idx + 1}`;
+              if (allSameAlias && item.username && item.username !== '---') {
+                sessionLabel = `Usuario: ${item.username}`;
+              } else if (item.username && item.username !== '---' && !sessionLabel.toLowerCase().includes(item.username.toLowerCase())) {
                 sessionLabel = `${sessionLabel} (${item.username})`;
               }
               const tabDot = isOff
@@ -627,7 +661,7 @@
                 : (isBg ? '<span class="session-tab-pill-bg">2ºP</span>' : '');
 
               return `
-                <button type="button" class="session-tab-btn ${isCur ? 'active' : ''} js-switch-session-tab" data-group-key="${escapeHtml(groupKey)}" data-agent-id="${escapeHtml(item.agent_id)}" title="${escapeHtml(item.alias)} (${escapeHtml(item.username)})">
+                <button type="button" class="session-tab-btn ${isCur ? 'active' : ''} js-switch-session-tab" data-group-key="${escapeHtml(groupKey)}" data-agent-id="${escapeHtml(item.agent_id)}" title="${escapeHtml(item.alias)} • Usuario SO: ${escapeHtml(item.username)}">
                   <span class="indicator-dot ${tabDot}"></span>
                   <span>${escapeHtml(sessionLabel)}</span>
                   ${statePill}
@@ -640,9 +674,9 @@
             <div class="card-session-tabs-bar">
               <span class="card-session-meta-chip">
                 <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;">
-                  <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
                 </svg>
-                ${groupItems.length} Sesiones
+                ${groupItems.length} Usuarios
               </span>
               ${tabsButtons}
             </div>
@@ -804,13 +838,24 @@
   function populateLogDeviceSelector() {
     const currentVal = logDeviceFilter.value || 'ALL';
     const mapDevs = new Map();
-    state.knownDevices.forEach((d) => mapDevs.set(d.agent_id, d.alias));
-    state.agents.forEach((a) => mapDevs.set(a.agent_id, a.alias));
+    state.knownDevices.forEach((d) => mapDevs.set(d.agent_id, { alias: d.alias, username: d.username, hostname: d.hostname }));
+    state.agents.forEach((a) => mapDevs.set(a.agent_id, { alias: a.alias, username: a.username, hostname: a.hostname }));
+
+    const aliasCounts = new Map();
+    mapDevs.forEach((info) => {
+      const k = (info.alias || '').trim().toLowerCase();
+      aliasCounts.set(k, (aliasCounts.get(k) || 0) + 1);
+    });
 
     let html = '<option value="ALL">Todos los equipos</option>';
-    mapDevs.forEach((alias, id) => {
+    mapDevs.forEach((info, id) => {
       const sel = id === currentVal ? 'selected' : '';
-      html += `<option value="${escapeHtml(id)}" ${sel}>${escapeHtml(alias)}</option>`;
+      const k = (info.alias || '').trim().toLowerCase();
+      const label =
+        (aliasCounts.get(k) || 0) > 1 && info.username && info.username !== '---'
+          ? `${info.alias} (${info.username})`
+          : info.alias;
+      html += `<option value="${escapeHtml(id)}" ${sel}>${escapeHtml(label)}</option>`;
     });
     logDeviceFilter.innerHTML = html;
   }
@@ -1055,56 +1100,99 @@
 
   function openEvidenceModal(data) {
     if (!evidenceModal) return;
+    const cat = String(data.category || 'KEYBOARD').toUpperCase();
+    const isKeyboard = cat === 'KEYBOARD';
     if (evidenceModalTitle) {
       evidenceModalTitle.textContent = `Evidencia: ${data.alias} (${data.hostname})`;
     }
     if (evidenceModalSubtitle) {
-      evidenceModalSubtitle.textContent = `Registrado el ${data.time} • Pausa de 15s tras redacción activa`;
+      const catSubtitleMap = {
+        KEYBOARD: 'Pausa de 15s tras redacción activa',
+        WINDOW: 'Captura DVR automática al cambiar de ventana activa',
+        IDLE: 'Captura DVR automática al entrar en estado de inactividad',
+        RESUME: 'Captura DVR automática al retomar actividad en el equipo',
+      };
+      const subDesc = catSubtitleMap[cat] || 'Captura DVR de evento en bitácora';
+      evidenceModalSubtitle.textContent = `Registrado el ${data.time} • ${subDesc}`;
     }
-    const parsed = analyzeKeyboardTranscript(data.text || '');
-    const cleanLayout = normalizeKeyboardLayoutName(data.layout);
-    const cleanBlockHtml = parsed.cleanText
-      ? `
-        <div>
-          <div class="kb-box-caption">Texto Final Redactado (Limpio)</div>
-          <div class="kb-clean-box">${escapeHtml(parsed.cleanText)}</div>
-        </div>
-      `
-      : '';
-    const sequenceBlockHtml = parsed.sequenceHtml
-      ? `
-        <div>
-          <div class="kb-box-caption">${parsed.hasSpecialKeys ? 'Secuencia de Pulsaciones y Teclas Especiales' : 'Transcripción'}</div>
-          <div class="kb-raw-box">${parsed.sequenceHtml}</div>
-        </div>
-      `
-      : '<div class="kb-raw-box muted-text">(Pulsaciones especiales sin texto imprimible)</div>';
 
     if (evidenceMetaContainer) {
-      evidenceMetaContainer.innerHTML = `
-        <div class="evidence-meta-item">
-          <span class="evidence-meta-label">Ventana Activa</span>
-          <span class="evidence-meta-val">${escapeHtml(data.window || 'Escritorio')}</span>
-        </div>
-        <div class="evidence-meta-item">
-          <span class="evidence-meta-label">Pulsaciones</span>
-          <span class="evidence-meta-val">${escapeHtml(String(data.count || 0))} teclas</span>
-        </div>
-        <div class="evidence-meta-item">
-          <span class="evidence-meta-label">Duración</span>
-          <span class="evidence-meta-val">${escapeHtml(String(data.duration || 0))}s</span>
-        </div>
-        <div class="evidence-meta-item">
-          <span class="evidence-meta-label">Distribución / Idioma</span>
-          <span class="evidence-meta-val">${escapeHtml(cleanLayout)}</span>
-        </div>
-        <div class="evidence-meta-item full-width">
-          <div class="kb-transcript-stack">
-            ${cleanBlockHtml}
-            ${parsed.hasSpecialKeys || !parsed.cleanText ? sequenceBlockHtml : ''}
+      if (isKeyboard) {
+        const parsed = analyzeKeyboardTranscript(data.text || '');
+        const cleanLayout = normalizeKeyboardLayoutName(data.layout);
+        const cleanBlockHtml = parsed.cleanText
+          ? `
+            <div>
+              <div class="kb-box-caption">Texto Final Redactado (Limpio)</div>
+              <div class="kb-clean-box">${escapeHtml(parsed.cleanText)}</div>
+            </div>
+          `
+          : '';
+        const sequenceBlockHtml = parsed.sequenceHtml
+          ? `
+            <div>
+              <div class="kb-box-caption">${parsed.hasSpecialKeys ? 'Secuencia de Pulsaciones y Teclas Especiales' : 'Transcripción'}</div>
+              <div class="kb-raw-box">${parsed.sequenceHtml}</div>
+            </div>
+          `
+          : '<div class="kb-raw-box muted-text">(Pulsaciones especiales sin texto imprimible)</div>';
+
+        evidenceMetaContainer.innerHTML = `
+          <div class="evidence-meta-item">
+            <span class="evidence-meta-label">Ventana Activa</span>
+            <span class="evidence-meta-val">${escapeHtml(data.window || 'Escritorio')}</span>
           </div>
-        </div>
-      `;
+          <div class="evidence-meta-item">
+            <span class="evidence-meta-label">Pulsaciones</span>
+            <span class="evidence-meta-val">${escapeHtml(String(data.count || 0))} teclas</span>
+          </div>
+          <div class="evidence-meta-item">
+            <span class="evidence-meta-label">Duración</span>
+            <span class="evidence-meta-val">${escapeHtml(String(data.duration || 0))}s</span>
+          </div>
+          <div class="evidence-meta-item">
+            <span class="evidence-meta-label">Distribución / Idioma</span>
+            <span class="evidence-meta-val">${escapeHtml(cleanLayout)}</span>
+          </div>
+          <div class="evidence-meta-item full-width">
+            <div class="kb-transcript-stack">
+              ${cleanBlockHtml}
+              ${parsed.hasSpecialKeys || !parsed.cleanText ? sequenceBlockHtml : ''}
+            </div>
+          </div>
+        `;
+      } else {
+        const catLabelMap = {
+          WINDOW: 'Cambio de Ventana Activa',
+          IDLE: 'Transición de Inactividad',
+          RESUME: 'Regreso de Actividad',
+          NETWORK: 'Evento de Red',
+          AUDIT: 'Evento de Soporte',
+        };
+        const prevWin = (data.prevWindow || '').trim();
+        evidenceMetaContainer.innerHTML = `
+          <div class="evidence-meta-item">
+            <span class="evidence-meta-label">Tipo de Evento DVR</span>
+            <span class="evidence-meta-val">${escapeHtml(catLabelMap[cat] || cat)}</span>
+          </div>
+          <div class="evidence-meta-item">
+            <span class="evidence-meta-label">Ventana Activa Capturada</span>
+            <span class="evidence-meta-val">${escapeHtml(data.window || 'Escritorio')}</span>
+          </div>
+          <div class="evidence-meta-item">
+            <span class="evidence-meta-label">${prevWin ? 'Ventana Previa' : 'Duración Asociada'}</span>
+            <span class="evidence-meta-val">${escapeHtml(prevWin ? prevWin : `${data.duration || 0}s`)}</span>
+          </div>
+          <div class="evidence-meta-item">
+            <span class="evidence-meta-label">Permanencia / Tiempo</span>
+            <span class="evidence-meta-val">${escapeHtml(String(data.duration || 0))}s</span>
+          </div>
+          <div class="evidence-meta-item full-width">
+            <span class="evidence-meta-label">Detalle del Evento Registrado</span>
+            <div class="kb-clean-box" style="margin-top:4px; font-weight:500;">${escapeHtml(data.message || '')}</div>
+          </div>
+        `;
+      }
     }
     let imgUrl = data.url || '';
     if (imgUrl && state.password) {
@@ -1202,8 +1290,8 @@
           }
 
           const activeWin = (meta && meta.active_window) || 'Escritorio';
-          const keystrokesCount = (meta && meta.keystrokes_count) !== undefined ? meta.keystrokes_count : (row.duration_seconds || 0);
-          const durSecs = (meta && meta.duration_seconds) !== undefined ? meta.duration_seconds : (row.duration_seconds || 0);
+          const keystrokesCount = meta && meta.keystrokes_count !== undefined ? meta.keystrokes_count : (row.duration_seconds || 0);
+          const durSecs = meta && meta.duration_seconds !== undefined ? meta.duration_seconds : (row.duration_seconds || 0);
           const layout = normalizeKeyboardLayoutName((meta && meta.keyboard_layout) || 'Estándar');
           const textContent = (meta && meta.text_content) || '';
           const evidencePath = row.evidence_path || (meta && meta.evidence_path) || '';
@@ -1222,6 +1310,7 @@
           const evidenceBtnHtml = evidencePath
             ? `
               <button type="button" class="btn btn-secondary btn-sm js-open-evidence"
+                data-category="KEYBOARD"
                 data-evidence-url="${escapeHtml(evidencePath)}"
                 data-alias="${escapeHtml(row.alias)}"
                 data-hostname="${escapeHtml(row.hostname)}"
@@ -1230,7 +1319,8 @@
                 data-count="${escapeHtml(String(keystrokesCount))}"
                 data-duration="${escapeHtml(String(durSecs))}"
                 data-layout="${escapeHtml(layout)}"
-                data-text="${escapeHtml(textContent)}">
+                data-text="${escapeHtml(textContent)}"
+                data-message="${escapeHtml(row.message || '')}">
                 <svg class="icon-xs" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
                   <circle cx="12" cy="13" r="4"/>
@@ -1260,14 +1350,49 @@
             </div>
           `;
         } else {
+          let meta = null;
+          if (row.meta_json) {
+            try {
+              meta = typeof row.meta_json === 'string' ? JSON.parse(row.meta_json) : row.meta_json;
+            } catch (_) {}
+          }
+          const evidencePath = row.evidence_path || (meta && meta.evidence_path) || '';
+          const activeWin = (meta && meta.active_window) || 'Escritorio';
+          const prevWin = (meta && meta.previous_window) || '';
+          const durSecs = meta && meta.duration_seconds !== undefined ? meta.duration_seconds : (row.duration_seconds || 0);
+          const dvrBtnHtml = evidencePath
+            ? `
+              <button type="button" class="btn btn-secondary btn-sm js-open-evidence"
+                style="margin-left:auto;"
+                data-category="${escapeHtml(cat)}"
+                data-evidence-url="${escapeHtml(evidencePath)}"
+                data-alias="${escapeHtml(row.alias)}"
+                data-hostname="${escapeHtml(row.hostname)}"
+                data-window="${escapeHtml(activeWin)}"
+                data-prev-window="${escapeHtml(prevWin)}"
+                data-time="${escapeHtml(row.timestamp)}"
+                data-duration="${escapeHtml(String(durSecs))}"
+                data-message="${escapeHtml(row.message || '')}">
+                <svg class="icon-xs" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                  <circle cx="12" cy="13" r="4"/>
+                </svg>
+                <span>Ver Evidencia Visual</span>
+              </button>
+            `
+            : '';
+
           eventHtml = `
-            <div class="log-normal-entry">
-              <span>${formatSpecialKeysHtml(row.message)}</span>
-              ${
-                row.repeatCount > 1
-                  ? `<span class="log-repeat-pill" title="Evento repetido ${row.repeatCount} veces consecutivas (entre ${escapeHtml(row.firstTimestamp)} y ${escapeHtml(row.timestamp)})">x${row.repeatCount} repeticiones</span>`
-                  : ''
-              }
+            <div class="log-normal-entry" style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <span>${formatSpecialKeysHtml(row.message)}</span>
+                ${
+                  row.repeatCount > 1
+                    ? `<span class="log-repeat-pill" title="Evento repetido ${row.repeatCount} veces consecutivas (entre ${escapeHtml(row.firstTimestamp)} y ${escapeHtml(row.timestamp)})">x${row.repeatCount} repeticiones</span>`
+                    : ''
+                }
+              </div>
+              ${dvrBtnHtml}
             </div>
           `;
         }
@@ -2294,15 +2419,18 @@
       if (btn) {
         e.preventDefault();
         openEvidenceModal({
+          category: btn.dataset.category || 'KEYBOARD',
           url: btn.dataset.evidenceUrl,
           alias: btn.dataset.alias,
           hostname: btn.dataset.hostname,
           window: btn.dataset.window,
+          prevWindow: btn.dataset.prevWindow || '',
           time: btn.dataset.time,
           count: btn.dataset.count,
           duration: btn.dataset.duration,
           layout: btn.dataset.layout,
           text: btn.dataset.text,
+          message: btn.dataset.message || '',
         });
       }
     });

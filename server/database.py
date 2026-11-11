@@ -545,6 +545,7 @@ class DatabaseManager:
             conn = self._get_conn()
             try:
                 conn.execute("DELETE FROM devices WHERE agent_id = ?", (agent_id,))
+                conn.execute("DELETE FROM device_logs WHERE agent_id = ?", (agent_id,))
                 conn.execute("DELETE FROM daily_activity_summary WHERE agent_id = ?", (agent_id,))
                 conn.execute("DELETE FROM window_usage_daily WHERE agent_id = ?", (agent_id,))
                 conn.execute("DELETE FROM chat_messages WHERE agent_id = ?", (agent_id,))
@@ -680,8 +681,9 @@ class DatabaseManager:
         duration_seconds: Optional[int] = None,
         evidence_path: Optional[str] = None,
         meta_json: Optional[str] = None,
+        custom_timestamp: Optional[str] = None,
     ) -> dict:
-        now_str = self._now_dt().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = (custom_timestamp or "").strip() or self._now_dt().strftime("%Y-%m-%d %H:%M:%S")
         with self._lock:
             conn = self._get_conn()
             try:
