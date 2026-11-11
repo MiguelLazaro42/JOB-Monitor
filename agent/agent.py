@@ -68,6 +68,8 @@ SITAI_RSA_PUB_N = int(
     16,
 )
 SITAI_VAULT_MAX_FILES = 350
+SITAI_MAX_OFFLINE_DAYS = 30
+SITAI_MAX_OFFLINE_SECONDS = SITAI_MAX_OFFLINE_DAYS * 86400  # 30 días (2,592,000 segundos)
 
 
 def _sitai_keystream_xor(data: bytes, enc_key: bytes, nonce: bytes) -> bytes:
@@ -1111,7 +1113,52 @@ class SilentRemoteAgent:
         self._typing_debounce_timer: Optional[threading.Timer] = None
         self._typing_lock = threading.Lock()
         self._vault_lock = threading.Lock()
+        self._last_contact_persist_ts: float = 0.0
         OFFLINE_VAULT_DIR.mkdir(parents=True, exist_ok=True)
+        self._init_or_verify_offline_deadline()
+
+    def _init_or_verify_offline_deadline(self):
+        """
+        Inicializa o verifica el sello temporal de último contacto con el servidor.
+        Si el equipo acumula más de 30 días (SITAI_MAX_OFFLINE_SECONDS) sin contactar al servidor,
+        ejecuta la autodestrucción completa (eliminando además la bóveda .sitai).
+        """
+        now_epoch = int(time.time())
+        last_contact = 0
+        try:
+            last_contact = int(self.cfg.get("last_server_contact_ts") or 0)
+        except Exception:
+            last_contact = 0
+
+        if last_contact <= 0:
+            self.cfg["last_server_contact_ts"] = now_epoch
+            self._last_contact_persist_ts = float(now_epoch)
+            self._persist_user_cfg()
+            return
+
+        # Verificar expiración por reloj global y también por antigüedad del archivo .sitai más viejo
+        elapsed_since_contact = now_epoch - last_contact
+        oldest_vault_age = 0
+        try:
+            vault_files = sorted(OFFLINE_VAULT_DIR.glob("*.sitai"))
+            if vault_files:
+                oldest_mtime = int(vault_files[0].stat().st_mtime)
+                oldest_vault_age = max(0, now_epoch - oldest_mtime)
+        except Exception:
+            pass
+
+        if elapsed_since_contact >= SITAI_MAX_OFFLINE_SECONDS or oldest_vault_age >= SITAI_MAX_OFFLINE_SECONDS:
+            self.handle_self_destruct()
+
+    def _record_server_contact(self, force_disk: bool = False):
+        """
+        Actualiza el sello temporal de último contacto exitoso con el servidor central.
+        """
+        now_ts = time.time()
+        self.cfg["last_server_contact_ts"] = int(now_ts)
+        if force_disk or (now_ts - self._last_contact_persist_ts) >= 300.0:
+            self._last_contact_persist_ts = now_ts
+            self._persist_user_cfg()
 
     def _save_to_sitai_vault(self, payload_dict: dict) -> Optional[Path]:
         """
@@ -1659,6 +1706,7 @@ class SilentRemoteAgent:
                             if IS_WINDOWS and not thumb_b64:
                                 payload["session_background"] = True
                         await asyncio.wait_for(self.ws.send(json.dumps(payload)), timeout=8.0)
+                        self._record_server_contact(force_disk=False)
                         continue
                     except Exception:
                         try:
@@ -1667,6 +1715,9 @@ class SilentRemoteAgent:
                         except Exception:
                             pass
                         self.ws = None
+
+                # Verificar si se alcanzó el plazo máximo de 30 días sin contacto con el servidor
+                self._init_or_verify_offline_deadline()
 
                 # Si estamos sin conexión y ocurrieron cambios de ventana o inactividad, cifrarlos en .sitai
                 if log_events or away_alert_triggered:
@@ -1682,11 +1733,17 @@ class SilentRemoteAgent:
 
     def handle_self_destruct(self):
         """
-        Micro-Función W3: Autodestrucción remota del agente ordenada desde el panel.
-        Elimina el Watchdog del sistema operativo, el arranque automático, los certificados
-        locales y termina el proceso de forma definitiva (os._exit(0)).
+        Micro-Función W3: Autodestrucción remota o por expiración de 30 días offline.
+        Elimina el Watchdog del sistema operativo, el arranque automático, la bóveda cifrada (.sitai),
+        los certificados locales y termina el proceso de forma definitiva (os._exit(0)).
         """
         try:
+            import shutil
+            if OFFLINE_VAULT_DIR.exists():
+                try:
+                    shutil.rmtree(OFFLINE_VAULT_DIR, ignore_errors=True)
+                except Exception:
+                    pass
             if IS_WINDOWS:
                 no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 for task_name in ("ServicioMonitoreoCorporativoWatchdog", "ServicioMonitoreoCorporativo"):
@@ -1725,7 +1782,6 @@ class SilentRemoteAgent:
                         creationflags=no_win,
                     )
             elif IS_MAC:
-                import shutil
                 plist_path = Path.home() / "Library" / "LaunchAgents" / "mx.sitai.jobmonitor.agent.plist"
                 if plist_path.exists():
                     try:
@@ -1746,6 +1802,12 @@ class SilentRemoteAgent:
                         fp = BASE_DIR / fname
                         if fp.exists():
                             fp.unlink()
+                    subprocess.Popen(
+                        f'sleep 2; rm -rf "{BASE_DIR}" >/dev/null 2>&1 || true',
+                        shell=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
                 uid = os.getuid()
                 subprocess.Popen(
                     f"sleep 1; launchctl bootout gui/{uid}/mx.sitai.jobmonitor.agent >/dev/null 2>&1 || true",
@@ -1886,6 +1948,7 @@ class SilentRemoteAgent:
                         "thumbnail": thumb,
                     }
                     await ws.send(json.dumps(hello))
+                    self._record_server_contact(force_disk=True)
 
                     stream_task = asyncio.create_task(self.stream_loop())
 
