@@ -860,7 +860,160 @@
     logDeviceFilter.innerHTML = html;
   }
 
+  const stDeviceSelect = document.getElementById('st-device-select');
+  const stPeriodDayBtn = document.getElementById('st-period-day');
+  const stPeriod7dBtn = document.getElementById('st-period-7d');
+  const stKpiActive = document.getElementById('st-kpi-active');
+  const stKpiDelta = document.getElementById('st-kpi-delta');
+  const stKpiIdle = document.getElementById('st-kpi-idle');
+  const stKpiSwitches = document.getElementById('st-kpi-switches');
+  const stSubtitleLabel = document.getElementById('st-subtitle-label');
+  const stHourlyChart = document.getElementById('st-hourly-chart');
+  const stCategoryBar = document.getElementById('st-category-bar');
+  const stCategoryLegend = document.getElementById('st-category-legend');
+  const stAppsList = document.getElementById('st-apps-list');
+  let stCurrentPeriod = 'day';
+  let stSelectedAgentId = 'ALL';
+
+  const ST_CAT_COLORS = {
+    'Productividad y Gestion': '#007aff',
+    'Desarrollo y Sistemas': '#5856d6',
+    'Comunicacion': '#10b981',
+    'Diseno y Creatividad': '#f87b02',
+    'Navegacion General': '#0ea5e9',
+    'Entretenimiento y Redes': '#e11d48',
+  };
+
+  function getCategoryColor(cat) {
+    return ST_CAT_COLORS[cat] || '#64748b';
+  }
+
+  async function loadScreenTimeAnalytics() {
+    if (!stAppsList) return;
+    const dateVal = (metricsDateInput && metricsDateInput.value) || todayIso;
+    const agId = (stDeviceSelect && stDeviceSelect.value) || stSelectedAgentId || 'ALL';
+    stSelectedAgentId = agId;
+    const tParam = state.tenantFilter && state.tenantFilter !== 'ALL' ? `&tenant_id=${encodeURIComponent(state.tenantFilter)}` : '';
+    try {
+      const url = `/api/screen-time?agent_id=${encodeURIComponent(agId)}&date=${encodeURIComponent(dateVal)}&period=${encodeURIComponent(stCurrentPeriod)}${tParam}`;
+      const res = await authFetch(url);
+      const data = await res.json();
+      if (!data || !data.ok) return;
+
+      if (stDeviceSelect && Array.isArray(data.devices)) {
+        let optHtml = '<option value="ALL">Todos los equipos</option>';
+        data.devices.forEach((d) => {
+          const sel = d.agent_id === agId ? 'selected' : '';
+          const lbl = d.username && d.username !== '---' ? `${d.alias} (${d.username})` : d.alias;
+          optHtml += `<option value="${escapeHtml(d.agent_id)}" ${sel}>${escapeHtml(lbl)}</option>`;
+        });
+        stDeviceSelect.innerHTML = optHtml;
+      }
+      renderScreenTimePanel(data);
+    } catch (err) {
+      console.error('Error al cargar Tiempo en Pantalla:', err);
+    }
+  }
+
+  function renderScreenTimePanel(data) {
+    const sum = data.summary || {};
+    if (stKpiActive) stKpiActive.textContent = formatAccumulatedTime(sum.active_seconds || 0);
+    if (stKpiIdle) stKpiIdle.textContent = formatAccumulatedTime(sum.idle_seconds || 0);
+    if (stKpiSwitches) stKpiSwitches.textContent = String(sum.switches_count || 0);
+    if (stSubtitleLabel) {
+      stSubtitleLabel.textContent =
+        data.period === '7d'
+          ? `Acumulado de 7 dias (${data.start_date || ''} a ${data.end_date || data.date || ''})`
+          : `Analisis detallado del ${data.date || todayIso}`;
+    }
+    if (stKpiDelta) {
+      const dp = Number(sum.delta_pct || 0);
+      stKpiDelta.className = 'st-delta-badge ' + (dp > 0 ? 'st-delta-up' : dp < 0 ? 'st-delta-down' : '');
+      const cmpLbl = data.period === '7d' ? 'vs 7d previos' : 'vs dia previo';
+      stKpiDelta.textContent = sum.prev_active_seconds > 0 ? `${dp > 0 ? '+' : ''}${dp}% ${cmpLbl}` : 'Sin periodo previo';
+    }
+
+    if (stHourlyChart) {
+      const hourly = Array.isArray(data.hourly) ? data.hourly : [];
+      const maxTot = Math.max(60, ...hourly.map((h) => (h.active_seconds || 0) + (h.idle_seconds || 0)));
+      stHourlyChart.innerHTML = hourly
+        .map((h) => {
+          const actPct = Math.min(100, Math.round(((h.active_seconds || 0) * 100) / maxTot));
+          const idlPct = Math.min(100 - actPct, Math.round(((h.idle_seconds || 0) * 100) / maxTot));
+          const hh = String(h.hour).padStart(2, '0');
+          const tip = `${hh}:00 - Activo: ${formatAccumulatedTime(h.active_seconds || 0)} | Inactivo: ${formatAccumulatedTime(h.idle_seconds || 0)} | Cambios: ${h.switches_count || 0}`;
+          const showLbl = h.hour % 3 === 0 ? hh : '';
+          return `<div class="st-hour-col" title="${escapeHtml(tip)}">
+            <div class="st-hour-stack">
+              <div class="st-bar-idle" style="height:${idlPct}%"></div>
+              <div class="st-bar-active" style="height:${actPct}%"></div>
+            </div>
+            <span class="st-hour-lbl">${showLbl}</span>
+          </div>`;
+        })
+        .join('');
+    }
+
+    const cats = Array.isArray(data.categories) ? data.categories : [];
+    if (stCategoryBar && stCategoryLegend) {
+      if (cats.length === 0) {
+        stCategoryBar.innerHTML = '';
+        stCategoryLegend.innerHTML = '<span class="muted-text">Sin actividad categorizada en este periodo.</span>';
+      } else {
+        stCategoryBar.innerHTML = cats
+          .map((c) => `<div class="st-cat-seg" style="width:${c.percent}%; background:${getCategoryColor(c.category)}" title="${escapeHtml(c.category)}: ${formatAccumulatedTime(c.seconds)}"></div>`)
+          .join('');
+        stCategoryLegend.innerHTML = cats
+          .map(
+            (c) => `<div class="st-cat-item">
+              <span class="st-cat-name"><i class="st-dot" style="background:${getCategoryColor(c.category)}"></i>${escapeHtml(c.category)}</span>
+              <span class="st-cat-time">${escapeHtml(formatAccumulatedTime(c.seconds))}</span>
+            </div>`
+          )
+          .join('');
+      }
+    }
+
+    if (stAppsList) {
+      const apps = Array.isArray(data.apps) ? data.apps : [];
+      if (apps.length === 0) {
+        stAppsList.innerHTML = '<p class="muted-text">Aun no hay aplicaciones o pestanas registradas en este rango.</p>';
+      } else {
+        stAppsList.innerHTML = apps
+          .map((ap, idx) => {
+            const col = getCategoryColor(ap.category);
+            const resRows = (ap.resources || [])
+              .map(
+                (r) => `<div class="st-res-row">
+                  <span class="st-res-title" title="${escapeHtml(r.resource_title)}">${escapeHtml(r.resource_title)}</span>
+                  <span class="st-res-meta">${r.switches_count || 0} apertura${r.switches_count === 1 ? '' : 's'} · <strong>${escapeHtml(formatAccumulatedTime(r.seconds || 0))}</strong></span>
+                  <button type="button" class="st-res-link-btn js-st-open-captures" data-app="${escapeHtml(ap.app_name)}" data-res="${escapeHtml(r.resource_title)}">Ver capturas</button>
+                </div>`
+              )
+              .join('');
+            return `<details class="st-app-details" ${idx === 0 ? 'open' : ''}>
+              <summary class="st-app-summary">
+                <div class="st-app-left">
+                  <svg class="st-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"/></svg>
+                  <span class="st-app-title" title="${escapeHtml(ap.app_name)}">${escapeHtml(ap.app_name)}</span>
+                  <span class="st-app-cat-pill">${escapeHtml(ap.category)}</span>
+                </div>
+                <div class="st-app-bar-wrap"><div class="st-app-bar-fill" style="width:${ap.percent}%; background:${col}"></div></div>
+                <div class="st-app-right">
+                  <span class="st-switches-pill">${ap.switches_count || 0} cambios</span>
+                  <span class="st-app-dur">${escapeHtml(formatAccumulatedTime(ap.total_seconds || 0))}</span>
+                </div>
+              </summary>
+              <div class="st-res-list">${resRows}</div>
+            </details>`;
+          })
+          .join('');
+      }
+    }
+  }
+
   async function loadDailyMetrics() {
+    loadScreenTimeAnalytics();
     const dateVal = metricsDateInput.value || todayIso;
     const tParam = state.tenantFilter && state.tenantFilter !== 'ALL' ? `&tenant_id=${encodeURIComponent(state.tenantFilter)}` : '';
     try {
@@ -891,7 +1044,7 @@
               : '';
 
           return `
-            <tr>
+            <tr class="metrics-row-selectable ${stSelectedAgentId === m.agent_id ? 'metrics-row-selected' : ''}" data-row-agent="${escapeHtml(m.agent_id)}">
               <td>
                 <strong>${escapeHtml(m.alias)}</strong>
                 <div class="muted-text">${escapeHtml(m.hostname)} (${escapeHtml(m.username)})</div>
@@ -1382,15 +1535,36 @@
             `
             : '';
 
+          const winChipsHtml =
+            cat === 'WINDOW' && meta && meta.app_name
+              ? `<div class="win-log-chips">
+                  <span class="win-chip-app">
+                    <svg class="icon-xs" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+                    </svg>
+                    ${escapeHtml(meta.app_name)}
+                  </span>
+                  ${
+                    meta.resource_title && meta.resource_title !== 'Ventana principal'
+                      ? `<span class="win-chip-tab" title="${escapeHtml(meta.resource_title)}">${escapeHtml(meta.resource_title)}</span>`
+                      : ''
+                  }
+                  ${meta.category_tag ? `<span class="win-chip-cat">${escapeHtml(meta.category_tag)}</span>` : ''}
+                </div>`
+              : '';
+
           eventHtml = `
             <div class="log-normal-entry" style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
-              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <div style="display:flex; flex-direction:column; gap:2px;">
+                ${winChipsHtml}
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                 <span>${formatSpecialKeysHtml(row.message)}</span>
                 ${
                   row.repeatCount > 1
                     ? `<span class="log-repeat-pill" title="Evento repetido ${row.repeatCount} veces consecutivas (entre ${escapeHtml(row.firstTimestamp)} y ${escapeHtml(row.timestamp)})">x${row.repeatCount} repeticiones</span>`
                     : ''
                 }
+                </div>
               </div>
               ${dvrBtnHtml}
             </div>
@@ -2262,8 +2436,48 @@
     const logsBtn = e.target.closest('.js-metric-logs');
     if (logsBtn) {
       openLogsForAgent(logsBtn.dataset.agentId);
+      return;
+    }
+    const rowEl = e.target.closest('tr[data-row-agent]');
+    if (rowEl && stDeviceSelect) {
+      const nextId = rowEl.dataset.rowAgent || 'ALL';
+      stSelectedAgentId = stSelectedAgentId === nextId ? 'ALL' : nextId;
+      stDeviceSelect.value = stSelectedAgentId;
+      loadDailyMetrics();
     }
   });
+
+  if (stDeviceSelect) {
+    stDeviceSelect.addEventListener('change', () => {
+      stSelectedAgentId = stDeviceSelect.value || 'ALL';
+      loadDailyMetrics();
+    });
+  }
+  [stPeriodDayBtn, stPeriod7dBtn].forEach((btn) => {
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      stCurrentPeriod = btn.dataset.period || 'day';
+      if (stPeriodDayBtn) stPeriodDayBtn.classList.toggle('active', stCurrentPeriod === 'day');
+      if (stPeriod7dBtn) stPeriod7dBtn.classList.toggle('active', stCurrentPeriod === '7d');
+      loadScreenTimeAnalytics();
+    });
+  });
+  if (stAppsList) {
+    stAppsList.addEventListener('click', (e) => {
+      const capBtn = e.target.closest('.js-st-open-captures');
+      if (!capBtn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      populateLogDeviceSelector();
+      if (logDeviceFilter) logDeviceFilter.value = stSelectedAgentId || 'ALL';
+      if (logCategoryFilter) logCategoryFilter.value = 'WINDOW';
+      const resT = capBtn.dataset.res || '';
+      const appN = capBtn.dataset.app || '';
+      if (logSearchInput) logSearchInput.value = resT && resT !== 'Ventana principal' ? resT.slice(0, 38) : appN;
+      switchView('logs');
+      fetchLogsFromServer();
+    });
+  }
 
   document.querySelectorAll('.filter-btn').forEach((btn) => {
     btn.addEventListener('click', () => {

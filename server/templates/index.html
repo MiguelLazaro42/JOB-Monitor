@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=20261111-v6" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261111-v10" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -805,6 +805,83 @@
   <!-- VISTA 3: MÉTRICAS DE ACTIVIDAD E INACTIVIDAD DEL DÍA                    -->
   <!-- ======================================================================= -->
   <section id="view-activity" class="main-container hidden">
+    <div id="screen-time-card" class="panel-card st-panel-card">
+      <div class="panel-card-header">
+        <div class="st-title-group">
+          <svg class="icon-md st-accent-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="3" width="20" height="14" rx="2"/>
+            <line x1="8" y1="21" x2="16" y2="21"/>
+            <line x1="12" y1="17" x2="12" y2="21"/>
+          </svg>
+          <div>
+            <h2>Tiempo en Pantalla</h2>
+            <p id="st-subtitle-label" class="muted-text st-subtitle">Desglose horario, categorias y pestanas activas</p>
+          </div>
+        </div>
+        <div class="panel-controls">
+          <div class="control-select-wrap">
+            <select id="st-device-select" class="toolbar-select" aria-label="Filtrar equipo">
+              <option value="ALL">Todos los equipos</option>
+            </select>
+          </div>
+          <div class="st-segmented" role="group" aria-label="Periodo de analisis">
+            <button type="button" id="st-period-day" class="st-seg-btn active" data-period="day">Dia</button>
+            <button type="button" id="st-period-7d" class="st-seg-btn" data-period="7d">7 dias</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="st-body">
+        <div class="st-kpi-grid">
+          <div class="st-kpi-box">
+            <span class="st-kpi-label">TIEMPO ACTIVO EN PANTALLA</span>
+            <div class="st-kpi-main-row">
+              <strong id="st-kpi-active" class="st-kpi-value">0m</strong>
+              <span id="st-kpi-delta" class="st-delta-badge">Sin cambio</span>
+            </div>
+          </div>
+          <div class="st-kpi-box">
+            <span class="st-kpi-label">TIEMPO INACTIVO</span>
+            <strong id="st-kpi-idle" class="st-kpi-value st-kpi-muted">0m</strong>
+          </div>
+          <div class="st-kpi-box">
+            <span class="st-kpi-label">CAMBIOS DE APP / PESTANA</span>
+            <strong id="st-kpi-switches" class="st-kpi-value st-kpi-accent">0</strong>
+          </div>
+        </div>
+
+        <div class="st-charts-grid">
+          <div class="st-chart-card">
+            <div class="st-section-head">
+              <span>Actividad por Hora (00h - 23h)</span>
+              <div class="st-mini-legend">
+                <span><i class="st-dot st-dot-active"></i>Activo</span>
+                <span><i class="st-dot st-dot-idle"></i>Inactivo</span>
+              </div>
+            </div>
+            <div id="st-hourly-chart" class="st-hourly-bars"></div>
+          </div>
+
+          <div class="st-chart-card">
+            <div class="st-section-head">
+              <span>Distribucion por Categorias</span>
+            </div>
+            <div id="st-category-bar" class="st-cat-track"></div>
+            <div id="st-category-legend" class="st-cat-legend"></div>
+          </div>
+        </div>
+
+        <div class="st-apps-section">
+          <div class="st-section-head">
+            <span>Aplicaciones, Pestanas y Documentos (clic para desglosar)</span>
+          </div>
+          <div id="st-apps-list" class="st-apps-list">
+            <p class="muted-text">Cargando estadisticas de tiempo en pantalla...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="panel-card">
       <div class="panel-card-header">
         <h2>Métricas Diarias</h2>
@@ -995,6 +1072,6 @@
 
   <script src="/static/js/audio.js?v=20261111-v9"></script>
   <script src="/static/js/viewer.js?v=20261111-v9"></script>
-  <script src="/static/js/app.js?v=20261111-v9"></script>
+  <script src="/static/js/app.js?v=20261111-v10"></script>
 </body>
 </html>

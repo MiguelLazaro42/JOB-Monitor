@@ -1407,6 +1407,69 @@ async def update_device_alias(request: Request, agent_id: str, body: AliasUpdate
     return {"ok": True, "agent_id": agent_id, "alias": body.alias.strip()}
 
 
+CAPTURE_RETENTION_DAYS = max(3, int(os.environ.get("RA_CAPTURE_RETENTION_DAYS", "30")))
+
+
+def _cleanup_expired_captures() -> int:
+    """MF-ST12: Depuracion automatica de evidencias WebP/JPG con mas de N dias en disco."""
+    removed = 0
+    cutoff = time.time() - (CAPTURE_RETENTION_DAYS * 86400)
+    try:
+        if not CAPTURES_DIR.exists():
+            return 0
+        for sub in CAPTURES_DIR.iterdir():
+            if not sub.is_dir():
+                continue
+            for img_f in sub.iterdir():
+                if img_f.is_file() and img_f.suffix.lower() in (".webp", ".jpg", ".jpeg", ".png"):
+                    try:
+                        if img_f.stat().st_mtime < cutoff:
+                            img_f.unlink()
+                            removed += 1
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return removed
+
+
+async def _capture_retention_loop():
+    await asyncio.sleep(10.0)
+    while True:
+        await asyncio.to_thread(_cleanup_expired_captures)
+        await asyncio.sleep(43200.0)
+
+
+@app.on_event("startup")
+async def _start_retention_cleaner():
+    asyncio.create_task(_capture_retention_loop())
+
+
+@app.get("/api/screen-time")
+async def get_screen_time(
+    request: Request,
+    agent_id: Optional[str] = Query("ALL"),
+    date: Optional[str] = Query(None),
+    period: Optional[str] = Query("day"),
+    tenant_id: Optional[str] = Query(None),
+):
+    """MF-ST09: Endpoint de analitica jerarquica estilo Tiempo en Pantalla."""
+    user = verify_admin_access(request)
+    if user["role"] == "superadmin":
+        allowed_tid = (tenant_id or "").strip() if (tenant_id and tenant_id != "ALL") else None
+    else:
+        allowed_tid = user["tenant_id"]
+
+    data = db.get_screen_time_analytics(
+        agent_id=agent_id or "ALL",
+        date_str=date,
+        period=period or "day",
+        allowed_tenant_id=allowed_tid,
+    )
+    devices = db.get_all_known_devices(allowed_tenant_id=allowed_tid)
+    return {"ok": True, "devices": devices, **data}
+
+
 @app.get("/api/captures/{agent_id}/{filename}")
 async def get_capture_evidence(request: Request, agent_id: str, filename: str):
     user = verify_admin_access(request)
@@ -1501,6 +1564,75 @@ async def _ingest_keyboard_event_payload(
 
 
 
+def _fmt_dur_short(seconds: int) -> str:
+    s = max(0, int(seconds))
+    if s < 60:
+        return f"{s}s"
+    m, sec = divmod(s, 60)
+    if m < 60:
+        return f"{m}m {sec}s" if sec else f"{m}m"
+    h, rm = divmod(m, 60)
+    return f"{h}h {rm}m"
+
+
+async def _ingest_focus_switch_payload(
+    agent_id: str,
+    agent: AgentConnection,
+    data: dict,
+    is_offline_replay: bool = False,
+):
+    """MF-ST07: Persiste captura WebP de cambio de App/Pestana y actualiza metricas."""
+    app_name = str(data.get("app_name") or "Escritorio").strip()[:60]
+    res_title = str(data.get("resource_title") or "Ventana principal").strip()[:115]
+    cat_tag = str(data.get("category_tag") or "Productividad y Gestion").strip()[:45]
+    active_win = str(data.get("active_window") or app_name)[:140]
+    prev_win = str(data.get("previous_window") or "Escritorio")[:140]
+    dur_secs = max(1, int(data.get("duration_seconds") or 1))
+    sct_b64 = str(data.get("screenshot_b64") or "").strip()
+    custom_ts = str(data.get("timestamp") or "").strip() if is_offline_replay else None
+
+    if not is_offline_replay:
+        agent.active_window = active_win
+
+    evidence_url = _save_capture_bytes(agent_id, sct_b64, prefix="sw") if sct_b64 else None
+    db.record_focus_switch(
+        agent_id=agent_id,
+        app_name=app_name,
+        resource_title=res_title,
+        category_tag=cat_tag,
+        custom_timestamp=custom_ts or None,
+    )
+
+    target_lbl = f"{app_name} — {res_title}" if res_title != "Ventana principal" else app_name
+    msg_txt = f"Cambio a '{target_lbl}' (permanencia previa en '{prev_win}': {_fmt_dur_short(dur_secs)})"
+    meta = {
+        "category": "WINDOW",
+        "app_name": app_name,
+        "resource_title": res_title,
+        "category_tag": cat_tag,
+        "active_window": active_win,
+        "previous_window": prev_win,
+        "duration_seconds": dur_secs,
+        "evidence_path": evidence_url,
+        "offline_vault": is_offline_replay,
+    }
+    log_entry = db.add_log(
+        agent_id=agent_id,
+        alias=agent.alias,
+        hostname=agent.hostname,
+        username=agent.username,
+        category="WINDOW",
+        message=msg_txt,
+        duration_seconds=dur_secs,
+        evidence_path=evidence_url,
+        meta_json=json.dumps(meta, ensure_ascii=False),
+        custom_timestamp=custom_ts or None,
+    )
+    await hub.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)
+    if not is_offline_replay:
+        await hub.broadcast_telemetry_update(agent)
+
+
 @app.websocket("/ws/agent")
 async def ws_agent_endpoint(websocket: WebSocket):
     if config.REQUIRE_MTLS:
@@ -1582,6 +1714,9 @@ async def ws_agent_endpoint(websocket: WebSocket):
                         is_active=(agent.idle_seconds < 180),
                         app_name=app_name,
                         increment_away_alert=away_alert,
+                        resource_title=str(data.get("resource_title") or "Ventana principal"),
+                        category_tag=str(data.get("category_tag") or "Productividad y Gestion"),
+                        resource_slices=data.get("resource_slices") if isinstance(data.get("resource_slices"), list) else None,
                     )
 
                     saved_batch_url = None
@@ -1627,6 +1762,9 @@ async def ws_agent_endpoint(websocket: WebSocket):
                     # MF-07: Persistencia y almacenamiento de evento consolidado de redacción
                     await _ingest_keyboard_event_payload(agent_id, agent, data)
 
+                elif msg_type == "focus_switch_event":
+                    await _ingest_focus_switch_payload(agent_id, agent, data)
+
                 elif msg_type == "sitai_encrypted_event":
                     # Bóveda Offline .sitai: Descifrado asimétrico exclusivo en el servidor y sincronización diferida
                     vault_filename = str(data.get("filename") or "").strip()
@@ -1640,6 +1778,9 @@ async def ws_agent_endpoint(websocket: WebSocket):
                             if inner_type == "keyboard_event":
                                 await _ingest_keyboard_event_payload(agent_id, agent, inner_payload, is_offline_replay=True)
                                 ack_ok = True
+                            elif inner_type == "focus_switch_event":
+                                await _ingest_focus_switch_payload(agent_id, agent, inner_payload, is_offline_replay=True)
+                                ack_ok = True
                             elif inner_type == "offline_telemetry_batch":
                                 custom_ts = str(inner_payload.get("timestamp") or "").strip() or None
                                 delta_secs = int(inner_payload.get("delta_seconds", 0))
@@ -1650,6 +1791,10 @@ async def ws_agent_endpoint(websocket: WebSocket):
                                         is_active=bool(inner_payload.get("is_active", True)),
                                         app_name=str(inner_payload.get("app_name") or "Escritorio"),
                                         increment_away_alert=bool(inner_payload.get("away_alert", False)),
+                                        resource_title=str(inner_payload.get("resource_title") or "Ventana principal"),
+                                        category_tag=str(inner_payload.get("category_tag") or "Productividad y Gestion"),
+                                        resource_slices=inner_payload.get("resource_slices") if isinstance(inner_payload.get("resource_slices"), list) else None,
+                                        custom_timestamp=custom_ts,
                                     )
                                 saved_off_url = None
                                 saved_off_b64 = None

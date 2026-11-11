@@ -11,6 +11,7 @@ import json
 import os
 import platform
 import queue
+import re
 import socket
 import ssl
 import struct
@@ -24,7 +25,7 @@ import warnings
 import zlib
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="mss")
 
@@ -158,6 +159,60 @@ if IS_WINDOWS:
             pass
 
 
+WINDOWS_EXE_MAP = {
+    "chrome.exe": "Google Chrome", "msedge.exe": "Microsoft Edge", "firefox.exe": "Mozilla Firefox",
+    "brave.exe": "Brave", "opera.exe": "Opera", "arc.exe": "Arc", "excel.exe": "Microsoft Excel",
+    "winword.exe": "Microsoft Word", "powerpnt.exe": "PowerPoint", "outlook.exe": "Microsoft Outlook",
+    "olk.exe": "Microsoft Outlook", "teams.exe": "Microsoft Teams", "ms-teams.exe": "Microsoft Teams",
+    "whatsapp.exe": "WhatsApp", "telegram.exe": "Telegram", "slack.exe": "Slack", "zoom.exe": "Zoom",
+    "code.exe": "Visual Studio Code", "cursor.exe": "Cursor", "windowsterminal.exe": "Windows Terminal",
+    "powershell.exe": "PowerShell", "cmd.exe": "Simbolo del sistema", "explorer.exe": "Explorador de Windows",
+    "acrobat.exe": "Adobe Acrobat", "acrord32.exe": "Adobe Acrobat", "photoshop.exe": "Adobe Photoshop",
+    "illustrator.exe": "Adobe Illustrator", "afterfx.exe": "After Effects", "figma.exe": "Figma",
+}
+_BROWSER_KEYS = ("chrome", "safari", "edge", "firefox", "brave", "opera", "vivaldi", "arc")
+
+
+def _clean_resource_title(raw_title: str, app_name: str) -> str:
+    txt = (raw_title or "").replace("\u200b", "").replace("\ufeff", "").strip()
+    txt = re.sub(r"^\(\d{1,4}\)\s+", "", txt)
+    txt = re.sub(r"\s+(and|y)\s+\d+\s+(more pages?|p.ginas? m.s).*$", "", txt, flags=re.IGNORECASE)
+    for sep in (" - ", " — ", " – "):
+        if sep in txt:
+            parts = [p.strip() for p in txt.split(sep) if p.strip()]
+            while len(parts) > 1 and (
+                parts[-1].lower() == app_name.lower()
+                or any(b in parts[-1].lower() for b in ("chrome", "safari", "edge", "firefox", "brave", "personal", "trabajo", "work"))
+            ):
+                parts.pop()
+            txt = sep.join(parts)
+    if not txt or txt.lower() == (app_name or "").lower():
+        return "Ventana principal"
+    return txt[:110]
+
+
+def classify_focus_category(app_name: str, app_id: str, resource_title: str) -> str:
+    """MF-ST03: Clasificador ligero de foco en 6 categorias estilo Tiempo en Pantalla."""
+    a_low = f"{app_name} {app_id}".lower()
+    r_low = (resource_title or "").lower()
+    is_browser = any(k in a_low for k in _BROWSER_KEYS)
+    probe = r_low if is_browser else f"{a_low} {r_low}"
+
+    if any(k in probe for k in ("youtube", "netflix", "spotify", "tiktok", "instagram", "facebook", "twitch", "disney", "vlc")):
+        return "Entretenimiento y Redes"
+    if any(k in probe for k in ("whatsapp", "teams", "zoom", "meet", "slack", "telegram", "discord", "outlook", "gmail", "mail", "mensajes")):
+        return "Comunicacion"
+    if any(k in probe for k in ("illustrator", "photoshop", "indesign", "after effects", "premiere", "figma", "canva", "autocad", "blender")):
+        return "Diseno y Creatividad"
+    if any(k in probe for k in ("visual studio", "vscode", "code", "cursor", "antigravity", " ide", "xcode", "terminal", "powershell", "github", "proxmox", "ssh:", "localhost", "192.168.", "sitai", "anydesk")):
+        return "Desarrollo y Sistemas"
+    if is_browser:
+        if any(k in r_low for k in ("sat", "factura", "sheets", "docs", "drive", "excel", "notion", "trello", "jira", "bbva", "banorte", "santander", "banamex", "erp", "odoo")):
+            return "Productividad y Gestion"
+        return "Navegacion General"
+    return "Productividad y Gestion"
+
+
 # 2. Lectura de Inactividad y Ventana Activa (API nativa de Windows / macOS)
 if IS_WINDOWS:
     class LASTINPUTINFO(ctypes.Structure):
@@ -177,20 +232,45 @@ if IS_WINDOWS:
             pass
         return 0
 
-    def get_active_window_title() -> str:
+    def inspect_foreground_context() -> dict:
+        """MF-ST01: Separa ejecutable real y pestana/documento activo en Windows."""
+        app_name, exe_name, raw_title = "Escritorio", "explorer.exe", ""
         try:
             hwnd = ctypes.windll.user32.GetForegroundWindow()
-            if not hwnd:
-                return "Escritorio"
-            length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-            if length <= 0:
-                return "Escritorio"
-            buff = ctypes.create_unicode_buffer(length + 1)
-            ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
-            title = buff.value.strip()
-            return title[:95] if title else "Escritorio"
+            if hwnd:
+                length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    buff = ctypes.create_unicode_buffer(length + 1)
+                    ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
+                    raw_title = buff.value.strip()
+                pid = ctypes.c_ulong(0)
+                ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value:
+                    hproc = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid.value)
+                    if hproc:
+                        try:
+                            pbuf = ctypes.create_unicode_buffer(1024)
+                            psz = ctypes.c_ulong(1024)
+                            if ctypes.windll.kernel32.QueryFullProcessImageNameW(hproc, 0, pbuf, ctypes.byref(psz)):
+                                exe_name = os.path.basename(pbuf.value).strip()
+                        finally:
+                            ctypes.windll.kernel32.CloseHandle(hproc)
+            low_exe = exe_name.lower()
+            if low_exe in WINDOWS_EXE_MAP:
+                app_name = WINDOWS_EXE_MAP[low_exe]
+            elif low_exe and low_exe not in ("applicationframehost.exe", "explorer.exe"):
+                app_name = exe_name[:-4] if low_exe.endswith(".exe") else exe_name
+            elif raw_title:
+                app_name = extract_app_name(raw_title)
         except Exception:
-            return "Escritorio"
+            pass
+        res_title = _clean_resource_title(raw_title, app_name)
+        cat = classify_focus_category(app_name, exe_name, res_title)
+        full_lbl = f"{res_title} — {app_name}"[:120] if res_title != "Ventana principal" else app_name[:95]
+        return {"app_name": app_name[:55], "app_id": exe_name[:60], "resource_title": res_title, "full_label": full_lbl, "category_tag": cat}
+
+    def get_active_window_title() -> str:
+        return inspect_foreground_context()["full_label"]
 
     def get_windows_session_context() -> tuple[Optional[int], str, bool]:
         """
@@ -229,17 +309,23 @@ if IS_WINDOWS:
         return sess_id_val, real_user, is_bg
 
 elif IS_MAC:
+    _MAC_CG = None
+    _MAC_CF = None
+    _MAC_AX = None
+    _MAC_CF_STR_TID = 0
+    _MAC_KEYS: Dict[str, ctypes.c_void_p] = {}
+
     def get_idle_seconds() -> int:
+        global _MAC_CG
         try:
-            out = subprocess.check_output(
-                ["/usr/sbin/ioreg", "-c", "IOHIDSystem"],
-                stderr=subprocess.DEVNULL,
-                timeout=1.5,
-            ).decode("utf-8", errors="ignore")
-            for line in out.splitlines():
-                if "HIDIdleTime" in line:
-                    ns = int(line.split("=")[-1].strip())
-                    return max(0, int(ns / 1_000_000_000))
+            if _MAC_CG is None:
+                cg = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+                cg.CGEventSourceSecondsSinceLastEventType.restype = ctypes.c_double
+                cg.CGEventSourceSecondsSinceLastEventType.argtypes = [ctypes.c_int32, ctypes.c_uint32]
+                _MAC_CG = cg
+            sec = _MAC_CG.CGEventSourceSecondsSinceLastEventType(0, 0xFFFFFFFF)
+            if sec >= 0:
+                return int(sec)
         except Exception:
             pass
         return 0
@@ -247,15 +333,19 @@ elif IS_MAC:
     _OBJC_LIB = None
     _MSG_SEND_VOID = None
     _MSG_SEND_UTF8 = None
+    _MSG_SEND_PID = None
     _CLS_NSWORKSPACE = None
     _SEL_SHARED_WS = None
     _SEL_FRONTMOST_APP = None
     _SEL_LOCALIZED_NAME = None
+    _SEL_BUNDLE_ID = None
+    _SEL_PROCESS_ID = None
     _SEL_UTF8_STRING = None
 
     def _init_macos_objc_workspace():
-        global _OBJC_LIB, _MSG_SEND_VOID, _MSG_SEND_UTF8, _CLS_NSWORKSPACE
-        global _SEL_SHARED_WS, _SEL_FRONTMOST_APP, _SEL_LOCALIZED_NAME, _SEL_UTF8_STRING
+        global _OBJC_LIB, _MSG_SEND_VOID, _MSG_SEND_UTF8, _MSG_SEND_PID, _CLS_NSWORKSPACE
+        global _SEL_SHARED_WS, _SEL_FRONTMOST_APP, _SEL_LOCALIZED_NAME, _SEL_BUNDLE_ID, _SEL_PROCESS_ID, _SEL_UTF8_STRING
+        global _MAC_CF, _MAC_CG, _MAC_AX, _MAC_CF_STR_TID
         if _OBJC_LIB is not None:
             return
         try:
@@ -264,39 +354,162 @@ elif IS_MAC:
                 return
             ctypes.cdll.LoadLibrary("/System/Library/Frameworks/AppKit.framework/AppKit")
             objc = ctypes.cdll.LoadLibrary(objc_path)
+            objc.objc_autoreleasePoolPush.restype = ctypes.c_void_p
+            objc.objc_autoreleasePoolPop.argtypes = [ctypes.c_void_p]
             objc.objc_getClass.restype = ctypes.c_void_p
             objc.objc_getClass.argtypes = [ctypes.c_char_p]
             objc.sel_registerName.restype = ctypes.c_void_p
             objc.sel_registerName.argtypes = [ctypes.c_char_p]
             _MSG_SEND_VOID = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
             _MSG_SEND_UTF8 = ctypes.CFUNCTYPE(ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+            _MSG_SEND_PID = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
             _CLS_NSWORKSPACE = objc.objc_getClass(b"NSWorkspace")
             _SEL_SHARED_WS = objc.sel_registerName(b"sharedWorkspace")
             _SEL_FRONTMOST_APP = objc.sel_registerName(b"frontmostApplication")
             _SEL_LOCALIZED_NAME = objc.sel_registerName(b"localizedName")
+            _SEL_BUNDLE_ID = objc.sel_registerName(b"bundleIdentifier")
+            _SEL_PROCESS_ID = objc.sel_registerName(b"processIdentifier")
             _SEL_UTF8_STRING = objc.sel_registerName(b"UTF8String")
+
+            cf = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+            cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+            cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+            cf.CFStringGetTypeID.restype = ctypes.c_ulong
+            cf.CFGetTypeID.restype = ctypes.c_ulong
+            cf.CFGetTypeID.argtypes = [ctypes.c_void_p]
+            cf.CFStringGetLength.restype = ctypes.c_long
+            cf.CFStringGetLength.argtypes = [ctypes.c_void_p]
+            cf.CFStringGetCString.restype = ctypes.c_bool
+            cf.CFStringGetCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+            cf.CFRelease.argtypes = [ctypes.c_void_p]
+            cf.CFArrayGetCount.restype = ctypes.c_long
+            cf.CFArrayGetCount.argtypes = [ctypes.c_void_p]
+            cf.CFArrayGetValueAtIndex.restype = ctypes.c_void_p
+            cf.CFArrayGetValueAtIndex.argtypes = [ctypes.c_void_p, ctypes.c_long]
+            cf.CFDictionaryGetValue.restype = ctypes.c_void_p
+            cf.CFDictionaryGetValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            cf.CFNumberGetValue.restype = ctypes.c_bool
+            cf.CFNumberGetValue.argtypes = [ctypes.c_void_p, ctypes.c_int32, ctypes.c_void_p]
+            _MAC_CF = cf
+            _MAC_CF_STR_TID = cf.CFStringGetTypeID()
+            for kname in ("AXFocusedWindow", "AXMainWindow", "AXTitle", "kCGWindowOwnerPID", "kCGWindowLayer", "kCGWindowName"):
+                _MAC_KEYS[kname] = cf.CFStringCreateWithCString(None, kname.encode("ascii"), 0x08000100)
+
+            ax = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
+            ax.AXUIElementCreateApplication.restype = ctypes.c_void_p
+            ax.AXUIElementCreateApplication.argtypes = [ctypes.c_int32]
+            ax.AXUIElementCopyAttributeValue.restype = ctypes.c_int32
+            ax.AXUIElementCopyAttributeValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+            _MAC_AX = ax
+
+            if _MAC_CG is None:
+                _MAC_CG = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+            _MAC_CG.CGWindowListCopyWindowInfo.restype = ctypes.c_void_p
+            _MAC_CG.CGWindowListCopyWindowInfo.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
             _OBJC_LIB = objc
         except Exception:
             _OBJC_LIB = False
 
-    def get_active_window_title() -> str:
+    _LAST_MAC_CTX = {"app_name": "Finder", "app_id": "com.apple.finder", "resource_title": "Ventana principal", "full_label": "Finder", "category_tag": "Productividad y Gestion"}
+
+    def _cfstr_to_utf8(ref: int) -> str:
+        if not ref or not _MAC_CF or _MAC_CF.CFGetTypeID(ref) != _MAC_CF_STR_TID:
+            return ""
+        ln = _MAC_CF.CFStringGetLength(ref)
+        if ln <= 0:
+            return ""
+        bsz = min(ln * 4 + 8, 2048)
+        buf = ctypes.create_string_buffer(bsz)
+        return buf.value.decode("utf-8", errors="ignore").strip() if _MAC_CF.CFStringGetCString(ref, buf, bsz, 0x08000100) else ""
+
+    def _macos_window_title_for_pid(pid: int) -> str:
+        if pid <= 0 or not _MAC_CF:
+            return ""
+        title = ""
+        if _MAC_AX:
+            app_el = _MAC_AX.AXUIElementCreateApplication(pid)
+            if app_el:
+                try:
+                    win_ref = ctypes.c_void_p()
+                    rc = _MAC_AX.AXUIElementCopyAttributeValue(app_el, _MAC_KEYS["AXFocusedWindow"], ctypes.byref(win_ref))
+                    if rc != 0 or not win_ref.value:
+                        rc = _MAC_AX.AXUIElementCopyAttributeValue(app_el, _MAC_KEYS["AXMainWindow"], ctypes.byref(win_ref))
+                    if rc == 0 and win_ref.value:
+                        try:
+                            t_ref = ctypes.c_void_p()
+                            if _MAC_AX.AXUIElementCopyAttributeValue(win_ref, _MAC_KEYS["AXTitle"], ctypes.byref(t_ref)) == 0 and t_ref.value:
+                                try:
+                                    title = _cfstr_to_utf8(t_ref.value)
+                                finally:
+                                    _MAC_CF.CFRelease(t_ref)
+                        finally:
+                            _MAC_CF.CFRelease(win_ref)
+                finally:
+                    _MAC_CF.CFRelease(app_el)
+        if not title and _MAC_CG:
+            arr = _MAC_CG.CGWindowListCopyWindowInfo(17, 0)
+            if arr:
+                try:
+                    cnt = _MAC_CF.CFArrayGetCount(arr)
+                    for idx in range(min(cnt, 45)):
+                        d = _MAC_CF.CFArrayGetValueAtIndex(arr, idx)
+                        if not d:
+                            continue
+                        p_ref = _MAC_CF.CFDictionaryGetValue(d, _MAC_KEYS["kCGWindowOwnerPID"])
+                        l_ref = _MAC_CF.CFDictionaryGetValue(d, _MAC_KEYS["kCGWindowLayer"])
+                        pv, lv = ctypes.c_int32(-1), ctypes.c_int32(-1)
+                        if p_ref:
+                            _MAC_CF.CFNumberGetValue(p_ref, 3, ctypes.byref(pv))
+                        if l_ref:
+                            _MAC_CF.CFNumberGetValue(l_ref, 3, ctypes.byref(lv))
+                        if pv.value == pid and lv.value == 0:
+                            n_ref = _MAC_CF.CFDictionaryGetValue(d, _MAC_KEYS["kCGWindowName"])
+                            t = _cfstr_to_utf8(n_ref)
+                            if t:
+                                title = t
+                                break
+                finally:
+                    _MAC_CF.CFRelease(arr)
+        return title
+
+    def inspect_foreground_context() -> dict:
+        """MF-ST02: Extrae App + Bundle ID + Pestana/Ventana activa en macOS sin fugas de memoria."""
+        global _LAST_MAC_CTX
+        app_name, bid, pid = "Finder", "com.apple.finder", 0
         try:
             _init_macos_objc_workspace()
-            if _OBJC_LIB and _MSG_SEND_VOID and _MSG_SEND_UTF8:
-                ws = _MSG_SEND_VOID(_CLS_NSWORKSPACE, _SEL_SHARED_WS)
-                if ws:
-                    front = _MSG_SEND_VOID(ws, _SEL_FRONTMOST_APP)
+            if _OBJC_LIB and _MSG_SEND_VOID and _MSG_SEND_UTF8 and _MSG_SEND_PID:
+                pool = _OBJC_LIB.objc_autoreleasePoolPush()
+                try:
+                    ws = _MSG_SEND_VOID(_CLS_NSWORKSPACE, _SEL_SHARED_WS)
+                    front = _MSG_SEND_VOID(ws, _SEL_FRONTMOST_APP) if ws else None
                     if front:
                         ns_name = _MSG_SEND_VOID(front, _SEL_LOCALIZED_NAME)
+                        ns_bid = _MSG_SEND_VOID(front, _SEL_BUNDLE_ID)
+                        pid = int(_MSG_SEND_PID(front, _SEL_PROCESS_ID) or 0)
                         if ns_name:
-                            raw = _MSG_SEND_UTF8(ns_name, _SEL_UTF8_STRING)
-                            if raw:
-                                decoded = raw.decode("utf-8", errors="ignore").strip()
-                                if decoded:
-                                    return decoded[:95]
+                            raw_n = _MSG_SEND_UTF8(ns_name, _SEL_UTF8_STRING)
+                            if raw_n:
+                                app_name = raw_n.decode("utf-8", errors="ignore").strip() or "Finder"
+                        if ns_bid:
+                            raw_b = _MSG_SEND_UTF8(ns_bid, _SEL_UTF8_STRING)
+                            if raw_b:
+                                bid = raw_b.decode("utf-8", errors="ignore").strip()
+                finally:
+                    _OBJC_LIB.objc_autoreleasePoolPop(pool)
+            if bid == "mx.sitai.jobmonitor.agent" or app_name == "JOB-Monitor Agent":
+                return dict(_LAST_MAC_CTX)
+            raw_title = _macos_window_title_for_pid(pid)
+            res_title = _clean_resource_title(raw_title, app_name)
+            cat = classify_focus_category(app_name, bid, res_title)
+            full_lbl = f"{res_title} — {app_name}"[:120] if res_title != "Ventana principal" else app_name[:95]
+            _LAST_MAC_CTX = {"app_name": app_name[:55], "app_id": bid[:80], "resource_title": res_title, "full_label": full_lbl, "category_tag": cat}
         except Exception:
             pass
-        return "macOS Finder"
+        return dict(_LAST_MAC_CTX)
+
+    def get_active_window_title() -> str:
+        return inspect_foreground_context()["full_label"]
 
     def check_macos_screen_permission(request_if_missing: bool = False) -> bool:
         try:
@@ -358,6 +571,10 @@ elif IS_MAC:
 else:
     def get_idle_seconds() -> int:
         return 0
+
+    def inspect_foreground_context() -> dict:
+        lbl = platform.system()
+        return {"app_name": lbl, "app_id": lbl, "resource_title": "Ventana principal", "full_label": lbl, "category_tag": "Desarrollo y Sistemas"}
 
     def get_active_window_title() -> str:
         return platform.system()
@@ -1091,9 +1308,19 @@ class SilentRemoteAgent:
         self.macos_screen_ok: bool = check_macos_screen_permission(request_if_missing=False) if IS_MAC else True
         self.macos_ax_ok: bool = check_macos_accessibility_permission(request_if_missing=False) if IS_MAC else True
 
-        # Estado de monitoreo para generación de logs (Fase 2)
-        self.last_window_title: str = get_active_window_title()
+        # Estado de monitoreo para generación de logs y Tiempo en Pantalla (MF-ST04 / MF-ST05)
+        init_ctx = inspect_foreground_context()
+        self.last_window_title: str = init_ctx["full_label"]
         self.window_started_at: float = time.monotonic()
+        self._stable_ctx: dict = init_ctx
+        self._stable_started_mono: float = time.monotonic()
+        self._candidate_key: Optional[Tuple[str, str]] = None
+        self._candidate_ctx: Optional[dict] = None
+        self._candidate_since_mono: float = 0.0
+        self._candidate_hold_secs: float = 0.0
+        self._resource_slices_acc: Dict[Tuple[str, str, str], float] = {}
+        self._last_focus_shot_mono: float = 0.0
+        self._recent_resource_shots: Dict[Tuple[str, str], float] = {}
         self.was_idle_3m: bool = False
         self.was_away_10m: bool = False
         self.max_idle_reached: int = 0
@@ -1636,6 +1863,131 @@ class SilentRemoteAgent:
                 else:
                     await asyncio.sleep(0.15)
 
+    def _should_capture_focus_screenshot(self, res_key: Tuple[str, str], now_mono: float, idle_secs: int) -> bool:
+        """MF-ST05: Anti-rafaga de capturas (8s global y 45s por recurso identico)."""
+        if idle_secs >= 180 or (IS_MAC and not self.macos_screen_ok):
+            return False
+        if self._last_focus_shot_mono > 0 and (now_mono - self._last_focus_shot_mono) < 8.0:
+            return False
+        prev_shot = self._recent_resource_shots.get(res_key, 0.0)
+        if prev_shot > 0 and (now_mono - prev_shot) < 45.0:
+            return False
+        return True
+
+    def capture_focus_evidence_webp(self) -> Tuple[str, str]:
+        """MF-ST06: Captura ligera WebP calidad 75 (max 1440px / 2560px multi-monitor)."""
+        try:
+            with mss.mss() as local_sct:
+                mon_count = max(1, len(local_sct.monitors) - 1)
+                mon = local_sct.monitors[0] if mon_count > 1 else local_sct.monitors[min(self.current_monitor, len(local_sct.monitors) - 1)]
+                raw_grab = local_sct.grab(mon)
+            img = Image.frombytes("RGB", raw_grab.size, raw_grab.bgra, "raw", "BGRX")
+            max_w = 2560 if mon_count > 1 else 1440
+            if img.width > max_w:
+                ratio = float(max_w) / img.width
+                img = img.resize((max_w, int(img.height * ratio)), Image.Resampling.BILINEAR)
+            buf = io.BytesIO()
+            try:
+                img.save(buf, format="WEBP", quality=75, method=4)
+                return base64.b64encode(buf.getvalue()).decode("ascii"), "webp"
+            except Exception:
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=74, optimize=True)
+                return base64.b64encode(buf.getvalue()).decode("ascii"), "jpg"
+        except Exception:
+            return "", "webp"
+
+    def _drain_resource_slices(self) -> List[dict]:
+        drained: List[dict] = []
+        for (app_n, res_t, cat_t), val in list(self._resource_slices_acc.items()):
+            whole = int(val)
+            if whole >= 1:
+                self._resource_slices_acc[(app_n, res_t, cat_t)] = max(0.0, val - whole)
+                drained.append({"app_name": app_n, "resource_title": res_t, "category_tag": cat_t, "seconds": whole})
+        return drained
+
+    async def focus_monitor_loop(self):
+        """MF-ST04: Sondeo ligero cada 0.8s con estabilizacion de 1.8s para App y Pestana."""
+        last_mono = time.monotonic()
+        while True:
+            await asyncio.sleep(0.8)
+            now_mono = time.monotonic()
+            dt = max(0.0, min(4.0, now_mono - last_mono))
+            last_mono = now_mono
+
+            idle_secs = get_idle_seconds()
+            ctx = inspect_foreground_context()
+            cur_key = (ctx["app_name"], ctx["resource_title"])
+            stable_key = (self._stable_ctx["app_name"], self._stable_ctx["resource_title"])
+
+            if cur_key == stable_key:
+                if self._candidate_hold_secs > 0:
+                    s_tup = (self._stable_ctx["app_name"], self._stable_ctx["resource_title"], self._stable_ctx["category_tag"])
+                    self._resource_slices_acc[s_tup] = self._resource_slices_acc.get(s_tup, 0.0) + self._candidate_hold_secs
+                self._candidate_key = None
+                self._candidate_ctx = None
+                self._candidate_hold_secs = 0.0
+                if idle_secs < 180:
+                    s_tup = (ctx["app_name"], ctx["resource_title"], ctx["category_tag"])
+                    self._resource_slices_acc[s_tup] = self._resource_slices_acc.get(s_tup, 0.0) + dt
+                continue
+
+            if self._candidate_key != cur_key:
+                if self._candidate_hold_secs > 0 and idle_secs < 180:
+                    s_tup = (self._stable_ctx["app_name"], self._stable_ctx["resource_title"], self._stable_ctx["category_tag"])
+                    self._resource_slices_acc[s_tup] = self._resource_slices_acc.get(s_tup, 0.0) + self._candidate_hold_secs
+                self._candidate_key = cur_key
+                self._candidate_ctx = ctx
+                self._candidate_since_mono = now_mono
+                self._candidate_hold_secs = dt if idle_secs < 180 else 0.0
+                continue
+
+            if idle_secs < 180:
+                self._candidate_hold_secs += dt
+
+            if (now_mono - self._candidate_since_mono) >= 1.8:
+                prev_ctx = self._stable_ctx
+                prev_dur = max(1, round(self._candidate_since_mono - self._stable_started_mono))
+                self._stable_ctx = ctx
+                self._stable_started_mono = self._candidate_since_mono
+                self.last_window_title = ctx["full_label"]
+                self.window_started_at = now_mono
+
+                if self._candidate_hold_secs > 0:
+                    n_tup = (ctx["app_name"], ctx["resource_title"], ctx["category_tag"])
+                    self._resource_slices_acc[n_tup] = self._resource_slices_acc.get(n_tup, 0.0) + self._candidate_hold_secs
+                self._candidate_key = None
+                self._candidate_ctx = None
+                self._candidate_hold_secs = 0.0
+
+                sct_b64, sct_fmt = "", "webp"
+                if self._should_capture_focus_screenshot(cur_key, now_mono, idle_secs):
+                    sct_b64, sct_fmt = await asyncio.to_thread(self.capture_focus_evidence_webp)
+                    if sct_b64:
+                        shot_t = time.monotonic()
+                        self._last_focus_shot_mono = shot_t
+                        self._recent_resource_shots[cur_key] = shot_t
+                        if len(self._recent_resource_shots) > 60:
+                            cutoff = shot_t - 120.0
+                            self._recent_resource_shots = {k: v for k, v in self._recent_resource_shots.items() if v >= cutoff}
+
+                ev_payload = {
+                    "type": "focus_switch_event",
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "app_name": ctx["app_name"],
+                    "app_id": ctx["app_id"],
+                    "resource_title": ctx["resource_title"],
+                    "category_tag": ctx["category_tag"],
+                    "active_window": ctx["full_label"],
+                    "previous_window": prev_ctx["full_label"],
+                    "previous_app": prev_ctx["app_name"],
+                    "previous_resource": prev_ctx["resource_title"],
+                    "duration_seconds": prev_dur,
+                    "screenshot_b64": sct_b64,
+                    "screenshot_format": sct_fmt,
+                }
+                await self._send_or_vault_event(ev_payload)
+
     async def telemetry_loop(self):
         with mss.mss() as sct:
             tick = 0
@@ -1649,29 +2001,15 @@ class SilentRemoteAgent:
                 now_ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                 idle_secs = get_idle_seconds()
-                current_win = get_active_window_title()
-                app_name = extract_app_name(current_win)
+                ctx = inspect_foreground_context()
+                current_win = ctx["full_label"]
+                app_name = ctx["app_name"]
+                resource_slices = self._drain_resource_slices()
 
                 log_events = []
                 away_alert_triggered = False
 
-                # 1. Detectar cambio de ventana activa
-                prev_win_title = self.last_window_title
-                if current_win != self.last_window_title:
-                    prev_duration = max(1, round(now_mono - self.window_started_at))
-                    if prev_duration >= 2:
-                        log_events.append({
-                            "category": "WINDOW",
-                            "message": f"Cambió a '{current_win}' (permanencia previa en '{prev_win_title}': {format_duration_es(prev_duration)})",
-                            "duration_seconds": prev_duration,
-                            "timestamp": now_ts_str,
-                            "active_window": current_win,
-                            "previous_window": prev_win_title,
-                        })
-                    self.last_window_title = current_win
-                    self.window_started_at = now_mono
-
-                # 2. Detectar transiciones de inactividad (Estilo Teams)
+                # Detectar transiciones de inactividad (Estilo Teams)
                 if idle_secs >= 180:
                     self.max_idle_reached = max(self.max_idle_reached, idle_secs)
                     if not self.was_idle_3m:
@@ -1721,6 +2059,9 @@ class SilentRemoteAgent:
                             "idle_seconds": idle_secs,
                             "active_window": current_win,
                             "app_name": app_name,
+                            "resource_title": ctx["resource_title"],
+                            "category_tag": ctx["category_tag"],
+                            "resource_slices": resource_slices,
                             "delta_seconds": delta_secs,
                             "away_alert": away_alert_triggered,
                             "current_monitor": self.current_monitor,
@@ -1749,13 +2090,16 @@ class SilentRemoteAgent:
                 self._init_or_verify_offline_deadline()
 
                 # Si estamos sin conexión y ocurrieron cambios de ventana o inactividad, cifrarlos en .sitai
-                if log_events or away_alert_triggered:
+                if log_events or away_alert_triggered or resource_slices:
                     self._save_to_sitai_vault({
                         "type": "offline_telemetry_batch",
                         "timestamp": now_ts_str,
                         "delta_seconds": delta_secs,
                         "is_active": (idle_secs < 180),
                         "app_name": app_name,
+                        "resource_title": ctx["resource_title"],
+                        "category_tag": ctx["category_tag"],
+                        "resource_slices": resource_slices,
                         "away_alert": away_alert_triggered,
                         "log_events": log_events,
                     })
@@ -1925,6 +2269,7 @@ class SilentRemoteAgent:
         if not self.keyboard_hook:
             self.keyboard_hook = KeyboardEventHook(on_key_callback=self._handle_raw_key_event)
             self.keyboard_hook.start()
+        focus_bg_task = asyncio.create_task(self.focus_monitor_loop())
         telem_bg_task = asyncio.create_task(self.telemetry_loop())
         vault_sync_task = asyncio.create_task(self.sync_offline_vault_loop())
         perm_bg_task = asyncio.create_task(self.macos_permission_heal_loop())

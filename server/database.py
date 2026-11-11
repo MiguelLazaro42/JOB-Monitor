@@ -6,7 +6,7 @@ import re
 import secrets
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -155,6 +155,30 @@ class DatabaseManager:
                         away_alerts_count INTEGER DEFAULT 0,
                         PRIMARY KEY (date, agent_id)
                     );
+
+                    CREATE TABLE IF NOT EXISTS screen_time_hourly (
+                        date TEXT NOT NULL,
+                        hour INTEGER NOT NULL,
+                        agent_id TEXT NOT NULL,
+                        active_seconds INTEGER DEFAULT 0,
+                        idle_seconds INTEGER DEFAULT 0,
+                        switches_count INTEGER DEFAULT 0,
+                        PRIMARY KEY (date, hour, agent_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_sth_agent_date ON screen_time_hourly(agent_id, date);
+
+                    CREATE TABLE IF NOT EXISTS resource_usage_daily (
+                        date TEXT NOT NULL,
+                        agent_id TEXT NOT NULL,
+                        app_name TEXT NOT NULL,
+                        resource_title TEXT NOT NULL,
+                        category_tag TEXT NOT NULL DEFAULT 'Productividad y Gestion',
+                        total_seconds INTEGER DEFAULT 0,
+                        switches_count INTEGER DEFAULT 0,
+                        last_seen_at TEXT NOT NULL DEFAULT '',
+                        PRIMARY KEY (date, agent_id, app_name, resource_title)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_rud_agent_date ON resource_usage_daily(agent_id, date);
 
                     CREATE TABLE IF NOT EXISTS chat_messages (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -548,6 +572,8 @@ class DatabaseManager:
                 conn.execute("DELETE FROM device_logs WHERE agent_id = ?", (agent_id,))
                 conn.execute("DELETE FROM daily_activity_summary WHERE agent_id = ?", (agent_id,))
                 conn.execute("DELETE FROM window_usage_daily WHERE agent_id = ?", (agent_id,))
+                conn.execute("DELETE FROM screen_time_hourly WHERE agent_id = ?", (agent_id,))
+                conn.execute("DELETE FROM resource_usage_daily WHERE agent_id = ?", (agent_id,))
                 conn.execute("DELETE FROM chat_messages WHERE agent_id = ?", (agent_id,))
                 if revoke:
                     conn.execute(
@@ -719,24 +745,42 @@ class DatabaseManager:
         is_active: bool,
         app_name: str,
         increment_away_alert: bool = False,
+        resource_title: str = "Ventana principal",
+        category_tag: str = "Productividad y Gestion",
+        resource_slices: Optional[List[dict]] = None,
+        custom_timestamp: Optional[str] = None,
     ):
         now_dt = self._now_dt()
-        today_str = now_dt.strftime("%Y-%m-%d")
-        time_only = now_dt.strftime("%H:%M:%S")
-        now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+        if custom_timestamp and len(custom_timestamp) >= 19:
+            today_str = custom_timestamp[:10]
+            time_only = custom_timestamp[11:19]
+            now_str = custom_timestamp[:19]
+            try:
+                hour_val = max(0, min(23, int(custom_timestamp[11:13])))
+            except Exception:
+                hour_val = now_dt.hour
+        else:
+            today_str = now_dt.strftime("%Y-%m-%d")
+            time_only = now_dt.strftime("%H:%M:%S")
+            now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+            hour_val = now_dt.hour
+
         delta = max(1, min(30, int(delta_seconds)))
         act_inc = delta if is_active else 0
         idl_inc = 0 if is_active else delta
         alert_inc = 1 if increment_away_alert else 0
         clean_app = (app_name or "Escritorio").strip()[:60]
+        clean_res = (resource_title or "Ventana principal").strip()[:115]
+        clean_cat = (category_tag or "Productividad y Gestion").strip()[:45]
 
         with self._lock:
             conn = self._get_conn()
             try:
-                conn.execute(
-                    "UPDATE devices SET last_seen_at = ?, is_online = 1 WHERE agent_id = ?",
-                    (now_str, agent_id),
-                )
+                if not custom_timestamp:
+                    conn.execute(
+                        "UPDATE devices SET last_seen_at = ?, is_online = 1 WHERE agent_id = ?",
+                        (now_str, agent_id),
+                    )
                 conn.execute(
                     """
                     INSERT INTO daily_activity_summary (date, agent_id, first_seen_at, active_seconds, idle_seconds, away_alerts_count)
@@ -748,7 +792,45 @@ class DatabaseManager:
                     """,
                     (today_str, agent_id, time_only, act_inc, idl_inc, alert_inc),
                 )
-                if is_active and clean_app:
+                conn.execute(
+                    """
+                    INSERT INTO screen_time_hourly (date, hour, agent_id, active_seconds, idle_seconds, switches_count)
+                    VALUES (?, ?, ?, ?, ?, 0)
+                    ON CONFLICT(date, hour, agent_id) DO UPDATE SET
+                        active_seconds = active_seconds + excluded.active_seconds,
+                        idle_seconds = idle_seconds + excluded.idle_seconds
+                    """,
+                    (today_str, hour_val, agent_id, act_inc, idl_inc),
+                )
+                if resource_slices:
+                    for sl in resource_slices[:25]:
+                        s_sec = max(0, min(30, int(sl.get("seconds") or 0)))
+                        if s_sec <= 0:
+                            continue
+                        s_app = str(sl.get("app_name") or clean_app).strip()[:60]
+                        s_res = str(sl.get("resource_title") or "Ventana principal").strip()[:115]
+                        s_cat = str(sl.get("category_tag") or clean_cat).strip()[:45]
+                        conn.execute(
+                            """
+                            INSERT INTO window_usage_daily (date, agent_id, app_name, total_seconds)
+                            VALUES (?, ?, ?, ?)
+                            ON CONFLICT(date, agent_id, app_name) DO UPDATE SET
+                                total_seconds = total_seconds + excluded.total_seconds
+                            """,
+                            (today_str, agent_id, s_app, s_sec),
+                        )
+                        conn.execute(
+                            """
+                            INSERT INTO resource_usage_daily (date, agent_id, app_name, resource_title, category_tag, total_seconds, switches_count, last_seen_at)
+                            VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+                            ON CONFLICT(date, agent_id, app_name, resource_title) DO UPDATE SET
+                                total_seconds = total_seconds + excluded.total_seconds,
+                                category_tag = excluded.category_tag,
+                                last_seen_at = excluded.last_seen_at
+                            """,
+                            (today_str, agent_id, s_app, s_res, s_cat, s_sec, time_only),
+                        )
+                elif is_active and clean_app:
                     conn.execute(
                         """
                         INSERT INTO window_usage_daily (date, agent_id, app_name, total_seconds)
@@ -758,6 +840,67 @@ class DatabaseManager:
                         """,
                         (today_str, agent_id, clean_app, delta),
                     )
+                    conn.execute(
+                        """
+                        INSERT INTO resource_usage_daily (date, agent_id, app_name, resource_title, category_tag, total_seconds, switches_count, last_seen_at)
+                        VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+                        ON CONFLICT(date, agent_id, app_name, resource_title) DO UPDATE SET
+                            total_seconds = total_seconds + excluded.total_seconds,
+                            last_seen_at = excluded.last_seen_at
+                        """,
+                        (today_str, agent_id, clean_app, clean_res, clean_cat, delta, time_only),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def record_focus_switch(
+        self,
+        agent_id: str,
+        app_name: str,
+        resource_title: str,
+        category_tag: str,
+        custom_timestamp: Optional[str] = None,
+    ):
+        """MF-ST08: Registra incremento de cambio de app/pestana por hora y por recurso."""
+        now_dt = self._now_dt()
+        if custom_timestamp and len(custom_timestamp) >= 19:
+            today_str = custom_timestamp[:10]
+            time_only = custom_timestamp[11:19]
+            try:
+                hour_val = max(0, min(23, int(custom_timestamp[11:13])))
+            except Exception:
+                hour_val = now_dt.hour
+        else:
+            today_str = now_dt.strftime("%Y-%m-%d")
+            time_only = now_dt.strftime("%H:%M:%S")
+            hour_val = now_dt.hour
+        c_app = (app_name or "Escritorio").strip()[:60]
+        c_res = (resource_title or "Ventana principal").strip()[:115]
+        c_cat = (category_tag or "Productividad y Gestion").strip()[:45]
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO screen_time_hourly (date, hour, agent_id, active_seconds, idle_seconds, switches_count)
+                    VALUES (?, ?, ?, 0, 0, 1)
+                    ON CONFLICT(date, hour, agent_id) DO UPDATE SET
+                        switches_count = switches_count + 1
+                    """,
+                    (today_str, hour_val, agent_id),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO resource_usage_daily (date, agent_id, app_name, resource_title, category_tag, total_seconds, switches_count, last_seen_at)
+                    VALUES (?, ?, ?, ?, ?, 0, 1, ?)
+                    ON CONFLICT(date, agent_id, app_name, resource_title) DO UPDATE SET
+                        switches_count = switches_count + 1,
+                        category_tag = excluded.category_tag,
+                        last_seen_at = excluded.last_seen_at
+                    """,
+                    (today_str, agent_id, c_app, c_res, c_cat, time_only),
+                )
                 conn.commit()
             finally:
                 conn.close()
@@ -955,6 +1098,148 @@ class DatabaseManager:
                     (agent_id, max(1, min(500, int(limit)))),
                 ).fetchall()
                 return [dict(r) for r in rows]
+            finally:
+                conn.close()
+
+
+    def get_screen_time_analytics(
+        self,
+        agent_id: str = "ALL",
+        date_str: Optional[str] = None,
+        period: str = "day",
+        allowed_tenant_id: Optional[str] = None,
+    ) -> dict:
+        """MF-ST08/ST09: Consulta jerarquica estilo Tiempo en Pantalla (24h, Categorias, App -> Pestanas)."""
+        base_str = (date_str or "").strip() or self._now_dt().strftime("%Y-%m-%d")
+        try:
+            anchor_dt = datetime.strptime(base_str[:10], "%Y-%m-%d")
+        except Exception:
+            anchor_dt = self._now_dt()
+            base_str = anchor_dt.strftime("%Y-%m-%d")
+
+        is_7d = str(period).lower() == "7d"
+        if is_7d:
+            start_str = (anchor_dt - timedelta(days=6)).strftime("%Y-%m-%d")
+            end_str = base_str
+            prev_start = (anchor_dt - timedelta(days=13)).strftime("%Y-%m-%d")
+            prev_end = (anchor_dt - timedelta(days=7)).strftime("%Y-%m-%d")
+        else:
+            start_str = end_str = base_str
+            prev_start = prev_end = (anchor_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                dev_clauses, dev_params = [], []
+                if allowed_tenant_id:
+                    dev_clauses.append("tenant_id = ?")
+                    dev_params.append(allowed_tenant_id)
+                if agent_id and agent_id != "ALL":
+                    dev_clauses.append("agent_id = ?")
+                    dev_params.append(agent_id)
+                where_dev = f"WHERE {' AND '.join(dev_clauses)}" if dev_clauses else ""
+                dev_rows = conn.execute(f"SELECT agent_id, alias FROM devices {where_dev} ORDER BY alias ASC", dev_params).fetchall()
+                valid_ids = [r["agent_id"] for r in dev_rows]
+                if not valid_ids:
+                    return {
+                        "date": base_str, "period": "7d" if is_7d else "day", "agent_id": agent_id,
+                        "summary": {"active_seconds": 0, "idle_seconds": 0, "switches_count": 0, "prev_active_seconds": 0, "delta_pct": 0},
+                        "hourly": [{"hour": h, "active_seconds": 0, "idle_seconds": 0, "switches_count": 0} for h in range(24)],
+                        "categories": [], "apps": [],
+                    }
+
+                ph = ",".join("?" for _ in valid_ids)
+                cur_sum = conn.execute(
+                    f"SELECT COALESCE(SUM(active_seconds),0) AS act, COALESCE(SUM(idle_seconds),0) AS idl FROM daily_activity_summary WHERE date BETWEEN ? AND ? AND agent_id IN ({ph})",
+                    [start_str, end_str, *valid_ids],
+                ).fetchone()
+                prev_sum = conn.execute(
+                    f"SELECT COALESCE(SUM(active_seconds),0) AS act FROM daily_activity_summary WHERE date BETWEEN ? AND ? AND agent_id IN ({ph})",
+                    [prev_start, prev_end, *valid_ids],
+                ).fetchone()
+
+                hourly_map = {h: {"hour": h, "active_seconds": 0, "idle_seconds": 0, "switches_count": 0} for h in range(24)}
+                h_rows = conn.execute(
+                    f"SELECT hour, SUM(active_seconds) AS act, SUM(idle_seconds) AS idl, SUM(switches_count) AS sw FROM screen_time_hourly WHERE date BETWEEN ? AND ? AND agent_id IN ({ph}) GROUP BY hour",
+                    [start_str, end_str, *valid_ids],
+                ).fetchall()
+                total_switches = 0
+                for hr in h_rows:
+                    hv = max(0, min(23, int(hr["hour"] or 0)))
+                    sw_v = int(hr["sw"] or 0)
+                    total_switches += sw_v
+                    hourly_map[hv] = {"hour": hv, "active_seconds": int(hr["act"] or 0), "idle_seconds": int(hr["idl"] or 0), "switches_count": sw_v}
+
+                r_rows = conn.execute(
+                    f"""
+                    SELECT app_name, resource_title, MAX(category_tag) AS cat, SUM(total_seconds) AS secs, SUM(switches_count) AS sw, MAX(last_seen_at) AS seen
+                    FROM resource_usage_daily
+                    WHERE date BETWEEN ? AND ? AND agent_id IN ({ph})
+                    GROUP BY app_name, resource_title
+                    ORDER BY secs DESC
+                    """,
+                    [start_str, end_str, *valid_ids],
+                ).fetchall()
+
+                if not r_rows:
+                    w_rows = conn.execute(
+                        f"SELECT app_name, SUM(total_seconds) AS secs FROM window_usage_daily WHERE date BETWEEN ? AND ? AND agent_id IN ({ph}) GROUP BY app_name ORDER BY secs DESC",
+                        [start_str, end_str, *valid_ids],
+                    ).fetchall()
+                    r_rows = [{"app_name": wr["app_name"], "resource_title": "Ventana principal", "cat": "Productividad y Gestion", "secs": wr["secs"], "sw": 0, "seen": ""} for wr in w_rows]
+
+                cat_totals: Dict[str, int] = {}
+                apps_dict: Dict[str, dict] = {}
+                for rr in r_rows:
+                    secs = int(rr["secs"] or 0)
+                    sw = int(rr["sw"] or 0)
+                    if secs <= 0 and sw <= 0:
+                        continue
+                    app_n = str(rr["app_name"] or "Escritorio")
+                    res_t = str(rr["resource_title"] or "Ventana principal")
+                    cat_t = str(rr["cat"] or "Productividad y Gestion")
+                    cat_totals[cat_t] = cat_totals.get(cat_t, 0) + secs
+                    entry = apps_dict.setdefault(app_n, {"app_name": app_n, "category": cat_t, "total_seconds": 0, "switches_count": 0, "resources": []})
+                    entry["total_seconds"] += secs
+                    entry["switches_count"] += sw
+                    entry["resources"].append({"resource_title": res_t, "category": cat_t, "seconds": secs, "switches_count": sw, "last_seen_at": str(rr["seen"] or "")})
+
+                total_res_secs = sum(cat_totals.values()) or 1
+                categories = [
+                    {"category": k, "seconds": v, "percent": max(1, round(v * 100.0 / total_res_secs))}
+                    for k, v in sorted(cat_totals.items(), key=lambda x: x[1], reverse=True) if v > 0
+                ]
+                apps_list = sorted(apps_dict.values(), key=lambda a: (a["total_seconds"], a["switches_count"]), reverse=True)
+                for ap in apps_list[:40]:
+                    ap["percent"] = max(1, round(ap["total_seconds"] * 100.0 / total_res_secs)) if ap["total_seconds"] > 0 else 0
+                    a_tot = ap["total_seconds"] or 1
+                    ap["resources"].sort(key=lambda r: (r["seconds"], r["switches_count"]), reverse=True)
+                    ap["resources"] = ap["resources"][:30]
+                    for res_item in ap["resources"]:
+                        res_item["percent"] = max(1, round(res_item["seconds"] * 100.0 / a_tot)) if res_item["seconds"] > 0 else 0
+
+                act_s = int(cur_sum["act"] or 0)
+                idl_s = int(cur_sum["idl"] or 0)
+                prev_s = int(prev_sum["act"] or 0)
+                delta_pct = round(((act_s - prev_s) * 100.0) / prev_s) if prev_s > 0 else 0
+
+                return {
+                    "date": base_str,
+                    "start_date": start_str,
+                    "end_date": end_str,
+                    "period": "7d" if is_7d else "day",
+                    "agent_id": agent_id,
+                    "summary": {
+                        "active_seconds": act_s,
+                        "idle_seconds": idl_s,
+                        "switches_count": total_switches,
+                        "prev_active_seconds": prev_s,
+                        "delta_pct": delta_pct,
+                    },
+                    "hourly": [hourly_map[h] for h in range(24)],
+                    "categories": categories,
+                    "apps": apps_list[:40],
+                }
             finally:
                 conn.close()
 
