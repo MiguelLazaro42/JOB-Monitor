@@ -17,10 +17,39 @@ class ClipboardSetRequest(BaseModel):
     auto_paste: bool = False
 
 
+class UserCreateRequest(BaseModel):
+    username: str
+    password: str
+    display_name: str
+    role: str = "tenant_admin"  # 'tenant_admin' | 'sub_user'
+    tenant_id: Optional[str] = None
+    can_control: bool = True
+
+
+class UserUpdateRequest(BaseModel):
+    display_name: Optional[str] = None
+    password: Optional[str] = None
+    can_control: Optional[bool] = None
+    is_active: Optional[bool] = None
+    tenant_id: Optional[str] = None
+
+
+class DeviceTenantAssignRequest(BaseModel):
+    tenant_id: str
+
+
 class AgentConnection:
     """Representa una PC conectada activamente al Hub Central."""
 
-    def __init__(self, agent_id: str, websocket: WebSocket, info: dict, saved_alias: Optional[str] = None):
+    def __init__(
+        self,
+        agent_id: str,
+        websocket: WebSocket,
+        info: dict,
+        saved_alias: Optional[str] = None,
+        tenant_id: str = "sitai-master",
+        tenant_name: str = "SITAI Global",
+    ):
         self.agent_id: str = agent_id
         self.websocket: WebSocket = websocket
         self.hostname: str = info.get("hostname", "PC-Desconocida")
@@ -28,6 +57,8 @@ class AgentConnection:
         self.alias: str = saved_alias or info.get("alias") or f"{self.hostname} ({self.username})"
         self.os_name: str = info.get("os", "Windows")
         self.local_ip: str = info.get("local_ip", "")
+        self.tenant_id: str = tenant_id or "sitai-master"
+        self.tenant_name: str = tenant_name or "SITAI Global"
         self.monitors: List[dict] = info.get("monitors", [])
         self.current_monitor: int = int(info.get("current_monitor", 1))
         self.idle_seconds: int = int(info.get("idle_seconds", 0))
@@ -54,6 +85,8 @@ class AgentConnection:
             "username": self.username,
             "os": self.os_name,
             "local_ip": self.local_ip,
+            "tenant_id": self.tenant_id,
+            "tenant_name": self.tenant_name,
             "monitors": self.monitors,
             "current_monitor": self.current_monitor,
             "idle_seconds": self.idle_seconds,

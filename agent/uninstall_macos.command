@@ -28,3 +28,4 @@ rm -rf "$INSTALL_DIR"
 echo ""
 echo "  [OK] El agente y su Watchdog han sido desinstalados de este Mac."
 echo ""
+

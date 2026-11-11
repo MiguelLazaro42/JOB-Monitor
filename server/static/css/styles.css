@@ -265,15 +265,15 @@ body {
 .muted-icon { color: var(--text-muted); }
 
 /* ========================================================================= */
-/* BARRA SUPERIOR CORPORATIVA ALINEADA AL GRID (1280PX)                      */
+/* BARRA SUPERIOR CORPORATIVA EN 3 ZONAS BALANCEADAS (1280PX)                */
 /* ========================================================================= */
 .topbar {
-  background-color: var(--sitai-navy);
+  background: linear-gradient(180deg, #163d54 0%, #102b3c 100%);
   border-bottom: 2px solid var(--sitai-orange);
   position: sticky;
   top: 0;
   z-index: 20;
-  box-shadow: 0 3px 12px rgba(19, 52, 71, 0.12);
+  box-shadow: 0 4px 16px rgba(10, 28, 40, 0.2);
 }
 
 .topbar-inner {
@@ -281,51 +281,61 @@ body {
   width: 100%;
   margin: 0 auto;
   padding: 0 24px;
-  min-height: 56px;
-  display: flex;
+  min-height: 60px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
   align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 16px;
+  gap: 20px;
 }
 
 .topbar-left {
   display: flex;
   align-items: center;
-  gap: 16px;
-}
-
-.topbar-divider {
-  width: 1px;
-  height: 22px;
-  background: rgba(255, 255, 255, 0.16);
+  gap: 12px;
 }
 
 .topbar-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .sitai-nav-brand {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 11px;
 }
 
 .sitai-official-logo-nav {
-  height: 22px;
+  height: 24px;
   width: auto;
   display: block;
   object-fit: contain;
 }
 
+.brand-meta-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-left: 1px solid rgba(255, 255, 255, 0.16);
+  padding-left: 11px;
+}
+
 .sitai-nav-sub {
   font-family: var(--font-display);
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
   color: var(--sitai-orange);
+  line-height: 1.1;
+}
+
+.user-role-chip {
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  letter-spacing: 0.03em;
+  line-height: 1.15;
 }
 
 .brand-badge {
@@ -344,16 +354,21 @@ body {
   font-size: 12px;
 }
 
-/* Selector de Zona Horaria y Reloj en Vivo (Mérida, MX por defecto) */
+/* Grupo unificado de Reloj, Zona Horaria y Estado del Enlace en Topbar */
+.topbar-telemetry-group {
+  display: flex;
+  align-items: center;
+}
+
 .tz-clock-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  color: rgba(255, 255, 255, 0.88);
-  padding: 4px 10px;
-  border-radius: 8px;
+  gap: 7px;
+  background: rgba(8, 22, 31, 0.48);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  color: rgba(255, 255, 255, 0.9);
+  padding: 5px 11px;
+  border-radius: 9px;
   font-size: 11.5px;
 }
 
@@ -361,16 +376,21 @@ body {
   font-family: var(--font-display);
   font-weight: 700;
   color: #ffffff;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.04em;
+}
+
+.tz-sep {
+  color: rgba(255, 255, 255, 0.22);
+  font-size: 11px;
 }
 
 .tz-select {
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(255, 255, 255, 0.86);
   font-family: var(--font-body);
   font-size: 11.5px;
-  font-weight: 500;
+  font-weight: 600;
   outline: none;
   cursor: pointer;
 }
@@ -380,51 +400,62 @@ body {
   color: #ffffff;
 }
 
-/* Pastilla minimalista de estado WebSocket en el Topbar */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+/* Indicador de estado compacto dentro de la píldora de reloj */
 .status-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 11px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.status-pill .status-dot {
-  width: 6px;
-  height: 6px;
+  justify-content: center;
+  padding: 0;
   border-radius: 50%;
 }
 
-.status-connected {
-  background: rgba(16, 185, 129, 0.16);
-  color: #6ee7b7;
+.status-pill .status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
 }
-.status-connected .status-dot { background: #10b981; }
 
-.status-connecting {
-  background: rgba(248, 123, 2, 0.2);
-  color: #fdba74;
+.status-connected .status-dot {
+  background: #10b981;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.22);
 }
-.status-connecting .status-dot { background: var(--sitai-orange); }
 
-.status-disconnected {
-  background: rgba(225, 29, 72, 0.22);
-  color: #fda4af;
+.status-connecting .status-dot {
+  background: var(--sitai-orange);
+  box-shadow: 0 0 0 3px rgba(248, 123, 2, 0.22);
 }
-.status-disconnected .status-dot { background: var(--rose); }
 
-/* Navegación Integrada */
+.status-disconnected .status-dot {
+  background: var(--rose);
+  box-shadow: 0 0 0 3px rgba(225, 29, 72, 0.25);
+}
+
+/* Dock Central de Navegación Segmentada */
 .nav-tabs {
-  display: flex;
+  justify-self: center;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
+  background: rgba(8, 22, 31, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  padding: 4px;
+  border-radius: 11px;
 }
 
 .nav-tab {
   background: transparent;
-  color: rgba(255, 255, 255, 0.74);
+  color: rgba(255, 255, 255, 0.78);
   border: none;
   padding: 6px 13px;
   border-radius: 8px;
@@ -434,7 +465,7 @@ body {
   align-items: center;
   gap: 6px;
   cursor: pointer;
-  transition: all 0.14s ease;
+  transition: all 0.15s ease;
 }
 
 .nav-tab:hover:not(:disabled) {
@@ -446,12 +477,44 @@ body {
   background: #ffffff;
   color: var(--sitai-navy);
   font-weight: 700;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.14);
+}
+
+.nav-tab-count {
+  font-family: var(--font-display);
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15);
+  color: #ffffff;
+}
+
+.nav-tab.active .nav-tab-count {
+  background: var(--sitai-navy);
+  color: #ffffff;
 }
 
 .nav-tab-session {
   border: 1px solid rgba(16, 185, 129, 0.35);
-  background: rgba(16, 185, 129, 0.12);
+  background: rgba(16, 185, 129, 0.14);
   color: #a7f3d0;
+}
+
+@media (max-width: 980px) {
+  .topbar-inner {
+    grid-template-columns: 1fr;
+    padding: 10px 16px;
+    gap: 10px;
+  }
+  .topbar-left, .topbar-right {
+    justify-content: space-between;
+  }
+  .nav-tabs {
+    width: 100%;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
 }
 
 /* ========================================================================= */
@@ -1587,4 +1650,70 @@ body {
 .status-error {
   background: #fff1f2;
   color: var(--rose);
+}
+
+/* ========================================================================= */
+/* VISTA 5: MÓDULO MULTI-TENANT, USUARIOS Y DESVINCULACIÓN DE EQUIPOS        */
+/* ========================================================================= */
+.settings-grid-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.role-superadmin {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+
+.role-tenant_admin {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+
+.role-sub_user {
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+
+.tenant-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  background: #f1f5f9;
+  color: var(--sitai-navy);
+  border: 1px solid var(--border-color);
+}
+
+.icon-btn-danger:hover {
+  color: var(--rose) !important;
+  background: #fff1f2 !important;
+  border-color: #fecdd3 !important;
+}
+
+.btn-danger-outline {
+  background: #fff1f2;
+  color: var(--rose);
+  border: 1px solid #fecdd3;
+}
+.btn-danger-outline:hover {
+  background: var(--rose);
+  color: #ffffff;
 }

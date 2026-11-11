@@ -1,5 +1,9 @@
 import csv
+import hashlib
+import hmac
 import io
+import re
+import secrets
 import sqlite3
 import threading
 from datetime import datetime
@@ -10,6 +14,26 @@ from zoneinfo import ZoneInfo
 import config
 
 DB_PATH: Path = config.DATA_DIR / "remote_assist.db"
+MASTER_TENANT_ID = "sitai-master"
+
+
+def hash_password(plain: str) -> str:
+    salt = secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac("sha256", plain.encode("utf-8"), salt.encode("utf-8"), 120_000)
+    return f"pbkdf2_sha256${salt}${dk.hex()}"
+
+
+def verify_password(plain: str, stored_hash: str) -> bool:
+    if not stored_hash or "$" not in stored_hash:
+        return False
+    try:
+        algo, salt, hex_digest = stored_hash.split("$", 2)
+        if algo != "pbkdf2_sha256":
+            return False
+        dk = hashlib.pbkdf2_hmac("sha256", plain.encode("utf-8"), salt.encode("utf-8"), 120_000)
+        return hmac.compare_digest(dk.hex(), hex_digest)
+    except Exception:
+        return False
 
 AVAILABLE_TIMEZONES = [
     {"id": "America/Merida", "label": "Mérida, MX (UTC-6)"},
@@ -142,8 +166,32 @@ class DatabaseManager:
                     );
 
                     CREATE INDEX IF NOT EXISTS idx_chat_agent_id ON chat_messages(agent_id, id ASC);
+
+                    CREATE TABLE IF NOT EXISTS users (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        username TEXT UNIQUE NOT NULL,
+                        password_hash TEXT NOT NULL,
+                        display_name TEXT NOT NULL,
+                        role TEXT NOT NULL DEFAULT 'tenant_admin',
+                        tenant_id TEXT NOT NULL,
+                        parent_user_id INTEGER NULL,
+                        can_control INTEGER NOT NULL DEFAULT 1,
+                        is_active INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS revoked_devices (
+                        agent_id TEXT PRIMARY KEY,
+                        revoked_at TEXT NOT NULL,
+                        reason TEXT DEFAULT ''
+                    );
                     """
                 )
+                # Migración automática segura para agregar tenant_id a devices si no existía
+                cols = [r["name"] for r in conn.execute("PRAGMA table_info(devices)").fetchall()]
+                if "tenant_id" not in cols:
+                    conn.execute(f"ALTER TABLE devices ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '{MASTER_TENANT_ID}'")
+
                 default_tz = getattr(config, "DEFAULT_TIMEZONE", "America/Merida")
                 conn.execute(
                     "INSERT OR IGNORE INTO system_settings (key, value) VALUES ('timezone', ?)",
@@ -152,9 +200,280 @@ class DatabaseManager:
                 row = conn.execute("SELECT value FROM system_settings WHERE key = 'timezone'").fetchone()
                 if row and row["value"]:
                     self._cached_tz = row["value"]
+
+                # Semilla / Sincronización automática del Super Admin desde config (.env)
+                sa_user = getattr(config, "ADMIN_USERNAME", "admin").strip()
+                sa_pass = getattr(config, "ADMIN_PASSWORD", "admin123")
+                now_str = self._now_dt().strftime("%Y-%m-%d %H:%M:%S")
+                existing_sa = conn.execute("SELECT * FROM users WHERE username = ?", (sa_user,)).fetchone()
+                if not existing_sa:
+                    conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, display_name, role, tenant_id, parent_user_id, can_control, is_active, created_at)
+                        VALUES (?, ?, 'Super Admin SITAI', 'superadmin', ?, NULL, 1, 1, ?)
+                        """,
+                        (sa_user, hash_password(sa_pass), MASTER_TENANT_ID, now_str),
+                    )
+                else:
+                    # Asegurar que el usuario maestro tenga siempre rol superadmin
+                    conn.execute(
+                        "UPDATE users SET role = 'superadmin', tenant_id = ?, can_control = 1, is_active = 1 WHERE username = ?",
+                        (MASTER_TENANT_ID, sa_user),
+                    )
+
                 # Al iniciar el servidor, todos los equipos inician marcados como desconectados hasta que se reporten
                 conn.execute("UPDATE devices SET is_online = 0")
                 conn.commit()
+            finally:
+                conn.close()
+
+    def _row_to_user_dict(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"],
+            "username": row["username"],
+            "display_name": row["display_name"],
+            "role": row["role"],
+            "tenant_id": row["tenant_id"],
+            "parent_user_id": row["parent_user_id"],
+            "can_control": bool(row["can_control"]),
+            "is_active": bool(row["is_active"]),
+            "created_at": row["created_at"],
+        }
+
+    def authenticate_user(self, username: str, password: str) -> Optional[dict]:
+        clean_user = (username or "").strip()
+        if not clean_user or not password:
+            return None
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM users WHERE LOWER(username) = LOWER(?) AND is_active = 1",
+                    (clean_user,),
+                ).fetchone()
+                if row and verify_password(password, row["password_hash"]):
+                    return self._row_to_user_dict(row)
+                # Fallback directo a variables de entorno para el Super Admin si cambió .env
+                if clean_user == config.ADMIN_USERNAME and password == config.ADMIN_PASSWORD and row:
+                    conn.execute(
+                        "UPDATE users SET password_hash = ? WHERE id = ?",
+                        (hash_password(password), row["id"]),
+                    )
+                    conn.commit()
+                    return self._row_to_user_dict(row)
+                return None
+            finally:
+                conn.close()
+
+    def get_user_by_id(self, user_id: int) -> Optional[dict]:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute("SELECT * FROM users WHERE id = ?", (int(user_id),)).fetchone()
+                return self._row_to_user_dict(row) if row else None
+            finally:
+                conn.close()
+
+    def get_user_by_username(self, username: str) -> Optional[dict]:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute("SELECT * FROM users WHERE LOWER(username) = LOWER(?)", ((username or "").strip(),)).fetchone()
+                return self._row_to_user_dict(row) if row else None
+            finally:
+                conn.close()
+
+    def get_tenant_name_map(self) -> Dict[str, str]:
+        mapping: Dict[str, str] = {MASTER_TENANT_ID: "SITAI Global (Super Admin)"}
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT tenant_id, display_name FROM users WHERE role = 'tenant_admin' ORDER BY id ASC"
+                ).fetchall()
+                for r in rows:
+                    if r["tenant_id"] not in mapping:
+                        mapping[r["tenant_id"]] = r["display_name"]
+            finally:
+                conn.close()
+        return mapping
+
+    def list_tenants(self) -> List[dict]:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                dev_counts: Dict[str, int] = {}
+                for r in conn.execute("SELECT tenant_id, COUNT(*) AS cnt FROM devices GROUP BY tenant_id").fetchall():
+                    dev_counts[r["tenant_id"]] = int(r["cnt"])
+
+                tenants = [
+                    {
+                        "tenant_id": MASTER_TENANT_ID,
+                        "name": "SITAI Global (Super Admin)",
+                        "owner_username": config.ADMIN_USERNAME,
+                        "devices_count": dev_counts.get(MASTER_TENANT_ID, 0),
+                    }
+                ]
+                seen = {MASTER_TENANT_ID}
+                rows = conn.execute(
+                    "SELECT tenant_id, display_name, username FROM users WHERE role = 'tenant_admin' ORDER BY display_name ASC"
+                ).fetchall()
+                for r in rows:
+                    tid = r["tenant_id"]
+                    if tid in seen:
+                        continue
+                    seen.add(tid)
+                    tenants.append({
+                        "tenant_id": tid,
+                        "name": r["display_name"],
+                        "owner_username": r["username"],
+                        "devices_count": dev_counts.get(tid, 0),
+                    })
+                return tenants
+            finally:
+                conn.close()
+
+    def list_users(self, requester_role: str, requester_tenant_id: str) -> List[dict]:
+        tenant_names = self.get_tenant_name_map()
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                dev_counts: Dict[str, int] = {}
+                for r in conn.execute("SELECT tenant_id, COUNT(*) AS cnt FROM devices GROUP BY tenant_id").fetchall():
+                    dev_counts[r["tenant_id"]] = int(r["cnt"])
+
+                if requester_role == "superadmin":
+                    rows = conn.execute(
+                        "SELECT * FROM users ORDER BY CASE role WHEN 'superadmin' THEN 0 WHEN 'tenant_admin' THEN 1 ELSE 2 END, display_name ASC"
+                    ).fetchall()
+                elif requester_role == "tenant_admin":
+                    rows = conn.execute(
+                        "SELECT * FROM users WHERE tenant_id = ? AND role != 'superadmin' ORDER BY CASE role WHEN 'tenant_admin' THEN 0 ELSE 1 END, display_name ASC",
+                        (requester_tenant_id,),
+                    ).fetchall()
+                else:
+                    rows = []
+
+                result = []
+                for r in rows:
+                    u = self._row_to_user_dict(r)
+                    u["tenant_name"] = tenant_names.get(u["tenant_id"], u["tenant_id"])
+                    u["devices_count"] = dev_counts.get(u["tenant_id"], 0)
+                    result.append(u)
+                return result
+            finally:
+                conn.close()
+
+    def create_user(
+        self,
+        username: str,
+        password: str,
+        display_name: str,
+        role: str,
+        tenant_id: Optional[str],
+        parent_user_id: Optional[int],
+        can_control: bool = True,
+    ) -> dict:
+        clean_user = re.sub(r"[^a-zA-Z0-9_.\-@]", "", (username or "").strip())
+        if len(clean_user) < 3:
+            raise ValueError("El nombre de usuario debe tener al menos 3 caracteres válidos")
+        if not password or len(password) < 4:
+            raise ValueError("La contraseña debe tener al menos 4 caracteres")
+        clean_name = (display_name or clean_user).strip()
+        if role not in ("tenant_admin", "sub_user"):
+            role = "sub_user"
+
+        if role == "tenant_admin":
+            slug = re.sub(r"[^a-z0-9]+", "-", clean_user.lower()).strip("-")[:18] or "cliente"
+            final_tenant_id = (tenant_id or "").strip() or f"tenant-{slug}-{secrets.token_hex(3)}"
+        else:
+            final_tenant_id = (tenant_id or "").strip() or MASTER_TENANT_ID
+
+        now_str = self._now_dt().strftime("%Y-%m-%d %H:%M:%S")
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                exists = conn.execute("SELECT 1 FROM users WHERE LOWER(username) = LOWER(?)", (clean_user,)).fetchone()
+                if exists:
+                    raise ValueError(f"El usuario '{clean_user}' ya existe")
+
+                cur = conn.execute(
+                    """
+                    INSERT INTO users (username, password_hash, display_name, role, tenant_id, parent_user_id, can_control, is_active, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+                    """,
+                    (
+                        clean_user,
+                        hash_password(password),
+                        clean_name,
+                        role,
+                        final_tenant_id,
+                        parent_user_id,
+                        1 if can_control else 0,
+                        now_str,
+                    ),
+                )
+                uid = cur.lastrowid
+                conn.commit()
+                row = conn.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+                return self._row_to_user_dict(row)
+            finally:
+                conn.close()
+
+    def update_user(
+        self,
+        user_id: int,
+        display_name: Optional[str] = None,
+        password: Optional[str] = None,
+        can_control: Optional[bool] = None,
+        is_active: Optional[bool] = None,
+        tenant_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute("SELECT * FROM users WHERE id = ?", (int(user_id),)).fetchone()
+                if not row:
+                    return None
+                new_name = (display_name.strip() if display_name and display_name.strip() else row["display_name"])
+                new_hash = hash_password(password) if (password and len(password.strip()) >= 4) else row["password_hash"]
+                new_ctrl = (1 if can_control else 0) if can_control is not None else row["can_control"]
+                new_act = (1 if is_active else 0) if is_active is not None else row["is_active"]
+                new_tid = (tenant_id.strip() if tenant_id and tenant_id.strip() else row["tenant_id"])
+                if row["role"] == "superadmin":
+                    new_ctrl = 1
+                    new_act = 1
+                    new_tid = MASTER_TENANT_ID
+
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET display_name = ?, password_hash = ?, can_control = ?, is_active = ?, tenant_id = ?
+                    WHERE id = ?
+                    """,
+                    (new_name, new_hash, new_ctrl, new_act, new_tid, int(user_id)),
+                )
+                conn.commit()
+                updated = conn.execute("SELECT * FROM users WHERE id = ?", (int(user_id),)).fetchone()
+                return self._row_to_user_dict(updated) if updated else None
+            finally:
+                conn.close()
+
+    def delete_user(self, user_id: int) -> bool:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute("SELECT * FROM users WHERE id = ?", (int(user_id),)).fetchone()
+                if not row or row["role"] == "superadmin":
+                    return False
+                # Si se elimina un tenant_admin, también eliminar sus sub_users y reasignar equipos al master
+                if row["role"] == "tenant_admin":
+                    tid = row["tenant_id"]
+                    conn.execute("DELETE FROM users WHERE tenant_id = ? AND role = 'sub_user'", (tid,))
+                    conn.execute("UPDATE devices SET tenant_id = ? WHERE tenant_id = ?", (MASTER_TENANT_ID, tid))
+                conn.execute("DELETE FROM users WHERE id = ?", (int(user_id),))
+                conn.commit()
+                return True
             finally:
                 conn.close()
 
@@ -170,6 +489,67 @@ class DatabaseManager:
             finally:
                 conn.close()
 
+    def get_device_tenant(self, agent_id: str) -> Optional[str]:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT tenant_id FROM devices WHERE agent_id = ?",
+                    (agent_id,),
+                ).fetchone()
+                return row["tenant_id"] if row else None
+            finally:
+                conn.close()
+
+    def set_device_tenant(self, agent_id: str, tenant_id: str):
+        clean_tid = (tenant_id or MASTER_TENANT_ID).strip()
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE devices SET tenant_id = ? WHERE agent_id = ?",
+                    (clean_tid, agent_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def is_device_revoked(self, agent_id: str) -> bool:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute("SELECT 1 FROM revoked_devices WHERE agent_id = ?", (agent_id,)).fetchone()
+                return bool(row)
+            finally:
+                conn.close()
+
+    def unrevoke_device(self, agent_id: str):
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute("DELETE FROM revoked_devices WHERE agent_id = ?", (agent_id,))
+                conn.commit()
+            finally:
+                conn.close()
+
+    def delete_device(self, agent_id: str, revoke: bool = False):
+        now_str = self._now_dt().strftime("%Y-%m-%d %H:%M:%S")
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute("DELETE FROM devices WHERE agent_id = ?", (agent_id,))
+                conn.execute("DELETE FROM daily_activity_summary WHERE agent_id = ?", (agent_id,))
+                conn.execute("DELETE FROM window_usage_daily WHERE agent_id = ?", (agent_id,))
+                conn.execute("DELETE FROM chat_messages WHERE agent_id = ?", (agent_id,))
+                if revoke:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO revoked_devices (agent_id, revoked_at, reason) VALUES (?, ?, 'autodestroy')",
+                        (agent_id, now_str),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
     def upsert_device(
         self,
         agent_id: str,
@@ -179,19 +559,29 @@ class DatabaseManager:
         os_version: str,
         local_ip: str,
         is_online: bool = True,
-    ):
+        tenant_id: Optional[str] = None,
+    ) -> str:
         now_dt = self._now_dt()
         now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
         today_str = now_dt.strftime("%Y-%m-%d")
         time_only = now_dt.strftime("%H:%M:%S")
+        reported_tid = (tenant_id or "").strip()
 
         with self._lock:
             conn = self._get_conn()
             try:
+                existing = conn.execute("SELECT tenant_id FROM devices WHERE agent_id = ?", (agent_id,)).fetchone()
+                if existing:
+                    current_tid = existing["tenant_id"] or MASTER_TENANT_ID
+                    # Si el equipo estaba en el tenant global por defecto y el agente trae un tenant_id específico del ZIP, adoptarlo
+                    final_tid = reported_tid if (reported_tid and current_tid == MASTER_TENANT_ID) else current_tid
+                else:
+                    final_tid = reported_tid or MASTER_TENANT_ID
+
                 conn.execute(
                     """
-                    INSERT INTO devices (agent_id, alias, hostname, username, os_version, local_ip, is_online, last_seen_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO devices (agent_id, alias, hostname, username, os_version, local_ip, is_online, last_seen_at, tenant_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(agent_id) DO UPDATE SET
                         alias = excluded.alias,
                         hostname = excluded.hostname,
@@ -199,9 +589,10 @@ class DatabaseManager:
                         os_version = excluded.os_version,
                         local_ip = excluded.local_ip,
                         is_online = excluded.is_online,
-                        last_seen_at = excluded.last_seen_at
+                        last_seen_at = excluded.last_seen_at,
+                        tenant_id = excluded.tenant_id
                     """,
-                    (agent_id, alias, hostname, username, os_version, local_ip, 1 if is_online else 0, now_str),
+                    (agent_id, alias, hostname, username, os_version, local_ip, 1 if is_online else 0, now_str, final_tid),
                 )
 
                 conn.execute(
@@ -213,6 +604,7 @@ class DatabaseManager:
                     (today_str, agent_id, time_only),
                 )
                 conn.commit()
+                return final_tid
             finally:
                 conn.close()
 
@@ -245,14 +637,28 @@ class DatabaseManager:
             finally:
                 conn.close()
 
-    def get_all_known_devices(self) -> List[dict]:
+    def get_all_known_devices(self, allowed_tenant_id: Optional[str] = None) -> List[dict]:
+        tenant_names = self.get_tenant_name_map()
         with self._lock:
             conn = self._get_conn()
             try:
-                rows = conn.execute(
-                    "SELECT * FROM devices ORDER BY is_online DESC, alias ASC"
-                ).fetchall()
-                return [dict(r) for r in rows]
+                if allowed_tenant_id:
+                    rows = conn.execute(
+                        "SELECT * FROM devices WHERE tenant_id = ? ORDER BY is_online DESC, alias ASC",
+                        (allowed_tenant_id,),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM devices ORDER BY is_online DESC, alias ASC"
+                    ).fetchall()
+                result = []
+                for r in rows:
+                    d = dict(r)
+                    tid = d.get("tenant_id") or MASTER_TENANT_ID
+                    d["tenant_id"] = tid
+                    d["tenant_name"] = tenant_names.get(tid, tid)
+                    result.append(d)
+                return result
             finally:
                 conn.close()
 
@@ -349,9 +755,14 @@ class DatabaseManager:
         category: Optional[str] = None,
         search_q: Optional[str] = None,
         limit: int = 250,
+        allowed_tenant_id: Optional[str] = None,
     ) -> List[dict]:
         clauses = []
         params: list = []
+
+        if allowed_tenant_id:
+            clauses.append("agent_id IN (SELECT agent_id FROM devices WHERE tenant_id = ?)")
+            params.append(allowed_tenant_id)
 
         if agent_id and agent_id != "ALL":
             clauses.append("agent_id = ?")
@@ -383,8 +794,15 @@ class DatabaseManager:
         agent_id: Optional[str] = None,
         category: Optional[str] = None,
         search_q: Optional[str] = None,
+        allowed_tenant_id: Optional[str] = None,
     ) -> str:
-        logs = self.query_logs(agent_id=agent_id, category=category, search_q=search_q, limit=2000)
+        logs = self.query_logs(
+            agent_id=agent_id,
+            category=category,
+            search_q=search_q,
+            limit=2000,
+            allowed_tenant_id=allowed_tenant_id,
+        )
         out = io.StringIO()
         writer = csv.writer(out)
         writer.writerow(["ID", "Fecha y Hora", "Equipo (Alias)", "Hostname", "Usuario", "Categoría", "Detalle del Evento", "Duración (seg)"])
@@ -401,12 +819,23 @@ class DatabaseManager:
             ])
         return out.getvalue()
 
-    def get_daily_metrics(self, date_str: Optional[str] = None) -> List[dict]:
+    def get_daily_metrics(
+        self,
+        date_str: Optional[str] = None,
+        allowed_tenant_id: Optional[str] = None,
+    ) -> List[dict]:
         target_date = date_str or self._now_dt().strftime("%Y-%m-%d")
+        tenant_names = self.get_tenant_name_map()
         with self._lock:
             conn = self._get_conn()
             try:
-                devices_rows = conn.execute("SELECT * FROM devices ORDER BY alias ASC").fetchall()
+                if allowed_tenant_id:
+                    devices_rows = conn.execute(
+                        "SELECT * FROM devices WHERE tenant_id = ? ORDER BY alias ASC",
+                        (allowed_tenant_id,),
+                    ).fetchall()
+                else:
+                    devices_rows = conn.execute("SELECT * FROM devices ORDER BY alias ASC").fetchall()
                 summary_rows = conn.execute(
                     "SELECT * FROM daily_activity_summary WHERE date = ?",
                     (target_date,),
@@ -428,6 +857,7 @@ class DatabaseManager:
                 result = []
                 for dev in devices_rows:
                     aid = dev["agent_id"]
+                    tid = dev["tenant_id"] or MASTER_TENANT_ID
                     s = summary_map.get(aid, {
                         "first_seen_at": "---",
                         "active_seconds": 0,
@@ -450,6 +880,8 @@ class DatabaseManager:
                         "alias": dev["alias"],
                         "hostname": dev["hostname"],
                         "username": dev["username"],
+                        "tenant_id": tid,
+                        "tenant_name": tenant_names.get(tid, tid),
                         "is_online": bool(dev["is_online"]),
                         "last_seen_at": dev["last_seen_at"],
                         "date": target_date,

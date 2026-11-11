@@ -54,17 +54,10 @@ IS_MAC = platform.system() == "Darwin"
 def hide_macos_dock_icon():
     """
     Oculta completamente el ícono de Python del Dock y del selector Cmd+Tab en macOS
-    (modo agente en segundo plano / LSUIElement equivalente en tiempo de ejecución).
+    usando TransformProcessType de ApplicationServices (nivel WindowServer, sin tocar NSApplication).
     """
     if not IS_MAC:
         return
-    try:
-        import AppKit
-        app = AppKit.NSApplication.sharedApplication()
-        # NSApplicationActivationPolicyAccessory (1) oculta del Dock y la barra de menús
-        app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
-    except Exception:
-        pass
     try:
         lib_path = ctypes.util.find_library("ApplicationServices")
         if lib_path:
@@ -229,8 +222,9 @@ SPECIAL_KEYS = {
 def generate_hardware_agent_id(hostname: str, username: str) -> str:
     mac_num = uuid.getnode()
     raw = f"{mac_num}-{hostname}-{username}"
-    short_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
-    return f"{hostname.upper()}-{short_hash}"
+    short_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+    inst_suffix = uuid.uuid4().hex[:4]
+    return f"{hostname.upper()}-{short_hash}-{inst_suffix}"
 
 
 def load_or_create_agent_config(cli_server: Optional[str], cli_token: Optional[str], cli_alias: Optional[str]) -> dict:
@@ -379,6 +373,13 @@ class PopupChatManager:
         self._lock = threading.Lock()
 
     def show_incoming_message(self, sender: str, text: str, timestamp: str = ""):
+        if IS_MAC:
+            threading.Thread(
+                target=self._show_macos_native_dialog,
+                args=(sender, text),
+                daemon=True,
+            ).start()
+            return
         if IS_WINDOWS and winsound is not None:
             try:
                 winsound.MessageBeep(winsound.MB_ICONASTERISK)
@@ -394,6 +395,31 @@ class PopupChatManager:
             "text": text,
             "timestamp": timestamp or datetime.now().strftime("%H:%M:%S"),
         })
+
+    def _show_macos_native_dialog(self, sender: str, text: str):
+        safe_msg = str(text or "").replace("\\", "\\\\").replace('"', '\\"')
+        safe_sender = str(sender or "Soporte").replace("\\", "\\\\").replace('"', '\\"')
+        script = (
+            f'set dlg to display dialog "{safe_sender}:\\n\\n{safe_msg}\\n\\nEscribe tu respuesta (opcional):" '
+            f'default answer "" with title "SITAI JOB-Monitor — Asistencia" '
+            f'buttons {{"Cerrar", "Enviar"}} default button "Enviar"\n'
+            f'if button returned of dlg is "Enviar" then\n'
+            f'    return text returned of dlg\n'
+            f'end if\n'
+            f'return ""'
+        )
+        try:
+            proc = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            reply = (proc.stdout or "").strip()
+            if reply:
+                self.on_reply(reply)
+        except Exception:
+            pass
 
     def _run_tk_loop(self):
         try:
@@ -902,6 +928,52 @@ class SilentRemoteAgent:
                         pass
                     break
 
+    def handle_self_destruct(self):
+        """
+        Micro-Función W3: Autodestrucción remota del agente ordenada desde el panel.
+        Elimina el Watchdog del sistema operativo, el arranque automático, los certificados
+        locales y termina el proceso de forma definitiva (os._exit(0)).
+        """
+        try:
+            if IS_WINDOWS:
+                for task_name in ("ServicioMonitoreoCorporativoWatchdog", "ServicioMonitoreoCorporativo"):
+                    subprocess.run(
+                        ["schtasks", "/delete", "/tn", task_name, "/f"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                appdata = os.environ.get("APPDATA", "")
+                if appdata:
+                    vbs = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "ServicioMonitoreoCorporativo.vbs"
+                    if vbs.exists():
+                        vbs.unlink()
+                for fname in ("config_agent.json", "agent_client.crt", "agent_client.key"):
+                    fp = BASE_DIR / fname
+                    if fp.exists():
+                        fp.unlink()
+                if "monitoreoempresa" in str(BASE_DIR).lower():
+                    subprocess.Popen(
+                        f'cmd.exe /c timeout /t 2 /nobreak >nul & rmdir /s /q "{BASE_DIR}"',
+                        shell=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+            elif IS_MAC:
+                plist_path = Path.home() / "Library" / "LaunchAgents" / "mx.sitai.jobmonitor.agent.plist"
+                if plist_path.exists():
+                    try:
+                         plist_path.unlink()
+                    except Exception:
+                        pass
+                if "monitoreoempresa" in str(BASE_DIR).lower():
+                    for fname in ("config_agent.json", "agent_client.crt", "agent_client.key"):
+                        fp = BASE_DIR / fname
+                        if fp.exists():
+                            fp.unlink()
+        except Exception:
+            pass
+        os._exit(0)
+
     def _build_ssl_context(self) -> Optional[ssl.SSLContext]:
         """
         Micro-Función S2: Construye el contexto TLS para conexiones wss:// y carga
@@ -950,6 +1022,7 @@ class SilentRemoteAgent:
                         "token": self.token,
                         "agent_id": self.agent_id,
                         "alias": self.alias,
+                        "tenant_id": str(self.cfg.get("tenant_id") or ""),
                         "hostname": self.hostname,
                         "username": self.username,
                         "os": f"{platform.system()} {platform.release()}",
@@ -1039,6 +1112,8 @@ class SilentRemoteAgent:
                                 elif mtype == "file_transfer":
                                     ack = self.handle_file_transfer(data)
                                     await ws.send(json.dumps(ack))
+                                elif mtype == "self_destruct":
+                                    self.handle_self_destruct()
                                 elif mtype == "ping":
                                     await ws.send(json.dumps({"type": "pong"}))
                     finally:

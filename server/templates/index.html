@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261110-mt" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -102,6 +102,48 @@
         <div class="modal-actions">
           <button type="button" id="alias-cancel-btn" class="btn btn-secondary">Cancelar</button>
           <button type="submit" class="btn btn-primary">Guardar Alias</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal para Quitar / Desvincular o Autodestruir Equipo -->
+  <div id="unlink-modal" class="modal-backdrop hidden">
+    <div class="modal-card modal-card-wide">
+      <div class="modal-header">
+        <div class="brand-badge" style="background:#fee2e2; color:#dc2626;">
+          <svg class="icon-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            <line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
+          </svg>
+        </div>
+        <div>
+          <h2>Quitar Equipo del Panel</h2>
+          <p class="muted-text">Equipo seleccionado: <strong id="unlink-device-name">---</strong></p>
+        </div>
+      </div>
+      <form id="unlink-form" class="modal-body">
+        <input type="hidden" id="unlink-agent-id" />
+        <div class="drawer-section" style="display:flex; flex-direction:column; gap:10px;">
+          <label class="checkbox-row" style="align-items:flex-start; gap:10px; padding:10px; border:1px solid #fecaca; background:#fef2f2; border-radius:10px;">
+            <input type="radio" name="unlink_mode" id="unlink-mode-destroy" value="destroy" checked style="margin-top:3px;" />
+            <div>
+              <strong style="color:#991b1b; display:block;">Autodestruir cliente y bloquear permanentemente (Recomendado)</strong>
+              <span class="muted-text" style="font-size:12px;">Desinstala en silencio la tarea de inicio automático / Watchdog en la PC o Mac remota, borra sus certificados y bloquea su ID para que nunca vuelva a conectarse.</span>
+            </div>
+          </label>
+          <label class="checkbox-row" style="align-items:flex-start; gap:10px; padding:10px; border:1px solid #e2e8f0; background:#f8fafc; border-radius:10px;">
+            <input type="radio" name="unlink_mode" id="unlink-mode-only" value="unlink" style="margin-top:3px;" />
+            <div>
+              <strong style="color:#1e293b; display:block;">Solo quitar del historial del panel</strong>
+              <span class="muted-text" style="font-size:12px;">Elimina la tarjeta y registros actuales del panel, sin desinstalar el agente en la computadora remota (útil para limpiar equipos dados de baja o formateados).</span>
+            </div>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button type="button" id="unlink-cancel-btn" class="btn btn-secondary">Cancelar</button>
+          <button type="submit" id="unlink-confirm-btn" class="btn btn-danger-soft" style="background:#dc2626; color:#fff; border-color:#dc2626;">Confirmar y Quitar Equipo</button>
         </div>
       </form>
     </div>
@@ -251,6 +293,11 @@
           <input id="pkg-alias-input" type="text" class="text-input" placeholder="Ej. PC Contabilidad" />
         </div>
 
+        <div id="pkg-tenant-row" class="hidden">
+          <label for="pkg-tenant-select" class="input-label">Asignar instalador a la cuenta (Tenant)</label>
+          <select id="pkg-tenant-select" class="text-input w-full"></select>
+        </div>
+
         <div>
           <label for="pkg-server-url-input" class="input-label">URL WebSocket del Servidor</label>
           <input id="pkg-server-url-input" type="text" class="text-input" value="ws://{{ lan_ip }}:{{ port }}/ws/agent" required />
@@ -271,9 +318,73 @@
     </div>
   </div>
 
-  <!-- Barra Superior SITAI (#133447) Alineada al Contenedor Principal -->
+  <!-- Modal Crear / Editar Usuario Multi-Tenant -->
+  <div id="user-modal" class="modal-backdrop hidden">
+    <div class="modal-card modal-card-wide">
+      <div class="modal-header">
+        <div class="brand-badge">
+          <svg class="icon-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+            <circle cx="8.5" cy="7" r="4"/>
+            <line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/>
+          </svg>
+        </div>
+        <div>
+          <h2 id="user-modal-title">Nuevo Usuario</h2>
+        </div>
+      </div>
+
+      <form id="user-form" class="modal-body">
+        <input type="hidden" id="user-edit-id" value="" />
+        <div class="form-row-two">
+          <div>
+            <label for="user-display-input" class="input-label">Nombre o Empresa</label>
+            <input id="user-display-input" type="text" class="text-input" placeholder="Ej. Despacho Contable / Supervisor" required />
+          </div>
+          <div>
+            <label for="user-username-input" class="input-label">Usuario de Acceso</label>
+            <input id="user-username-input" type="text" class="text-input" placeholder="Ej. contabilidad" required />
+          </div>
+        </div>
+
+        <div class="form-row-two">
+          <div>
+            <label for="user-password-input" class="input-label">Contraseña</label>
+            <input id="user-password-input" type="password" class="text-input" placeholder="Mínimo 4 caracteres" />
+          </div>
+          <div id="user-role-wrap">
+            <label for="user-role-select" class="input-label">Tipo de Cuenta</label>
+            <select id="user-role-select" class="text-input w-full">
+              <option value="tenant_admin">Usuario Principal (Propio Monitor + Sub-usuarios)</option>
+              <option value="sub_user">Sub-usuario (Ve equipos de un Usuario Principal)</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="user-tenant-wrap" class="hidden">
+          <label for="user-tenant-select" class="input-label">Cuenta Principal (Tenant) a la que pertenece</label>
+          <select id="user-tenant-select" class="text-input w-full"></select>
+        </div>
+
+        <label class="checkbox-row">
+          <input type="checkbox" id="user-control-check" checked />
+          <span>Permitir control remoto, chat, voz y transferencia de archivos (desmarcar para Solo Lectura)</span>
+        </label>
+
+        <p id="user-form-error" class="status-feedback status-error hidden"></p>
+
+        <div class="modal-actions">
+          <button type="button" id="close-user-modal-btn" class="btn btn-secondary">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Guardar Usuario</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Barra Superior Corporativa SITAI (#133447) en 3 Zonas Balanceadas -->
   <header class="topbar">
     <div class="topbar-inner">
+      <!-- Zona 1: Identidad de Marca + Rol/Tenant Activo -->
       <div class="topbar-left">
         <div class="sitai-nav-brand">
           <img
@@ -282,62 +393,72 @@
             alt="SITAI.MX"
             onerror="this.onerror=null;this.src='/static/img/logo-dark.png';"
           />
-          <span class="sitai-nav-sub">MONITOR</span>
+          <div class="brand-meta-stack">
+            <span class="sitai-nav-sub">JOB-MONITOR</span>
+            <span id="active-user-badge" class="user-role-chip">SUPER ADMIN</span>
+          </div>
         </div>
-
-        <div class="topbar-divider"></div>
-
-        <nav class="nav-tabs" aria-label="Navegación principal">
-          <button id="tab-wall" class="nav-tab active" type="button">
-            <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/>
-              <rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/>
-            </svg>
-            <span>Equipos</span>
-          </button>
-          <button id="tab-activity" class="nav-tab" type="button">
-            <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
-            </svg>
-            <span>Productividad</span>
-          </button>
-          <button id="tab-logs" class="nav-tab" type="button">
-            <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-              <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
-            </svg>
-            <span>Bitácora</span>
-          </button>
-          <button id="tab-viewer" class="nav-tab nav-tab-session hidden" type="button" disabled>
-            <span class="status-dot dot-emerald"></span>
-            <span id="tab-viewer-label">Visor</span>
-          </button>
-        </nav>
       </div>
 
-      <div class="topbar-right">
-        <div class="tz-clock-pill" title="Zona horaria del servidor y bitácora">
+      <!-- Zona 2: Dock Central de Navegación Segmentada -->
+      <nav class="nav-tabs" aria-label="Navegación principal">
+        <button id="tab-wall" class="nav-tab active" type="button">
           <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+            <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/>
+            <rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/>
           </svg>
-          <span id="live-clock-text" class="tz-clock-time">--:--</span>
-          <select id="timezone-select" class="tz-select" aria-label="Configurar zona horaria">
-            <option value="America/Merida" selected>Mérida, MX</option>
-            <option value="America/Mexico_City">CDMX, MX</option>
-            <option value="America/Cancun">Cancún, MX</option>
-            <option value="America/Monterrey">Monterrey, MX</option>
-            <option value="America/Tijuana">Tijuana, MX</option>
-            <option value="UTC">UTC</option>
-          </select>
+          <span>Equipos</span>
+          <span id="nav-online-badge" class="nav-tab-count">0</span>
+        </button>
+        <button id="tab-activity" class="nav-tab" type="button">
+          <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
+          </svg>
+          <span>Productividad</span>
+        </button>
+        <button id="tab-logs" class="nav-tab" type="button">
+          <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+          </svg>
+          <span>Bitácora</span>
+        </button>
+        <button id="tab-settings" class="nav-tab" type="button">
+          <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+          <span>Ajustes</span>
+        </button>
+        <button id="tab-viewer" class="nav-tab nav-tab-session hidden" type="button" disabled>
+          <span class="status-dot dot-emerald"></span>
+          <span id="tab-viewer-label">Visor</span>
+        </button>
+      </nav>
+
+      <!-- Zona 3: Telemetría del Sistema + Acciones Rápidas -->
+      <div class="topbar-right">
+        <div class="topbar-telemetry-group">
+          <div class="tz-clock-pill" title="Zona horaria oficial y reloj en tiempo real">
+            <span id="ws-status-pill" class="status-pill status-connecting" title="Estado del enlace WebSocket">
+              <span class="status-dot"></span>
+              <span id="ws-status-text" class="sr-only">Conectando</span>
+            </span>
+            <span id="live-clock-text" class="tz-clock-time">--:--</span>
+            <span class="tz-sep">|</span>
+            <select id="timezone-select" class="tz-select" aria-label="Configurar zona horaria">
+              <option value="America/Merida" selected>Mérida</option>
+              <option value="America/Mexico_City">CDMX</option>
+              <option value="America/Cancun">Cancún</option>
+              <option value="America/Monterrey">Monterrey</option>
+              <option value="America/Tijuana">Tijuana</option>
+              <option value="UTC">UTC</option>
+            </select>
+          </div>
         </div>
 
-        <span id="ws-status-pill" class="status-pill status-connecting">
-          <span class="status-dot"></span>
-          <span id="ws-status-text">Conectando</span>
-        </span>
-
-        <button id="open-agent-pkg-btn" type="button" class="btn btn-pill-primary btn-sm" title="Descargar instalador de agente Windows (.ZIP)">
-          <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+        <button id="open-agent-pkg-btn" type="button" class="btn btn-pill-primary btn-sm" title="Descargar paquete instalador Windows / macOS (.ZIP)">
+          <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
           <span>Agente</span>
@@ -390,6 +511,11 @@
       </div>
 
       <div class="command-bar-right">
+        <div id="wall-tenant-filter-wrap" class="control-select-wrap hidden" title="Filtrar por cuenta / tenant">
+          <select id="wall-tenant-filter" class="toolbar-select">
+            <option value="ALL">Todas las cuentas (Tenants)</option>
+          </select>
+        </div>
         <div class="search-box">
           <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -444,6 +570,11 @@
             <button id="viewer-edit-alias-btn" type="button" class="icon-btn" title="Renombrar equipo">
               <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+              </svg>
+            </button>
+            <button id="viewer-unlink-btn" type="button" class="icon-btn icon-btn-danger" title="Desvincular o autodestruir agente en este equipo">
+              <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
               </svg>
             </button>
           </div>
@@ -707,10 +838,88 @@
       </div>
     </div>
   </section>
+
+  <!-- ======================================================================= -->
+  <!-- VISTA 5: AJUSTES MULTI-TENANT, GESTIÓN DE USUARIOS Y EQUIPOS            -->
+  <!-- ======================================================================= -->
+  <section id="view-settings" class="main-container hidden">
+    <div class="settings-grid-layout">
+      <!-- Panel 1: Usuarios, Tenants y Sub-usuarios -->
+      <div class="panel-card">
+        <div class="panel-card-header">
+          <div>
+            <h2 id="settings-users-title">Usuarios y Cuentas (Multi-Tenant)</h2>
+          </div>
+          <div class="panel-controls">
+            <button id="open-create-user-btn" type="button" class="btn btn-primary btn-sm">
+              <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              <span id="create-user-btn-label">Nuevo Usuario</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Nombre / Empresa</th>
+                <th>Usuario</th>
+                <th>Rol</th>
+                <th>Monitor / Cuenta</th>
+                <th>Permisos</th>
+                <th>Equipos</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="users-tbody">
+              <tr>
+                <td colspan="7" class="empty-row">Cargando usuarios...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Panel 2: Administración de Equipos, Asignación de Tenant y Autodestrucción -->
+      <div class="panel-card">
+        <div class="panel-card-header">
+          <div>
+            <h2>Inventario de Equipos, Asignación de Cuenta y Desvinculación</h2>
+          </div>
+          <div class="panel-controls">
+            <button id="refresh-settings-btn" type="button" class="btn btn-secondary btn-sm">
+              <span>Actualizar</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Equipo (Alias)</th>
+                <th>Hostname / Usuario SO</th>
+                <th>Estado</th>
+                <th>Cuenta Propietaria (Tenant)</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="settings-devices-tbody">
+              <tr>
+                <td colspan="5" class="empty-row">Sin equipos registrados.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
   </div><!-- /#app-shell -->
 
-  <script src="/static/js/audio.js"></script>
-  <script src="/static/js/viewer.js"></script>
-  <script src="/static/js/app.js"></script>
+  <script src="/static/js/audio.js?v=20261110-mt"></script>
+  <script src="/static/js/viewer.js?v=20261110-mt"></script>
+  <script src="/static/js/app.js?v=20261110-mt"></script>
 </body>
 </html>

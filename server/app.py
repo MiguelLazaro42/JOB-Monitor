@@ -1,6 +1,8 @@
 import argparse
 import asyncio
 import base64
+import hashlib
+import hmac
 import io
 import json
 import os
@@ -20,19 +22,84 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 import config
-from database import AVAILABLE_TIMEZONES, db
-from models import AgentConnection, AliasUpdateRequest, ChatSendRequest, ClipboardSetRequest
+from database import AVAILABLE_TIMEZONES, MASTER_TENANT_ID, db
+from models import (
+    AgentConnection,
+    AliasUpdateRequest,
+    ChatSendRequest,
+    ClipboardSetRequest,
+    DeviceTenantAssignRequest,
+    UserCreateRequest,
+    UserUpdateRequest,
+)
 
 app = FastAPI(title="JOB-Monitor — Centro de Monitoreo y Control Corporativo")
 app.mount("/static", StaticFiles(directory=str(config.BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(config.BASE_DIR / "templates"))
 
 
+def create_session_token(user: dict) -> str:
+    payload_str = json.dumps(
+        {
+            "uid": user["id"],
+            "usr": user["username"],
+            "rol": user["role"],
+            "tid": user["tenant_id"],
+            "iat": int(time.time()),
+        },
+        separators=(",", ":"),
+    )
+    b64 = base64.urlsafe_b64encode(payload_str.encode("utf-8")).decode("ascii").rstrip("=")
+    secret = f"{config.ADMIN_PASSWORD}:{config.AGENT_TOKEN}".encode("utf-8")
+    sig = hmac.new(secret, b64.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"st1.{b64}.{sig}"
+
+
+def resolve_user_from_token(supplied: str) -> Optional[dict]:
+    token = (supplied or "").strip()
+    if not token:
+        return None
+    if token.startswith("st1.") and token.count(".") == 2:
+        try:
+            _, b64, sig = token.split(".", 2)
+            secret = f"{config.ADMIN_PASSWORD}:{config.AGENT_TOKEN}".encode("utf-8")
+            expected = hmac.new(secret, b64.encode("ascii"), hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(sig, expected):
+                return None
+            padded = b64 + "=" * (-len(b64) % 4)
+            data = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+            user = db.get_user_by_id(int(data["uid"]))
+            if user and user.get("is_active"):
+                return user
+        except Exception:
+            return None
+    if token == config.ADMIN_PASSWORD:
+        return db.get_user_by_username(config.ADMIN_USERNAME)
+    return None
+
+
 class HubManager:
     def __init__(self):
         self.agents: Dict[str, AgentConnection] = {}
         self.admins: Set[WebSocket] = set()
+        self.admin_users: Dict[WebSocket, dict] = {}
         self.subscriptions: Dict[WebSocket, Optional[str]] = {}
+
+    def can_user_access_tenant(self, user: Optional[dict], tenant_id: str) -> bool:
+        if not user:
+            return False
+        if user.get("role") == "superadmin":
+            return True
+        return user.get("tenant_id") == (tenant_id or MASTER_TENANT_ID)
+
+    def can_user_access_agent(self, user: Optional[dict], agent_id: str) -> bool:
+        if not user:
+            return False
+        if user.get("role") == "superadmin":
+            return True
+        ag = self.agents.get(agent_id)
+        tid = ag.tenant_id if ag else (db.get_device_tenant(agent_id) or MASTER_TENANT_ID)
+        return user.get("tenant_id") == tid
 
     async def register_agent(self, agent_id: str, ws: WebSocket, info: dict) -> AgentConnection:
         old = self.agents.get(agent_id)
@@ -43,18 +110,27 @@ class HubManager:
                 pass
 
         saved_alias = db.get_saved_alias(agent_id)
-        conn = AgentConnection(agent_id, ws, info, saved_alias=saved_alias)
-        self.agents[agent_id] = conn
-
-        db.upsert_device(
+        reported_tid = str(info.get("tenant_id") or "").strip()
+        final_tid = db.upsert_device(
             agent_id=agent_id,
-            alias=conn.alias,
-            hostname=conn.hostname,
-            username=conn.username,
-            os_version=conn.os_name,
-            local_ip=conn.local_ip,
+            alias=saved_alias or info.get("alias") or f"{info.get('hostname', 'PC')} ({info.get('username', 'usuario')})",
+            hostname=info.get("hostname", "PC-Desconocida"),
+            username=info.get("username", "usuario"),
+            os_version=info.get("os", "Windows"),
+            local_ip=info.get("local_ip", ""),
             is_online=True,
+            tenant_id=reported_tid,
         )
+        tenant_names = db.get_tenant_name_map()
+        conn = AgentConnection(
+            agent_id,
+            ws,
+            info,
+            saved_alias=saved_alias,
+            tenant_id=final_tid,
+            tenant_name=tenant_names.get(final_tid, final_tid),
+        )
+        self.agents[agent_id] = conn
 
         mon_count = max(1, len([m for m in conn.monitors if m.get("id", 0) > 0]))
         log_entry = db.add_log(
@@ -67,7 +143,7 @@ class HubManager:
         )
 
         await self.broadcast_agents_list()
-        await self.broadcast_new_log(log_entry)
+        await self.broadcast_new_log(log_entry, tenant_id=conn.tenant_id)
 
         if self.has_viewers(agent_id):
             await self.send_to_agent(agent_id, {"type": "start_stream"})
@@ -76,6 +152,7 @@ class HubManager:
     async def unregister_agent(self, agent_id: str, ws: WebSocket):
         current = self.agents.get(agent_id)
         if current and current.websocket == ws:
+            tid = current.tenant_id
             del self.agents[agent_id]
             db.set_device_offline(agent_id)
             log_entry = db.add_log(
@@ -87,7 +164,7 @@ class HubManager:
                 message="El equipo se desconectó del servidor central",
             )
             await self.broadcast_agents_list()
-            await self.broadcast_new_log(log_entry)
+            await self.broadcast_new_log(log_entry, tenant_id=tid)
             await self.broadcast_to_viewers(
                 agent_id,
                 {"type": "agent_disconnected", "agent_id": agent_id},
@@ -97,6 +174,10 @@ class HubManager:
         return any(sub_id == agent_id for sub_id in self.subscriptions.values())
 
     async def set_admin_subscription(self, admin_ws: WebSocket, new_agent_id: Optional[str]):
+        user = self.admin_users.get(admin_ws)
+        if new_agent_id and not self.can_user_access_agent(user, new_agent_id):
+            return
+
         old_agent_id = self.subscriptions.get(admin_ws)
         self.subscriptions[admin_ws] = new_agent_id
 
@@ -112,15 +193,16 @@ class HubManager:
             })
             await self.send_to_agent(new_agent_id, {"type": "start_stream"})
 
+            who_lbl = user["display_name"] if user else "Administrador"
             log_entry = db.add_log(
                 agent_id=agent.agent_id,
                 alias=agent.alias,
                 hostname=agent.hostname,
                 username=agent.username,
                 category="AUDIT",
-                message="Administrador inició sesión de visualización silenciosa",
+                message=f"{who_lbl} inició sesión de visualización silenciosa",
             )
-            await self.broadcast_new_log(log_entry)
+            await self.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)
 
     async def update_alias(self, agent_id: str, new_alias: str):
         alias_clean = new_alias.strip()
@@ -140,7 +222,17 @@ class HubManager:
                 category="AUDIT",
                 message=f"Alias del equipo actualizado de '{old_alias}' a '{alias_clean}'",
             )
-            await self.broadcast_new_log(log_entry)
+            await self.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)
+        await self.broadcast_agents_list()
+
+    async def update_device_tenant(self, agent_id: str, new_tenant_id: str):
+        clean_tid = (new_tenant_id or MASTER_TENANT_ID).strip()
+        db.set_device_tenant(agent_id, clean_tid)
+        tenant_names = db.get_tenant_name_map()
+        agent = self.agents.get(agent_id)
+        if agent:
+            agent.tenant_id = clean_tid
+            agent.tenant_name = tenant_names.get(clean_tid, clean_tid)
         await self.broadcast_agents_list()
 
     async def send_to_agent(self, agent_id: str, payload: dict) -> bool:
@@ -153,23 +245,42 @@ class HubManager:
         except Exception:
             return False
 
-    def _build_agents_payload(self) -> dict:
-        known_devices = db.get_all_known_devices()
-        offline_count = sum(1 for d in known_devices if d["agent_id"] not in self.agents)
-        return {
+    def _build_agents_payload(self, user: Optional[dict] = None) -> dict:
+        is_super = not user or user.get("role") == "superadmin"
+        allowed_tid = None if is_super else user.get("tenant_id")
+        tenant_names = db.get_tenant_name_map()
+
+        for ag in self.agents.values():
+            ag.tenant_name = tenant_names.get(ag.tenant_id, ag.tenant_id)
+
+        visible_agents = [
+            a.to_dict(include_thumbnail=True)
+            for a in self.agents.values()
+            if (is_super or a.tenant_id == allowed_tid)
+        ]
+        known_devices = db.get_all_known_devices(allowed_tenant_id=allowed_tid)
+        online_ids = {a["agent_id"] for a in visible_agents}
+        offline_count = sum(1 for d in known_devices if d["agent_id"] not in online_ids)
+
+        payload = {
             "type": "agents_list",
-            "agents": [a.to_dict(include_thumbnail=True) for a in self.agents.values()],
+            "agents": visible_agents,
             "known_devices": known_devices,
             "offline_count": offline_count,
             "timezone": db.get_timezone(),
             "available_timezones": AVAILABLE_TIMEZONES,
+            "tenants": db.list_tenants() if is_super else [],
         }
+        if user:
+            payload["user"] = user
+        return payload
 
     async def broadcast_agents_list(self):
-        payload = self._build_agents_payload()
         dead = []
         for ws in list(self.admins):
             try:
+                user = self.admin_users.get(ws)
+                payload = self._build_agents_payload(user=user)
                 await ws.send_json(payload)
             except Exception:
                 dead.append(ws)
@@ -183,6 +294,9 @@ class HubManager:
         }
         dead = []
         for ws in list(self.admins):
+            user = self.admin_users.get(ws)
+            if not self.can_user_access_tenant(user, agent.tenant_id):
+                continue
             try:
                 await ws.send_json(payload)
             except Exception:
@@ -190,16 +304,19 @@ class HubManager:
         for ws in dead:
             await self.remove_admin(ws)
 
-    async def broadcast_new_log(self, log_entry: dict):
+    async def broadcast_new_log(self, log_entry: dict, tenant_id: Optional[str] = None):
         payload = {
             "type": "new_log",
             "log": log_entry,
         }
-        await self.broadcast_to_admins(payload)
+        await self.broadcast_to_admins(payload, target_tenant_id=tenant_id)
 
-    async def broadcast_to_admins(self, payload: dict):
+    async def broadcast_to_admins(self, payload: dict, target_tenant_id: Optional[str] = None):
         dead = []
         for ws in list(self.admins):
+            user = self.admin_users.get(ws)
+            if target_tenant_id and not self.can_user_access_tenant(user, target_tenant_id):
+                continue
             try:
                 await ws.send_json(payload)
             except Exception:
@@ -231,6 +348,7 @@ class HubManager:
 
     async def remove_admin(self, ws: WebSocket):
         self.admins.discard(ws)
+        self.admin_users.pop(ws, None)
         old_agent_id = self.subscriptions.pop(ws, None)
         if old_agent_id and not self.has_viewers(old_agent_id):
             await self.send_to_agent(old_agent_id, {"type": "stop_stream"})
@@ -274,10 +392,10 @@ async def health():
     }
 
 
-def verify_admin_access(request: Request):
+def verify_admin_access(request: Request) -> dict:
     """
-    Micro-Función M1: Protege los endpoints HTTP REST mediante cabecera X-Admin-Password,
-    parámetro query admin_pass o cookie ra_admin_pass para despliegue seguro en VPS.
+    Micro-Función M1: Protege los endpoints HTTP REST mediante token de sesión firmado (st1....)
+    o clave maestra, devolviendo el perfil completo del usuario autenticado y su tenant_id.
     """
     supplied = (
         request.headers.get("x-admin-password")
@@ -285,26 +403,221 @@ def verify_admin_access(request: Request):
         or request.cookies.get("ra_admin_pass")
         or ""
     )
-    if supplied != config.ADMIN_PASSWORD:
-        raise HTTPException(status_code=401, detail="No autorizado: clave de administrador inválida")
+    user = resolve_user_from_token(supplied)
+    if not user:
+        raise HTTPException(status_code=401, detail="No autorizado: sesión o credenciales inválidas")
+    return user
 
 
 @app.post("/api/login")
 async def admin_login(request: Request):
-    """Valida usuario y contraseña de administrador antes de desbloquear el panel."""
+    """Valida usuario y contraseña (Super Admin, Usuario Principal o Sub-usuario) y devuelve token de sesión."""
     try:
         body = await request.json()
     except Exception:
         body = {}
     username = str(body.get("username") or "").strip()
     password = str(body.get("password") or "")
-    if username != config.ADMIN_USERNAME or password != config.ADMIN_PASSWORD:
+    user = db.authenticate_user(username, password)
+    if not user:
         raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
+    session_token = create_session_token(user)
+    tenant_names = db.get_tenant_name_map()
+    user["tenant_name"] = tenant_names.get(user["tenant_id"], user["tenant_id"])
     return {
         "ok": True,
-        "username": config.ADMIN_USERNAME,
+        "username": user["username"],
+        "token": session_token,
+        "user": user,
         "timezone": db.get_timezone(),
+        "tenants": db.list_tenants() if user["role"] == "superadmin" else [],
     }
+
+
+@app.get("/api/me")
+async def get_current_user_profile(request: Request):
+    user = verify_admin_access(request)
+    tenant_names = db.get_tenant_name_map()
+    user["tenant_name"] = tenant_names.get(user["tenant_id"], user["tenant_id"])
+    return {
+        "ok": True,
+        "user": user,
+        "timezone": db.get_timezone(),
+        "tenants": db.list_tenants() if user["role"] == "superadmin" else [],
+    }
+
+
+@app.get("/api/users")
+async def list_users_endpoint(request: Request):
+    user = verify_admin_access(request)
+    role = user["role"]
+    tid = user["tenant_id"]
+    users_list = db.list_users(requester_role=role, requester_tenant_id=tid)
+    tenants_list = db.list_tenants() if role == "superadmin" else [
+        {
+            "tenant_id": tid,
+            "name": db.get_tenant_name_map().get(tid, user["display_name"]),
+            "owner_username": user["username"],
+            "devices_count": len(db.get_all_known_devices(allowed_tenant_id=tid)),
+        }
+    ]
+    devices_list = db.get_all_known_devices(allowed_tenant_id=None if role == "superadmin" else tid)
+    return {
+        "ok": True,
+        "users": users_list,
+        "tenants": tenants_list,
+        "devices": devices_list,
+    }
+
+
+@app.post("/api/users")
+async def create_user_endpoint(request: Request, body: UserCreateRequest):
+    requester = verify_admin_access(request)
+    req_role = requester["role"]
+    if req_role not in ("superadmin", "tenant_admin"):
+        raise HTTPException(status_code=403, detail="No tienes permisos para crear usuarios")
+
+    target_role = (body.role or "sub_user").strip()
+    if req_role == "tenant_admin":
+        # Un Usuario Principal solo puede crear sub-usuarios dentro de su propio tenant
+        target_role = "sub_user"
+        target_tenant_id = requester["tenant_id"]
+    else:
+        # Super Admin puede crear Usuarios Principales (nuevo tenant) o Sub-usuarios en cualquier tenant
+        if target_role not in ("tenant_admin", "sub_user"):
+            target_role = "tenant_admin"
+        target_tenant_id = body.tenant_id if target_role == "sub_user" else None
+
+    try:
+        created = db.create_user(
+            username=body.username,
+            password=body.password,
+            display_name=body.display_name,
+            role=target_role,
+            tenant_id=target_tenant_id,
+            parent_user_id=requester["id"],
+            can_control=body.can_control,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    await hub.broadcast_agents_list()
+    return {"ok": True, "user": created}
+
+
+@app.put("/api/users/{user_id}")
+async def update_user_endpoint(request: Request, user_id: int, body: UserUpdateRequest):
+    requester = verify_admin_access(request)
+    target = db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    req_role = requester["role"]
+    if req_role == "sub_user":
+        if requester["id"] != user_id:
+            raise HTTPException(status_code=403, detail="Solo puedes actualizar tu propia contraseña")
+        updated = db.update_user(user_id=user_id, password=body.password, display_name=body.display_name)
+        return {"ok": True, "user": updated}
+
+    if req_role == "tenant_admin":
+        if target["tenant_id"] != requester["tenant_id"] or target["role"] == "superadmin":
+            raise HTTPException(status_code=403, detail="No tienes permisos sobre este usuario")
+        updated = db.update_user(
+            user_id=user_id,
+            display_name=body.display_name,
+            password=body.password,
+            can_control=body.can_control if target["id"] != requester["id"] else True,
+            is_active=body.is_active if target["id"] != requester["id"] else True,
+        )
+        await hub.broadcast_agents_list()
+        return {"ok": True, "user": updated}
+
+    # Super Admin
+    updated = db.update_user(
+        user_id=user_id,
+        display_name=body.display_name,
+        password=body.password,
+        can_control=body.can_control,
+        is_active=body.is_active,
+        tenant_id=body.tenant_id,
+    )
+    await hub.broadcast_agents_list()
+    return {"ok": True, "user": updated}
+
+
+@app.delete("/api/users/{user_id}")
+async def delete_user_endpoint(request: Request, user_id: int):
+    requester = verify_admin_access(request)
+    target = db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    if target["role"] == "superadmin" or target["id"] == requester["id"]:
+        raise HTTPException(status_code=400, detail="No puedes eliminar al Super Admin ni tu propia sesión activa")
+
+    if requester["role"] == "tenant_admin":
+        if target["tenant_id"] != requester["tenant_id"] or target["role"] != "sub_user":
+            raise HTTPException(status_code=403, detail="Solo puedes eliminar sub-usuarios de tu propia cuenta")
+    elif requester["role"] != "superadmin":
+        raise HTTPException(status_code=403, detail="No tienes permisos para eliminar usuarios")
+
+    db.delete_user(user_id)
+    await hub.broadcast_agents_list()
+    return {"ok": True, "deleted_id": user_id}
+
+
+@app.post("/api/devices/{agent_id}/tenant")
+async def assign_device_tenant(request: Request, agent_id: str, body: DeviceTenantAssignRequest):
+    requester = verify_admin_access(request)
+    if requester["role"] != "superadmin":
+        raise HTTPException(status_code=403, detail="Solo el Super Admin puede reasignar equipos entre cuentas")
+    await hub.update_device_tenant(agent_id, body.tenant_id)
+    return {"ok": True, "agent_id": agent_id, "tenant_id": body.tenant_id}
+
+
+@app.delete("/api/devices/{agent_id}")
+async def remove_device_endpoint(
+    request: Request,
+    agent_id: str,
+    self_destruct: bool = Query(True, description="Enviar orden de autodestrucción y revocar agente"),
+):
+    requester = verify_admin_access(request)
+    if not hub.can_user_access_agent(requester, agent_id):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este equipo")
+    if requester["role"] == "sub_user":
+        raise HTTPException(status_code=403, detail="Los sub-usuarios no pueden eliminar o desvincular equipos")
+
+    live_agent = hub.agents.pop(agent_id, None)
+    tid = live_agent.tenant_id if live_agent else (db.get_device_tenant(agent_id) or MASTER_TENANT_ID)
+    alias_lbl = live_agent.alias if live_agent else agent_id
+
+    if live_agent:
+        if self_destruct:
+            try:
+                await live_agent.websocket.send_json({"type": "self_destruct"})
+            except Exception:
+                pass
+        try:
+            await live_agent.websocket.close(code=1008)
+        except Exception:
+            pass
+        await hub.broadcast_to_viewers(
+            agent_id,
+            {"type": "agent_disconnected", "agent_id": agent_id},
+        )
+
+    db.delete_device(agent_id, revoke=bool(self_destruct))
+    mode_lbl = "con orden de autodestrucción y revocación" if self_destruct else "desvinculado del panel"
+    log_entry = db.add_log(
+        agent_id=agent_id,
+        alias=alias_lbl,
+        hostname=live_agent.hostname if live_agent else "Equipo",
+        username=requester["username"],
+        category="AUDIT",
+        message=f"{requester['display_name']} eliminó el equipo '{alias_lbl}' ({mode_lbl})",
+    )
+    await hub.broadcast_new_log(log_entry, tenant_id=tid)
+    await hub.broadcast_agents_list()
+    return {"ok": True, "deleted_agent_id": agent_id, "self_destruct": bool(self_destruct)}
 
 
 @app.get("/api/settings/timezone")
@@ -319,7 +632,9 @@ async def get_timezone_settings(request: Request):
 
 @app.post("/api/settings/timezone")
 async def update_timezone_settings(request: Request):
-    verify_admin_access(request)
+    requester = verify_admin_access(request)
+    if requester["role"] == "sub_user":
+        raise HTTPException(status_code=403, detail="Solo administradores pueden cambiar la zona horaria")
     try:
         body = await request.json()
     except Exception:
@@ -445,11 +760,16 @@ def ensure_mtls_certificates() -> tuple[Optional[bytes], Optional[bytes]]:
         return None, None
 
 
-def generate_agent_config_payload(server_url: str, alias: str = "", token: str = "") -> dict:
+def generate_agent_config_payload(
+    server_url: str,
+    alias: str = "",
+    token: str = "",
+    tenant_id: str = "",
+) -> dict:
     """
     Mini-Función A1: Genera el diccionario de configuración para config_agent.json.
     Omite agent_id para que cada PC Windows/Mac calcule su propio UUID único de hardware al iniciar.
-    Incluye referencias al par de llaves X.509 mTLS empaquetado en el .ZIP.
+    Incluye referencias al par de llaves X.509 mTLS y el tenant_id del propietario.
     """
     payload = {
         "server_url": server_url,
@@ -460,6 +780,9 @@ def generate_agent_config_payload(server_url: str, alias: str = "", token: str =
     clean_alias = (alias or "").strip()
     if clean_alias:
         payload["alias"] = clean_alias
+    clean_tid = (tenant_id or "").strip()
+    if clean_tid:
+        payload["tenant_id"] = clean_tid
     return payload
 
 
@@ -494,13 +817,13 @@ def generate_install_readme(server_url: str, alias: str = "") -> str:
     )
 
 
-def build_agent_package_zip(server_url: str, alias: str = "") -> bytes:
+def build_agent_package_zip(server_url: str, alias: str = "", tenant_id: str = "") -> bytes:
     """
     Mini-Función A2: Empaqueta en memoria (ZIP) el agente, dependencias,
-    config_agent.json preconfigurado y scripts de instalación para Windows y macOS.
+    config_agent.json preconfigurado (con tenant_id y mTLS) y scripts de instalación.
     """
     agent_dir = config.PROJECT_ROOT / "agent"
-    cfg_payload = generate_agent_config_payload(server_url=server_url, alias=alias)
+    cfg_payload = generate_agent_config_payload(server_url=server_url, alias=alias, tenant_id=tenant_id)
     cfg_json_str = json.dumps(cfg_payload, indent=2, ensure_ascii=False)
     readme_str = generate_install_readme(server_url=server_url, alias=alias)
 
@@ -548,12 +871,14 @@ def build_agent_package_zip(server_url: str, alias: str = "") -> bytes:
 @app.get("/api/agent-package-info")
 async def get_agent_package_info(request: Request):
     """Devuelve la URL WebSocket sugerida para prellenar el modal de descarga de agente."""
-    verify_admin_access(request)
+    user = verify_admin_access(request)
     return {
         "ok": True,
         "default_ws_url": resolve_default_ws_url(request),
         "lan_ip": get_local_lan_ip(),
         "port": config.PORT,
+        "tenant_id": user["tenant_id"],
+        "tenants": db.list_tenants() if user["role"] == "superadmin" else [],
     }
 
 
@@ -562,19 +887,25 @@ async def download_agent_package(
     request: Request,
     server_url: Optional[str] = Query(None, description="URL WebSocket del servidor central"),
     alias: Optional[str] = Query("", description="Alias opcional preconfigurado para la PC"),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID destino (opcional para Super Admin)"),
 ):
     """
     Mini-Función A3: Endpoint HTTP que construye y descarga el paquete .zip
-    preconfigurado para instalar el agente en Windows.
+    preconfigurado para instalar el agente en Windows o macOS, ligado al tenant del usuario.
     """
-    verify_admin_access(request)
+    user = verify_admin_access(request)
     default_ws = resolve_default_ws_url(request)
     final_ws_url = normalize_ws_url(server_url or "", default_ws)
     clean_alias = (alias or "").strip()
 
-    zip_bytes = build_agent_package_zip(server_url=final_ws_url, alias=clean_alias)
+    if user["role"] == "superadmin":
+        target_tid = (tenant_id or "").strip() or MASTER_TENANT_ID
+    else:
+        target_tid = user["tenant_id"]
 
-    safe_slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", clean_alias).strip("-") if clean_alias else "Windows"
+    zip_bytes = build_agent_package_zip(server_url=final_ws_url, alias=clean_alias, tenant_id=target_tid)
+
+    safe_slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", clean_alias).strip("-") if clean_alias else "Installer"
     filename = f"JOB-Monitor-Agent-{safe_slug}.zip"
 
     alias_info = f"con alias '{clean_alias}'" if clean_alias else "con alias automático"
@@ -582,11 +913,11 @@ async def download_agent_package(
         agent_id="SYSTEM-SERVER",
         alias="Consola de Administración",
         hostname="Servidor Central",
-        username="Administrador",
+        username=user["username"],
         category="AUDIT",
-        message=f"Paquete instalador '{filename}' generado ({alias_info} -> {final_ws_url})",
+        message=f"{user['display_name']} generó paquete instalador '{filename}' ({alias_info} • Tenant: {target_tid})",
     )
-    await hub.broadcast_new_log(log_entry)
+    await hub.broadcast_new_log(log_entry, tenant_id=target_tid)
 
     return Response(
         content=zip_bytes,
@@ -600,7 +931,9 @@ async def download_agent_package(
 
 @app.get("/api/chat/{agent_id}")
 async def get_agent_chat_history(request: Request, agent_id: str, limit: int = Query(100)):
-    verify_admin_access(request)
+    user = verify_admin_access(request)
+    if not hub.can_user_access_agent(user, agent_id):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este equipo")
     messages = db.get_chat_history(agent_id=agent_id, limit=limit)
     return {
         "ok": True,
@@ -617,7 +950,11 @@ async def send_file_to_agent(
     destination: str = Form("Desktop"),
     auto_open: str = Form("false"),
 ):
-    verify_admin_access(request)
+    user = verify_admin_access(request)
+    if not hub.can_user_access_agent(user, agent_id):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este equipo")
+    if not user.get("can_control", True):
+        raise HTTPException(status_code=403, detail="Tu cuenta es de solo monitoreo (sin envío de archivos)")
     agent = hub.agents.get(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="El equipo seleccionado no está conectado en este momento")
@@ -654,9 +991,9 @@ async def send_file_to_agent(
         hostname=agent.hostname,
         username=agent.username,
         category="AUDIT",
-        message=f"Archivo '{safe_filename}' ({size_kb} KB) enviado a {dest_label} ({open_note})",
+        message=f"{user['display_name']} envió archivo '{safe_filename}' ({size_kb} KB) a {dest_label} ({open_note})",
     )
-    await hub.broadcast_new_log(log_entry)
+    await hub.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)
 
     return {
         "ok": True,
@@ -669,10 +1006,18 @@ async def send_file_to_agent(
 
 
 @app.get("/api/metrics")
-async def get_metrics(request: Request, date: Optional[str] = Query(None, description="Fecha YYYY-MM-DD")):
-    verify_admin_access(request)
-    metrics = db.get_daily_metrics(date_str=date)
-    # Adjuntar estado en vivo de los agentes actualmente conectados
+async def get_metrics(
+    request: Request,
+    date: Optional[str] = Query(None, description="Fecha YYYY-MM-DD"),
+    tenant_id: Optional[str] = Query(None, description="Filtro opcional de tenant para Super Admin"),
+):
+    user = verify_admin_access(request)
+    if user["role"] == "superadmin":
+        allowed_tid = (tenant_id or "").strip() if (tenant_id and tenant_id != "ALL") else None
+    else:
+        allowed_tid = user["tenant_id"]
+
+    metrics = db.get_daily_metrics(date_str=date, allowed_tenant_id=allowed_tid)
     for item in metrics:
         live_ag = hub.agents.get(item["agent_id"])
         if live_ag:
@@ -698,10 +1043,22 @@ async def get_logs(
     category: Optional[str] = Query("ALL"),
     q: Optional[str] = Query(""),
     limit: int = Query(250),
+    tenant_id: Optional[str] = Query(None),
 ):
-    verify_admin_access(request)
-    logs = db.query_logs(agent_id=agent_id, category=category, search_q=q, limit=limit)
-    devices = db.get_all_known_devices()
+    user = verify_admin_access(request)
+    if user["role"] == "superadmin":
+        allowed_tid = (tenant_id or "").strip() if (tenant_id and tenant_id != "ALL") else None
+    else:
+        allowed_tid = user["tenant_id"]
+
+    logs = db.query_logs(
+        agent_id=agent_id,
+        category=category,
+        search_q=q,
+        limit=limit,
+        allowed_tenant_id=allowed_tid,
+    )
+    devices = db.get_all_known_devices(allowed_tenant_id=allowed_tid)
     return {
         "ok": True,
         "logs": logs,
@@ -715,9 +1072,20 @@ async def export_logs_csv(
     agent_id: Optional[str] = Query("ALL"),
     category: Optional[str] = Query("ALL"),
     q: Optional[str] = Query(""),
+    tenant_id: Optional[str] = Query(None),
 ):
-    verify_admin_access(request)
-    csv_text = db.export_logs_csv(agent_id=agent_id, category=category, search_q=q)
+    user = verify_admin_access(request)
+    if user["role"] == "superadmin":
+        allowed_tid = (tenant_id or "").strip() if (tenant_id and tenant_id != "ALL") else None
+    else:
+        allowed_tid = user["tenant_id"]
+
+    csv_text = db.export_logs_csv(
+        agent_id=agent_id,
+        category=category,
+        search_q=q,
+        allowed_tenant_id=allowed_tid,
+    )
     return Response(
         content="\ufeff" + csv_text,
         media_type="text/csv; charset=utf-8",
@@ -729,7 +1097,11 @@ async def export_logs_csv(
 
 @app.post("/api/devices/{agent_id}/alias")
 async def update_device_alias(request: Request, agent_id: str, body: AliasUpdateRequest):
-    verify_admin_access(request)
+    user = verify_admin_access(request)
+    if not hub.can_user_access_agent(user, agent_id):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este equipo")
+    if not user.get("can_control", True):
+        raise HTTPException(status_code=403, detail="Tu cuenta es de solo monitoreo")
     if not body.alias.strip():
         raise HTTPException(status_code=400, detail="El alias no puede estar vacío")
     await hub.update_alias(agent_id, body.alias)
@@ -756,6 +1128,11 @@ async def ws_agent_endpoint(websocket: WebSocket):
             return
 
         agent_id = str(hello.get("agent_id") or f"{hello.get('hostname', 'PC')}-{hello.get('username', 'user')}")
+        if db.is_device_revoked(agent_id):
+            await websocket.send_json({"type": "self_destruct"})
+            await websocket.close(code=1008)
+            return
+
         agent = await hub.register_agent(agent_id, websocket, hello)
 
         while True:
@@ -882,24 +1259,32 @@ async def ws_agent_endpoint(websocket: WebSocket):
 async def ws_admin_endpoint(websocket: WebSocket):
     await websocket.accept()
     authenticated = False
+    user: Optional[dict] = None
     try:
         raw = await asyncio.wait_for(websocket.receive_text(), timeout=15.0)
         auth = json.loads(raw)
-        supplied_user = str(auth.get("username") or config.ADMIN_USERNAME).strip()
-        if (
-            auth.get("type") != "auth"
-            or supplied_user != config.ADMIN_USERNAME
-            or auth.get("password") != config.ADMIN_PASSWORD
-        ):
-            await websocket.send_json({"type": "auth_error", "message": "Credenciales de administrador inválidas"})
+        if auth.get("type") != "auth":
+            await websocket.send_json({"type": "auth_error", "message": "Mensaje de autenticación inválido"})
+            await websocket.close(code=1008)
+            return
+
+        token_or_pass = str(auth.get("token") or auth.get("password") or "")
+        supplied_user = str(auth.get("username") or "").strip()
+        user = resolve_user_from_token(token_or_pass)
+        if not user and supplied_user:
+            user = db.authenticate_user(supplied_user, token_or_pass)
+
+        if not user:
+            await websocket.send_json({"type": "auth_error", "message": "Credenciales o sesión inválida"})
             await websocket.close(code=1008)
             return
 
         authenticated = True
         hub.admins.add(websocket)
+        hub.admin_users[websocket] = user
         hub.subscriptions[websocket] = None
 
-        init_payload = hub._build_agents_payload()
+        init_payload = hub._build_agents_payload(user=user)
         init_payload["type"] = "auth_ok"
         await websocket.send_json(init_payload)
 
@@ -928,18 +1313,18 @@ async def ws_admin_endpoint(websocket: WebSocket):
                 elif msg_type == "set_alias":
                     target_id = data.get("agent_id")
                     new_alias = data.get("alias", "")
-                    if target_id and new_alias:
+                    if target_id and new_alias and hub.can_user_access_agent(user, target_id) and user.get("can_control", True):
                         await hub.update_alias(target_id, new_alias)
 
                 elif msg_type == "audit_control_mode":
                     target_id = hub.subscriptions.get(websocket)
                     enabled = bool(data.get("enabled", False))
-                    if target_id and target_id in hub.agents:
+                    if target_id and target_id in hub.agents and hub.can_user_access_agent(user, target_id):
                         ag = hub.agents[target_id]
                         action_text = (
-                            "Administrador activó el control remoto de mouse y teclado"
+                            f"{user['display_name']} activó el control remoto de mouse y teclado"
                             if enabled
-                            else "Administrador cambió a modo Solo Observar"
+                            else f"{user['display_name']} cambió a modo Solo Observar"
                         )
                         log_entry = db.add_log(
                             agent_id=ag.agent_id,
@@ -949,28 +1334,29 @@ async def ws_admin_endpoint(websocket: WebSocket):
                             category="AUDIT",
                             message=action_text,
                         )
-                        await hub.broadcast_new_log(log_entry)
+                        await hub.broadcast_new_log(log_entry, tenant_id=ag.tenant_id)
 
                 elif msg_type == "request_all_thumbnails":
                     for ag_id in list(hub.agents.keys()):
-                        await hub.send_to_agent(ag_id, {"type": "capture_thumbnail"})
+                        if hub.can_user_access_agent(user, ag_id):
+                            await hub.send_to_agent(ag_id, {"type": "capture_thumbnail"})
 
                 elif msg_type == "chat_send":
                     target_id = data.get("agent_id") or hub.subscriptions.get(websocket)
                     text = str(data.get("text", "")).strip()
-                    if target_id and text and target_id in hub.agents:
+                    if target_id and text and target_id in hub.agents and hub.can_user_access_agent(user, target_id) and user.get("can_control", True):
                         ag = hub.agents[target_id]
                         chat_entry = db.add_chat_message(
                             agent_id=target_id,
                             sender="admin",
-                            sender_name="Soporte / Administrador",
+                            sender_name=user["display_name"],
                             message=text,
                         )
                         await hub.send_to_agent(
                             target_id,
                             {
                                 "type": "chat_message",
-                                "sender": "Soporte / Administrador",
+                                "sender": user["display_name"],
                                 "text": text,
                                 "timestamp": chat_entry["timestamp"],
                             },
@@ -981,24 +1367,27 @@ async def ws_admin_endpoint(websocket: WebSocket):
                             hostname=ag.hostname,
                             username=ag.username,
                             category="AUDIT",
-                            message=f"Administrador envió mensaje directo: '{text[:120]}'",
+                            message=f"{user['display_name']} envió mensaje directo: '{text[:120]}'",
                         )
-                        await hub.broadcast_to_admins({
-                            "type": "chat_message",
-                            "chat": chat_entry,
-                        })
-                        await hub.broadcast_new_log(log_entry)
+                        await hub.broadcast_to_admins(
+                            {
+                                "type": "chat_message",
+                                "chat": chat_entry,
+                            },
+                            target_tenant_id=ag.tenant_id,
+                        )
+                        await hub.broadcast_new_log(log_entry, tenant_id=ag.tenant_id)
 
                 elif msg_type == "clipboard_get":
                     target_id = data.get("agent_id") or hub.subscriptions.get(websocket)
-                    if target_id:
+                    if target_id and hub.can_user_access_agent(user, target_id) and user.get("can_control", True):
                         await hub.send_to_agent(target_id, {"type": "clipboard_get"})
 
                 elif msg_type == "clipboard_set":
                     target_id = data.get("agent_id") or hub.subscriptions.get(websocket)
                     clip_text = str(data.get("text", ""))
                     auto_paste = bool(data.get("auto_paste", False))
-                    if target_id and target_id in hub.agents:
+                    if target_id and target_id in hub.agents and hub.can_user_access_agent(user, target_id) and user.get("can_control", True):
                         ag = hub.agents[target_id]
                         await hub.send_to_agent(
                             target_id,
@@ -1015,14 +1404,14 @@ async def ws_admin_endpoint(websocket: WebSocket):
                             hostname=ag.hostname,
                             username=ag.username,
                             category="AUDIT",
-                            message=f"Administrador envió texto al portapapeles remoto ({paste_note})",
+                            message=f"{user['display_name']} envió texto al portapapeles remoto ({paste_note})",
                         )
-                        await hub.broadcast_new_log(log_entry)
+                        await hub.broadcast_new_log(log_entry, tenant_id=ag.tenant_id)
 
                 elif msg_type == "audio_chunk":
                     target_id = data.get("agent_id") or hub.subscriptions.get(websocket)
                     wav_b64 = data.get("wav_b64", "")
-                    if target_id and wav_b64:
+                    if target_id and wav_b64 and hub.can_user_access_agent(user, target_id) and user.get("can_control", True):
                         await hub.send_to_agent(
                             target_id,
                             {
@@ -1033,7 +1422,7 @@ async def ws_admin_endpoint(websocket: WebSocket):
 
                 elif msg_type == "audit_ptt_start":
                     target_id = data.get("agent_id") or hub.subscriptions.get(websocket)
-                    if target_id and target_id in hub.agents:
+                    if target_id and target_id in hub.agents and hub.can_user_access_agent(user, target_id) and user.get("can_control", True):
                         ag = hub.agents[target_id]
                         log_entry = db.add_log(
                             agent_id=ag.agent_id,
@@ -1041,13 +1430,15 @@ async def ws_admin_endpoint(websocket: WebSocket):
                             hostname=ag.hostname,
                             username=ag.username,
                             category="AUDIT",
-                            message="Administrador transmitió voz en directo (Push-to-Talk) hacia el equipo",
+                            message=f"{user['display_name']} transmitió voz en directo (Push-to-Talk) hacia el equipo",
                         )
-                        await hub.broadcast_new_log(log_entry)
+                        await hub.broadcast_new_log(log_entry, tenant_id=ag.tenant_id)
 
                 else:
                     target_id = data.get("agent_id") or hub.subscriptions.get(websocket)
-                    if target_id:
+                    if target_id and hub.can_user_access_agent(user, target_id):
+                        if msg_type in ("mouse_move", "mouse_click", "mouse_scroll", "key_event", "shortcut") and not user.get("can_control", True):
+                            continue
                         if msg_type == "set_stream_config":
                             ag = hub.agents.get(target_id)
                             if ag:

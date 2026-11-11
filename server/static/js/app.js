@@ -2,15 +2,25 @@
   // Limpiar clave antigua sin sesión explícita para no exponer el panel automáticamente
   localStorage.removeItem('ra_admin_password');
 
+  let savedUserObj = null;
+  try {
+    const rawUser = sessionStorage.getItem('ra_session_user_obj') || localStorage.getItem('ra_remember_user_obj');
+    if (rawUser) savedUserObj = JSON.parse(rawUser);
+  } catch (_) {}
+
   const state = {
     ws: null,
     username: sessionStorage.getItem('ra_session_user') || localStorage.getItem('ra_remember_user') || 'admin',
     password: sessionStorage.getItem('ra_session_pass') || localStorage.getItem('ra_remember_pass') || '',
+    user: savedUserObj,
+    tenants: [],
+    usersList: [],
     authenticated: false,
     agents: new Map(),
     knownDevices: [],
     offlineCount: 0,
     currentFilter: 'all',
+    tenantFilter: 'ALL',
     searchQuery: '',
     currentView: 'wall',
     selectedAgentId: null,
@@ -29,6 +39,8 @@
   const loginSubmitBtn = document.getElementById('login-submit-btn');
   const authError = document.getElementById('auth-error');
   const logoutBtn = document.getElementById('logout-btn');
+  const activeUserBadge = document.getElementById('active-user-badge');
+  const navOnlineBadge = document.getElementById('nav-online-badge');
 
   if (userInput) {
     userInput.value = state.username || 'admin';
@@ -50,12 +62,14 @@
   const tabViewer = document.getElementById('tab-viewer');
   const tabActivity = document.getElementById('tab-activity');
   const tabLogs = document.getElementById('tab-logs');
+  const tabSettings = document.getElementById('tab-settings');
   const tabViewerLabel = document.getElementById('tab-viewer-label');
 
   const viewWall = document.getElementById('view-wall');
   const viewViewer = document.getElementById('view-viewer');
   const viewActivity = document.getElementById('view-activity');
   const viewLogs = document.getElementById('view-logs');
+  const viewSettings = document.getElementById('view-settings');
 
   // Vista 1: Muro
   const emptyState = document.getElementById('empty-state');
@@ -67,12 +81,15 @@
   const countOffline = document.getElementById('count-offline');
   const searchInput = document.getElementById('search-input');
   const refreshThumbsBtn = document.getElementById('refresh-thumbs-btn');
+  const wallTenantFilterWrap = document.getElementById('wall-tenant-filter-wrap');
+  const wallTenantFilter = document.getElementById('wall-tenant-filter');
 
   // Vista 2: Visor
   const backToWallBtn = document.getElementById('back-to-wall-btn');
   const viewerStatusDot = document.getElementById('viewer-status-dot');
   const viewerDeviceAlias = document.getElementById('viewer-device-alias');
   const viewerEditAliasBtn = document.getElementById('viewer-edit-alias-btn');
+  const viewerUnlinkBtn = document.getElementById('viewer-unlink-btn');
   const viewerActiveWindow = document.getElementById('viewer-active-window');
   const monitorSelect = document.getElementById('monitor-select');
   const qualitySelect = document.getElementById('quality-select');
@@ -85,6 +102,30 @@
   const viewerLogsBtn = document.getElementById('viewer-logs-btn');
   const fullscreenBtn = document.getElementById('fullscreen-btn');
   const viewerLoading = document.getElementById('viewer-loading');
+
+  // Vista 5: Ajustes Multi-Tenant y Modal de Usuario
+  const usersTbody = document.getElementById('users-tbody');
+  const settingsDevicesTbody = document.getElementById('settings-devices-tbody');
+  const openCreateUserBtn = document.getElementById('open-create-user-btn');
+  const createUserBtnLabel = document.getElementById('create-user-btn-label');
+  const settingsUsersTitle = document.getElementById('settings-users-title');
+  const refreshSettingsBtn = document.getElementById('refresh-settings-btn');
+  const userModal = document.getElementById('user-modal');
+  const userModalTitle = document.getElementById('user-modal-title');
+  const userForm = document.getElementById('user-form');
+  const userEditId = document.getElementById('user-edit-id');
+  const userDisplayInput = document.getElementById('user-display-input');
+  const userUsernameInput = document.getElementById('user-username-input');
+  const userPasswordInput = document.getElementById('user-password-input');
+  const userRoleWrap = document.getElementById('user-role-wrap');
+  const userRoleSelect = document.getElementById('user-role-select');
+  const userTenantWrap = document.getElementById('user-tenant-wrap');
+  const userTenantSelect = document.getElementById('user-tenant-select');
+  const userControlCheck = document.getElementById('user-control-check');
+  const userFormError = document.getElementById('user-form-error');
+  const closeUserModalBtn = document.getElementById('close-user-modal-btn');
+  const pkgTenantRow = document.getElementById('pkg-tenant-row');
+  const pkgTenantSelect = document.getElementById('pkg-tenant-select');
 
   // Fase 3: Panel Lateral de Chat
   const chatSidebar = document.getElementById('chat-sidebar');
@@ -296,6 +337,8 @@
           username: dev.username || '---',
           local_ip: dev.local_ip || '---',
           last_seen_at: dev.last_seen_at || '---',
+          tenant_id: dev.tenant_id || 'sitai-master',
+          tenant_name: dev.tenant_name || 'SITAI Principal',
           activity_status: 'offline',
           is_offline_card: true,
         });
@@ -304,10 +347,26 @@
     return offlineList;
   }
 
+  function canManageDevices() {
+    return !state.user || state.user.role === 'superadmin' || state.user.role === 'tenant_admin';
+  }
+
+  function isSuperAdmin() {
+    return Boolean(state.user && state.user.role === 'superadmin');
+  }
+
   function updateCountersAndGrid() {
-    const onlineList = Array.from(state.agents.values());
-    const offlineList = buildOfflineWallItems();
+    const tFilter = state.tenantFilter || 'ALL';
+    const rawOnlineList = Array.from(state.agents.values());
+    const rawOfflineList = buildOfflineWallItems();
+
+    const onlineList = rawOnlineList.filter((ag) => tFilter === 'ALL' || ag.tenant_id === tFilter);
+    const offlineList = rawOfflineList.filter((ag) => tFilter === 'ALL' || ag.tenant_id === tFilter);
     const allItems = [...onlineList, ...offlineList];
+
+    if (navOnlineBadge) {
+      navOnlineBadge.textContent = String(onlineList.length);
+    }
 
     let activeCount = 0;
     let idleCount = 0;
@@ -342,12 +401,33 @@
         return false;
       }
       if (!q) return true;
-      const hay = `${ag.alias} ${ag.hostname} ${ag.username} ${ag.local_ip} ${ag.active_window || ''}`.toLowerCase();
+      const hay = `${ag.alias} ${ag.hostname} ${ag.username} ${ag.local_ip} ${ag.active_window || ''} ${ag.tenant_name || ''}`.toLowerCase();
       return hay.includes(q);
     });
 
+    const showManageBtns = canManageDevices();
+    const showTenantPill = isSuperAdmin();
+
     agentsGrid.innerHTML = filtered
       .map((ag) => {
+        const tenantTagHtml = showTenantPill
+          ? ` • <strong style="color:#0284c7;">${escapeHtml(ag.tenant_name || ag.tenant_id || 'Principal')}</strong>`
+          : '';
+        const manageIconsHtml = showManageBtns
+          ? `
+            <button type="button" class="icon-btn js-edit-alias" data-agent-id="${escapeHtml(ag.agent_id)}" title="Renombrar">
+              <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+              </svg>
+            </button>
+            <button type="button" class="icon-btn icon-btn-danger js-unlink-device" data-agent-id="${escapeHtml(ag.agent_id)}" data-alias="${escapeHtml(ag.alias)}" title="Desvincular o autodestruir equipo">
+              <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+            </button>
+          `
+          : '';
+
         if (ag.is_offline_card) {
           return `
             <article class="agent-card card-offline-minimal" data-agent-id="${escapeHtml(ag.agent_id)}">
@@ -372,16 +452,12 @@
                 <div class="card-identity-row">
                   <div class="card-alias-wrap">
                     <span class="card-alias" title="${escapeHtml(ag.alias)}">${escapeHtml(ag.alias)}</span>
-                    <button type="button" class="icon-btn js-edit-alias" data-agent-id="${escapeHtml(ag.agent_id)}" title="Renombrar">
-                      <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                        <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-                      </svg>
-                    </button>
+                    ${manageIconsHtml}
                   </div>
                   <span class="card-ip-pill">${escapeHtml(ag.local_ip || '---')}</span>
                 </div>
 
-                <p class="card-submeta">${escapeHtml(ag.hostname)} • ${escapeHtml(ag.username)}</p>
+                <p class="card-submeta">${escapeHtml(ag.hostname)} • ${escapeHtml(ag.username)}${tenantTagHtml}</p>
 
                 <div class="card-focus-bar focus-bar-offline">
                   <span class="focus-win-text">Sin conexión activa</span>
@@ -396,6 +472,11 @@
                 <button type="button" class="btn btn-pastel-orange card-btn-side js-open-logs" data-agent-id="${escapeHtml(ag.agent_id)}" title="Ver bitácora">
                   <span>Bitácora</span>
                 </button>
+                ${
+                  showManageBtns
+                    ? `<button type="button" class="btn btn-danger-soft card-btn-side js-unlink-device" data-agent-id="${escapeHtml(ag.agent_id)}" data-alias="${escapeHtml(ag.alias)}" title="Quitar o autodestruir equipo"><span>Quitar</span></button>`
+                    : ''
+                }
               </div>
             </article>
           `;
@@ -427,16 +508,12 @@
               <div class="card-identity-row">
                 <div class="card-alias-wrap">
                   <span class="card-alias" title="${escapeHtml(ag.alias)}">${escapeHtml(ag.alias)}</span>
-                  <button type="button" class="icon-btn js-edit-alias" data-agent-id="${escapeHtml(ag.agent_id)}" title="Renombrar">
-                    <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                      <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-                    </svg>
-                  </button>
+                  ${manageIconsHtml}
                 </div>
                 <span class="card-ip-pill">${escapeHtml(ag.local_ip || '---')}</span>
               </div>
 
-              <p class="card-submeta">${escapeHtml(ag.hostname)} • ${escapeHtml(ag.username)}</p>
+              <p class="card-submeta">${escapeHtml(ag.hostname)} • ${escapeHtml(ag.username)}${tenantTagHtml}</p>
 
               <div class="card-focus-bar">
                 <span class="focus-win-text" title="${escapeHtml(ag.active_window || 'Escritorio')}">${escapeHtml(ag.active_window || 'Escritorio')}</span>
@@ -457,6 +534,11 @@
               <button type="button" class="btn btn-pastel-orange card-btn-side js-open-logs" data-agent-id="${escapeHtml(ag.agent_id)}" title="Ver bitácora del equipo">
                 <span>Logs</span>
               </button>
+              ${
+                showManageBtns
+                  ? `<button type="button" class="btn btn-danger-soft card-btn-side js-unlink-device" data-agent-id="${escapeHtml(ag.agent_id)}" data-alias="${escapeHtml(ag.alias)}" title="Quitar o autodestruir equipo"><span>Quitar</span></button>`
+                  : ''
+              }
             </div>
           </article>
         `;
@@ -480,8 +562,9 @@
 
   async function loadDailyMetrics() {
     const dateVal = metricsDateInput.value || todayIso;
+    const tParam = state.tenantFilter && state.tenantFilter !== 'ALL' ? `&tenant_id=${encodeURIComponent(state.tenantFilter)}` : '';
     try {
-      const res = await authFetch(`/api/metrics?date=${encodeURIComponent(dateVal)}`);
+      const res = await authFetch(`/api/metrics?date=${encodeURIComponent(dateVal)}${tParam}`);
       const data = await res.json();
       const rows = data.metrics || [];
       if (rows.length === 0) {
@@ -586,6 +669,9 @@
       q,
       limit: '250',
     });
+    if (state.tenantFilter && state.tenantFilter !== 'ALL') {
+      params.set('tenant_id', state.tenantFilter);
+    }
 
     try {
       const res = await authFetch(`/api/logs?${params.toString()}`);
@@ -757,25 +843,36 @@
       viewer: viewViewer,
       activity: viewActivity,
       logs: viewLogs,
+      settings: viewSettings,
     };
     const tabs = {
       wall: tabWall,
       viewer: tabViewer,
       activity: tabActivity,
       logs: tabLogs,
+      settings: tabSettings,
     };
 
     Object.keys(views).forEach((k) => {
-      views[k].classList.toggle('hidden', k !== target);
-      tabs[k].classList.toggle('active', k === target);
+      if (views[k]) views[k].classList.toggle('hidden', k !== target);
+      if (tabs[k]) tabs[k].classList.toggle('active', k === target);
     });
 
     if (target === 'activity') {
       loadDailyMetrics();
     } else if (target === 'logs') {
       fetchLogsFromServer();
+    } else if (target === 'settings') {
+      loadSettingsView();
     }
   }
+
+  const unlinkModal = document.getElementById('unlink-modal');
+  const unlinkForm = document.getElementById('unlink-form');
+  const unlinkAgentIdInput = document.getElementById('unlink-agent-id');
+  const unlinkDeviceName = document.getElementById('unlink-device-name');
+  const unlinkCancelBtn = document.getElementById('unlink-cancel-btn');
+  const unlinkConfirmBtn = document.getElementById('unlink-confirm-btn');
 
   function openAliasEditor(agentId) {
     const ag = state.agents.get(agentId) || (state.knownDevices || []).find((d) => d.agent_id === agentId);
@@ -785,6 +882,266 @@
     aliasModal.classList.remove('hidden');
     aliasTextInput.focus();
     aliasTextInput.select();
+  }
+
+  function openUnlinkModal(agentId, alias) {
+    if (!agentId || !unlinkModal) return;
+    const ag = state.agents.get(agentId) || (state.knownDevices || []).find((d) => d.agent_id === agentId);
+    const name = alias || (ag ? (ag.alias || ag.hostname) : agentId);
+    if (unlinkAgentIdInput) unlinkAgentIdInput.value = agentId;
+    if (unlinkDeviceName) unlinkDeviceName.textContent = name;
+    unlinkModal.classList.remove('hidden');
+  }
+
+  function applyUserPermissions(user) {
+    if (!user) return;
+    state.user = user;
+
+    if (activeUserBadge) {
+      let roleLabel = 'SUPER ADMIN';
+      if (user.role === 'tenant_admin') {
+        roleLabel = `TENANT • ${user.tenant_name || user.display_name}`;
+      } else if (user.role === 'sub_user') {
+        roleLabel = `SUB-USUARIO • ${user.display_name}`;
+      } else {
+        roleLabel = `SUPER ADMIN • ${user.display_name || user.username}`;
+      }
+      activeUserBadge.textContent = roleLabel;
+    }
+
+    const isSub = user.role === 'sub_user';
+    const isSuper = user.role === 'superadmin';
+
+    if (tabSettings) {
+      tabSettings.classList.toggle('hidden', isSub);
+    }
+    if (openAgentPkgBtn) {
+      openAgentPkgBtn.classList.toggle('hidden', isSub);
+    }
+    if (wallTenantFilterWrap) {
+      wallTenantFilterWrap.classList.toggle('hidden', !isSuper);
+    }
+    if (pkgTenantRow) {
+      pkgTenantRow.classList.toggle('hidden', !isSuper);
+    }
+
+    if (isSub && !user.can_control) {
+      if (toggleControlBtn) toggleControlBtn.classList.add('hidden');
+      if (pttBtn) pttBtn.classList.add('hidden');
+      if (openClipboardBtn) openClipboardBtn.classList.add('hidden');
+      if (openFileBtn) openFileBtn.classList.add('hidden');
+      if (viewerUnlinkBtn) viewerUnlinkBtn.classList.add('hidden');
+    } else {
+      if (toggleControlBtn) toggleControlBtn.classList.remove('hidden');
+      if (pttBtn) pttBtn.classList.remove('hidden');
+      if (openClipboardBtn) openClipboardBtn.classList.remove('hidden');
+      if (openFileBtn) openFileBtn.classList.remove('hidden');
+      if (viewerUnlinkBtn) viewerUnlinkBtn.classList.toggle('hidden', isSub);
+    }
+  }
+
+  function populateTenantDropdowns() {
+    const list = state.tenants || [];
+    if (wallTenantFilter) {
+      const currentVal = state.tenantFilter || 'ALL';
+      let html = '<option value="ALL">Todas las cuentas (Tenants)</option>';
+      list.forEach((t) => {
+        const sel = t.tenant_id === currentVal ? 'selected' : '';
+        html += `<option value="${escapeHtml(t.tenant_id)}" ${sel}>${escapeHtml(t.name)} (${t.devices_count || 0})</option>`;
+      });
+      wallTenantFilter.innerHTML = html;
+    }
+    if (pkgTenantSelect) {
+      let html = '';
+      list.forEach((t) => {
+        html += `<option value="${escapeHtml(t.tenant_id)}">${escapeHtml(t.name)}</option>`;
+      });
+      pkgTenantSelect.innerHTML = html;
+    }
+    if (userTenantSelect) {
+      let html = '';
+      list.forEach((t) => {
+        html += `<option value="${escapeHtml(t.tenant_id)}">${escapeHtml(t.name)}</option>`;
+      });
+      userTenantSelect.innerHTML = html;
+    }
+  }
+
+  async function refreshCurrentUserProfile() {
+    if (!state.password) return;
+    try {
+      const res = await authFetch('/api/me');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.user) {
+          applyUserPermissions(data.user);
+        }
+        if (Array.isArray(data.tenants)) {
+          state.tenants = data.tenants;
+          populateTenantDropdowns();
+        }
+      }
+    } catch (_) {}
+  }
+
+  async function loadSettingsView() {
+    if (!usersTbody) return;
+    try {
+      const res = await authFetch('/api/users');
+      if (!res.ok) return;
+      const data = await res.json();
+      state.usersList = data.users || [];
+      state.tenants = data.tenants || [];
+      populateTenantDropdowns();
+
+      if (state.usersList.length === 0) {
+        usersTbody.innerHTML = '<tr><td colspan="7" class="empty-row">No hay usuarios registrados.</td></tr>';
+      } else {
+        const myId = state.user ? state.user.id : 0;
+        usersTbody.innerHTML = state.usersList
+          .map((u) => {
+            const roleLabels = {
+              superadmin: 'Super Admin',
+              tenant_admin: 'Usuario Principal',
+              sub_user: 'Sub-usuario',
+            };
+            const roleClasses = {
+              superadmin: 'badge-active',
+              tenant_admin: 'cat-WINDOW',
+              sub_user: 'badge-idle',
+            };
+            const permText = u.can_control ? 'Control Total' : 'Solo Lectura';
+            const permClass = u.can_control ? 'text-emerald' : 'muted-text';
+            const isSelf = u.id === myId;
+            const canDelete = !isSelf && u.role !== 'superadmin';
+
+            return `
+              <tr>
+                <td><strong>${escapeHtml(u.display_name)}</strong></td>
+                <td><code>${escapeHtml(u.username)}</code></td>
+                <td><span class="badge-status ${roleClasses[u.role] || 'badge-idle'}">${escapeHtml(roleLabels[u.role] || u.role)}</span></td>
+                <td>${escapeHtml(u.tenant_name || u.tenant_id)}</td>
+                <td><span class="${permClass}">${permText}</span></td>
+                <td><strong>${u.devices_count || 0}</strong></td>
+                <td>
+                  <div style="display:flex; gap:6px;">
+                    <button type="button" class="btn btn-secondary btn-sm js-edit-user" data-user-id="${u.id}">Editar</button>
+                    ${
+                      canDelete
+                        ? `<button type="button" class="btn btn-danger-soft btn-sm js-delete-user" data-user-id="${u.id}" data-name="${escapeHtml(u.display_name)}">Eliminar</button>`
+                        : ''
+                    }
+                  </div>
+                </td>
+              </tr>
+            `;
+          })
+          .join('');
+      }
+
+      const devList = data.devices || [];
+      if (settingsDevicesTbody) {
+        if (devList.length === 0) {
+          settingsDevicesTbody.innerHTML = '<tr><td colspan="5" class="empty-row">Sin equipos registrados.</td></tr>';
+        } else {
+          const isSuper = isSuperAdmin();
+          settingsDevicesTbody.innerHTML = devList
+            .map((d) => {
+              const isOnline = state.agents.has(d.agent_id);
+              const statusBadge = isOnline
+                ? `<span class="badge-status badge-active"><span class="indicator-dot dot-emerald"></span>En línea</span>`
+                : `<span class="badge-status cat-NETWORK"><span class="indicator-dot dot-slate"></span>Desconectado</span>`;
+
+              let tenantCell = escapeHtml(d.tenant_name || d.tenant_id || 'Principal');
+              if (isSuper && state.tenants.length > 0) {
+                tenantCell = `
+                  <select class="text-input js-change-device-tenant" data-agent-id="${escapeHtml(d.agent_id)}" style="padding:4px 8px; font-size:12px;">
+                    ${state.tenants
+                      .map((t) => `<option value="${escapeHtml(t.tenant_id)}" ${t.tenant_id === d.tenant_id ? 'selected' : ''}>${escapeHtml(t.name)}</option>`)
+                      .join('')}
+                  </select>
+                `;
+              }
+
+              return `
+                <tr>
+                  <td><strong>${escapeHtml(d.alias || d.hostname || d.agent_id)}</strong></td>
+                  <td>${escapeHtml(d.hostname)} (${escapeHtml(d.username)})</td>
+                  <td>${statusBadge}</td>
+                  <td>${tenantCell}</td>
+                  <td>
+                    <button type="button" class="btn btn-danger-soft btn-sm js-settings-unlink" data-agent-id="${escapeHtml(d.agent_id)}" data-alias="${escapeHtml(d.alias || d.hostname)}">
+                      Quitar / Autodestruir
+                    </button>
+                  </td>
+                </tr>
+              `;
+            })
+            .join('');
+        }
+      }
+    } catch (err) {
+      console.error('Error al cargar ajustes:', err);
+    }
+  }
+
+  function openCreateUserModal() {
+    if (!userModal) return;
+    if (userModalTitle) userModalTitle.textContent = 'Nuevo Usuario';
+    if (userEditId) userEditId.value = '';
+    if (userDisplayInput) userDisplayInput.value = '';
+    if (userUsernameInput) {
+      userUsernameInput.value = '';
+      userUsernameInput.disabled = false;
+    }
+    if (userPasswordInput) {
+      userPasswordInput.value = '';
+      userPasswordInput.placeholder = 'Mínimo 4 caracteres';
+      userPasswordInput.required = true;
+    }
+    if (userControlCheck) userControlCheck.checked = true;
+    if (userFormError) userFormError.classList.add('hidden');
+
+    const isSuper = isSuperAdmin();
+    if (userRoleWrap) {
+      userRoleWrap.classList.toggle('hidden', !isSuper);
+    }
+    if (userRoleSelect) {
+      userRoleSelect.value = isSuper ? 'tenant_admin' : 'sub_user';
+    }
+    if (userTenantWrap) {
+      userTenantWrap.classList.add('hidden');
+    }
+    userModal.classList.remove('hidden');
+  }
+
+  function openEditUserModal(u) {
+    if (!userModal || !u) return;
+    if (userModalTitle) userModalTitle.textContent = `Editar Usuario: ${u.display_name}`;
+    if (userEditId) userEditId.value = String(u.id);
+    if (userDisplayInput) userDisplayInput.value = u.display_name || '';
+    if (userUsernameInput) {
+      userUsernameInput.value = u.username || '';
+      userUsernameInput.disabled = true;
+    }
+    if (userPasswordInput) {
+      userPasswordInput.value = '';
+      userPasswordInput.placeholder = '(Dejar en blanco para conservar actual)';
+      userPasswordInput.required = false;
+    }
+    if (userControlCheck) userControlCheck.checked = Boolean(u.can_control);
+    if (userFormError) userFormError.classList.add('hidden');
+
+    if (userRoleWrap) userRoleWrap.classList.add('hidden');
+    if (userTenantWrap) {
+      if (isSuperAdmin() && u.role === 'sub_user') {
+        userTenantWrap.classList.remove('hidden');
+        if (userTenantSelect) userTenantSelect.value = u.tenant_id;
+      } else {
+        userTenantWrap.classList.add('hidden');
+      }
+    }
+    userModal.classList.remove('hidden');
   }
 
   function showLoginGate(showError = false) {
@@ -804,11 +1161,14 @@
 
   function logoutAdminSession() {
     state.password = '';
+    state.user = null;
     state.authenticated = false;
     sessionStorage.removeItem('ra_session_user');
     sessionStorage.removeItem('ra_session_pass');
+    sessionStorage.removeItem('ra_session_user_obj');
     localStorage.removeItem('ra_remember_user');
     localStorage.removeItem('ra_remember_pass');
+    localStorage.removeItem('ra_remember_user_obj');
     if (passInput) passInput.value = '';
     if (state.ws) {
       try {
@@ -1018,19 +1378,35 @@
         throw new Error('Credenciales inválidas');
       }
 
-      state.username = enteredUser;
-      state.password = enteredPass;
-      sessionStorage.setItem('ra_session_user', enteredUser);
-      sessionStorage.setItem('ra_session_pass', enteredPass);
+      const data = await res.json();
+      state.username = data.username || enteredUser;
+      state.password = data.token || enteredPass;
+      state.user = data.user || null;
+
+      if (Array.isArray(data.tenants)) {
+        state.tenants = data.tenants;
+        populateTenantDropdowns();
+      }
+
+      sessionStorage.setItem('ra_session_user', state.username);
+      sessionStorage.setItem('ra_session_pass', state.password);
+      if (state.user) {
+        sessionStorage.setItem('ra_session_user_obj', JSON.stringify(state.user));
+      }
 
       if (rememberSessionCheck && rememberSessionCheck.checked) {
-        localStorage.setItem('ra_remember_user', enteredUser);
-        localStorage.setItem('ra_remember_pass', enteredPass);
+        localStorage.setItem('ra_remember_user', state.username);
+        localStorage.setItem('ra_remember_pass', state.password);
+        if (state.user) {
+          localStorage.setItem('ra_remember_user_obj', JSON.stringify(state.user));
+        }
       } else {
         localStorage.removeItem('ra_remember_user');
         localStorage.removeItem('ra_remember_pass');
+        localStorage.removeItem('ra_remember_user_obj');
       }
 
+      applyUserPermissions(state.user);
       unlockDashboard();
       if (state.ws) {
         try {
@@ -1074,6 +1450,12 @@
   });
 
   agentsGrid.addEventListener('click', (e) => {
+    const unlinkBtn = e.target.closest('.js-unlink-device');
+    if (unlinkBtn) {
+      e.stopPropagation();
+      openUnlinkModal(unlinkBtn.dataset.agentId, unlinkBtn.dataset.alias);
+      return;
+    }
     const editBtn = e.target.closest('.js-edit-alias');
     if (editBtn) {
       e.stopPropagation();
@@ -1136,6 +1518,9 @@
   });
   tabActivity.addEventListener('click', () => switchView('activity'));
   tabLogs.addEventListener('click', () => switchView('logs'));
+  if (tabSettings) {
+    tabSettings.addEventListener('click', () => switchView('settings'));
+  }
 
   backToWallBtn.addEventListener('click', () => switchView('wall'));
 
@@ -1144,6 +1529,15 @@
       openAliasEditor(state.selectedAgentId);
     }
   });
+
+  if (viewerUnlinkBtn) {
+    viewerUnlinkBtn.addEventListener('click', () => {
+      if (state.selectedAgentId) {
+        const ag = state.agents.get(state.selectedAgentId);
+        openUnlinkModal(state.selectedAgentId, ag ? (ag.alias || ag.hostname) : (viewerDeviceAlias ? viewerDeviceAlias.textContent : ''));
+      }
+    });
+  }
 
   viewerLogsBtn.addEventListener('click', () => {
     if (state.selectedAgentId) {
@@ -1455,13 +1849,229 @@
       e.preventDefault();
       const alias = pkgAliasInput ? pkgAliasInput.value.trim() : '';
       const serverUrl = pkgServerUrlInput ? pkgServerUrlInput.value.trim() : '';
+      const tenantId = pkgTenantSelect ? pkgTenantSelect.value : '';
       const params = new URLSearchParams();
       if (serverUrl) params.set('server_url', serverUrl);
       if (alias) params.set('alias', alias);
+      if (tenantId) params.set('tenant_id', tenantId);
       if (state.password) params.set('admin_pass', state.password);
       window.location.href = `/api/download-agent?${params.toString()}`;
       if (agentPkgModal) {
         setTimeout(() => agentPkgModal.classList.add('hidden'), 400);
+      }
+    });
+  }
+
+  if (unlinkCancelBtn && unlinkModal) {
+    unlinkCancelBtn.addEventListener('click', () => {
+      unlinkModal.classList.add('hidden');
+    });
+  }
+
+  if (unlinkForm) {
+    unlinkForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const agentId = unlinkAgentIdInput ? unlinkAgentIdInput.value : '';
+      if (!agentId) return;
+
+      const destroyEl = document.getElementById('unlink-mode-destroy');
+      const isDestroy = destroyEl ? destroyEl.checked : true;
+
+      if (unlinkConfirmBtn) {
+        unlinkConfirmBtn.disabled = true;
+        unlinkConfirmBtn.textContent = 'Procesando...';
+      }
+
+      try {
+        const res = await authFetch(`/api/devices/${encodeURIComponent(agentId)}?self_destruct=${isDestroy ? 'true' : 'false'}`, {
+          method: 'DELETE',
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || 'Error al quitar el equipo');
+        }
+
+        state.agents.delete(agentId);
+        state.knownDevices = (state.knownDevices || []).filter((d) => d.agent_id !== agentId);
+
+        if (unlinkModal) unlinkModal.classList.add('hidden');
+        updateCountersAndGrid();
+        populateLogDeviceSelector();
+
+        if (state.currentView === 'viewer' && state.selectedAgentId === agentId) {
+          switchView('wall');
+        }
+        if (state.currentView === 'settings') {
+          loadSettingsView();
+        }
+      } catch (err) {
+        alert(err.message || 'Error al desvincular o autodestruir el equipo');
+      } finally {
+        if (unlinkConfirmBtn) {
+          unlinkConfirmBtn.disabled = false;
+          unlinkConfirmBtn.textContent = 'Confirmar y Quitar Equipo';
+        }
+      }
+    });
+  }
+
+  if (wallTenantFilter) {
+    wallTenantFilter.addEventListener('change', () => {
+      state.tenantFilter = wallTenantFilter.value || 'ALL';
+      updateCountersAndGrid();
+      if (state.currentView === 'activity') loadDailyMetrics();
+      if (state.currentView === 'logs') fetchLogsFromServer();
+    });
+  }
+
+  if (openCreateUserBtn) {
+    openCreateUserBtn.addEventListener('click', openCreateUserModal);
+  }
+
+  if (closeUserModalBtn && userModal) {
+    closeUserModalBtn.addEventListener('click', () => {
+      userModal.classList.add('hidden');
+    });
+  }
+
+  if (refreshSettingsBtn) {
+    refreshSettingsBtn.addEventListener('click', loadSettingsView);
+  }
+
+  if (userRoleSelect) {
+    userRoleSelect.addEventListener('change', () => {
+      const isSub = userRoleSelect.value === 'sub_user';
+      if (userTenantWrap) {
+        userTenantWrap.classList.toggle('hidden', !isSub || !isSuperAdmin());
+      }
+    });
+  }
+
+  if (userForm) {
+    userForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (userFormError) userFormError.classList.add('hidden');
+
+      const editId = userEditId ? userEditId.value.trim() : '';
+      const display_name = userDisplayInput ? userDisplayInput.value.trim() : '';
+      const username = userUsernameInput ? userUsernameInput.value.trim() : '';
+      const password = userPasswordInput ? userPasswordInput.value : '';
+      const role = userRoleSelect ? userRoleSelect.value : 'sub_user';
+      const tenant_id = userTenantSelect ? userTenantSelect.value : '';
+      const can_control = userControlCheck ? userControlCheck.checked : true;
+
+      try {
+        if (!editId) {
+          if (!username || !password || !display_name) {
+            throw new Error('Todos los campos son obligatorios para crear un usuario.');
+          }
+          const payload = {
+            username,
+            password,
+            display_name,
+            role: isSuperAdmin() ? role : 'sub_user',
+            tenant_id: isSuperAdmin() && role === 'sub_user' ? tenant_id : null,
+            can_control,
+          };
+          const res = await authFetch('/api/users', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || 'Error al crear usuario');
+        } else {
+          const payload = {
+            display_name,
+            can_control,
+          };
+          if (password) payload.password = password;
+          if (isSuperAdmin() && tenant_id) payload.tenant_id = tenant_id;
+
+          const res = await authFetch(`/api/users/${editId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || 'Error al actualizar usuario');
+        }
+
+        if (userModal) userModal.classList.add('hidden');
+        loadSettingsView();
+      } catch (err) {
+        if (userFormError) {
+          userFormError.textContent = err.message || 'Error al procesar solicitud.';
+          userFormError.classList.remove('hidden');
+        }
+      }
+    });
+  }
+
+  if (usersTbody) {
+    usersTbody.addEventListener('click', async (e) => {
+      const editBtn = e.target.closest('.js-edit-user');
+      if (editBtn) {
+        const uid = Number(editBtn.dataset.userId);
+        const u = (state.usersList || []).find((x) => x.id === uid);
+        if (u) openEditUserModal(u);
+        return;
+      }
+      const delBtn = e.target.closest('.js-delete-user');
+      if (delBtn) {
+        const uid = Number(delBtn.dataset.userId);
+        const name = delBtn.dataset.name || 'este usuario';
+        if (confirm(`¿Estás seguro de eliminar permanentemente al usuario "${name}"?`)) {
+          try {
+            const res = await authFetch(`/api/users/${uid}`, { method: 'DELETE' });
+            if (!res.ok) {
+              const err = await res.json();
+              alert(err.detail || 'Error al eliminar usuario');
+            } else {
+              loadSettingsView();
+            }
+          } catch (err) {
+            alert('Error de conexión al eliminar: ' + err.message);
+          }
+        }
+      }
+    });
+  }
+
+  if (settingsDevicesTbody) {
+    settingsDevicesTbody.addEventListener('click', (e) => {
+      const unlinkBtn = e.target.closest('.js-settings-unlink');
+      if (unlinkBtn) {
+        openUnlinkModal(unlinkBtn.dataset.agentId, unlinkBtn.dataset.alias);
+      }
+    });
+
+    settingsDevicesTbody.addEventListener('change', async (e) => {
+      const sel = e.target.closest('.js-change-device-tenant');
+      if (sel) {
+        const agentId = sel.dataset.agentId;
+        const newTid = sel.value;
+        try {
+          const res = await authFetch(`/api/devices/${encodeURIComponent(agentId)}/tenant`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tenant_id: newTid }),
+          });
+          if (!res.ok) {
+            const err = await res.json();
+            alert(err.detail || 'Error al reasignar cuenta');
+            loadSettingsView();
+          } else {
+            const ag = state.agents.get(agentId);
+            if (ag) ag.tenant_id = newTid;
+            const kd = (state.knownDevices || []).find((d) => d.agent_id === agentId);
+            if (kd) kd.tenant_id = newTid;
+            updateCountersAndGrid();
+          }
+        } catch (err) {
+          alert('Error al reasignar: ' + err.message);
+          loadSettingsView();
+        }
       }
     });
   }
@@ -1514,8 +2124,12 @@
   });
 
   if (state.password) {
+    if (state.user) {
+      applyUserPermissions(state.user);
+    }
     unlockDashboard();
     connectAdminWebSocket();
+    refreshCurrentUserProfile();
   } else {
     showLoginGate(false);
   }
