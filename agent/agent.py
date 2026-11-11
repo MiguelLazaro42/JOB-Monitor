@@ -1254,6 +1254,39 @@ class SilentRemoteAgent:
             self._typing_debounce_timer.daemon = True
             self._typing_debounce_timer.start()
 
+    def capture_evidence_webp(self, sct: Optional[mss.base.MSSBase] = None) -> tuple[str, str]:
+        """
+        Captura la pantalla actual en alta resolución (hasta 1920px de ancho) y la comprime
+        en formato WebP (calidad 80, método 4) para anexar evidencia visual tipo DVR a eventos de bitácora.
+        """
+        screenshot_b64 = ""
+        screenshot_fmt = "webp"
+        try:
+            if sct is not None:
+                mon_idx = min(self.current_monitor, len(sct.monitors) - 1)
+                mon = sct.monitors[mon_idx]
+                raw_grab = sct.grab(mon)
+            else:
+                with mss.mss() as local_sct:
+                    mon_idx = min(self.current_monitor, len(local_sct.monitors) - 1)
+                    mon = local_sct.monitors[mon_idx]
+                    raw_grab = local_sct.grab(mon)
+            img = Image.frombytes("RGB", raw_grab.size, raw_grab.bgra, "raw", "BGRX")
+            if img.width > 1920:
+                ratio = 1920.0 / img.width
+                img = img.resize((1920, int(img.height * ratio)), Image.LANCZOS)
+            buf = io.BytesIO()
+            try:
+                img.save(buf, format="WEBP", quality=80, method=4)
+            except Exception:
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=78, optimize=True)
+                screenshot_fmt = "jpg"
+            screenshot_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        except Exception:
+            pass
+        return screenshot_b64, screenshot_fmt
+
     def _on_typing_idle_timeout(self):
         """MF-04 & MF-05: Cierre de Sesión al expirar 15s sin pulsaciones y captura de pantalla."""
         with self._typing_lock:
@@ -1286,27 +1319,7 @@ class SilentRemoteAgent:
             self._typing_debounce_timer = None
 
         # MF-05: Captura de Pantalla en Alta Resolución con mss al segundo 15 (Compresión WebP sin pérdida visual)
-        screenshot_b64 = ""
-        screenshot_fmt = "webp"
-        try:
-            with mss.mss() as sct:
-                mon_idx = min(self.current_monitor, len(sct.monitors) - 1)
-                mon = sct.monitors[mon_idx]
-                raw_grab = sct.grab(mon)
-                img = Image.frombytes("RGB", raw_grab.size, raw_grab.bgra, "raw", "BGRX")
-                if img.width > 1920:
-                    ratio = 1920.0 / img.width
-                    img = img.resize((1920, int(img.height * ratio)), Image.LANCZOS)
-                buf = io.BytesIO()
-                try:
-                    img.save(buf, format="WEBP", quality=80, method=4)
-                except Exception:
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG", quality=78, optimize=True)
-                    screenshot_fmt = "jpg"
-                screenshot_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        except Exception:
-            pass
+        screenshot_b64, screenshot_fmt = self.capture_evidence_webp()
 
         # MF-06: Despacho asíncrono al WebSocket o cifrado inmediato en Bóveda Offline (.sitai)
         payload = {
@@ -1641,14 +1654,17 @@ class SilentRemoteAgent:
                 away_alert_triggered = False
 
                 # 1. Detectar cambio de ventana activa
+                prev_win_title = self.last_window_title
                 if current_win != self.last_window_title:
                     prev_duration = max(1, round(now_mono - self.window_started_at))
                     if prev_duration >= 2:
                         log_events.append({
                             "category": "WINDOW",
-                            "message": f"Cambió a '{current_win}' (permanencia previa en '{self.last_window_title}': {format_duration_es(prev_duration)})",
+                            "message": f"Cambió a '{current_win}' (permanencia previa en '{prev_win_title}': {format_duration_es(prev_duration)})",
                             "duration_seconds": prev_duration,
                             "timestamp": now_ts_str,
+                            "active_window": current_win,
+                            "previous_window": prev_win_title,
                         })
                     self.last_window_title = current_win
                     self.window_started_at = now_mono
@@ -1663,6 +1679,7 @@ class SilentRemoteAgent:
                             "message": f"Equipo entró en estado inactivo tras 3 minutos sin entrada (Ventana: {current_win})",
                             "duration_seconds": idle_secs,
                             "timestamp": now_ts_str,
+                            "active_window": current_win,
                         })
                     if idle_secs >= 600 and not self.was_away_10m:
                         self.was_away_10m = True
@@ -1672,6 +1689,7 @@ class SilentRemoteAgent:
                             "message": f"Alerta de ausencia prolongada: superó 10 minutos sin movimiento de mouse ni teclado (Ventana: {current_win})",
                             "duration_seconds": idle_secs,
                             "timestamp": now_ts_str,
+                            "active_window": current_win,
                         })
                 elif idle_secs < 15 and self.was_idle_3m:
                     log_events.append({
@@ -1679,10 +1697,19 @@ class SilentRemoteAgent:
                         "message": f"El usuario retomó actividad después de {format_duration_es(self.max_idle_reached)} de inactividad",
                         "duration_seconds": self.max_idle_reached,
                         "timestamp": now_ts_str,
+                        "active_window": current_win,
                     })
                     self.was_idle_3m = False
                     self.was_away_10m = False
                     self.max_idle_reached = 0
+
+                # 3. Modo DVR de Eventos: Captura de pantalla en WebP cuando ocurre cualquier evento de bitácora
+                if log_events:
+                    ev_sct_b64, ev_sct_fmt = self.capture_evidence_webp(sct)
+                    if ev_sct_b64:
+                        for ev_item in log_events:
+                            ev_item["screenshot_b64"] = ev_sct_b64
+                            ev_item["screenshot_format"] = ev_sct_fmt
 
                 if self.ws:
                     try:

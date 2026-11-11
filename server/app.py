@@ -1418,6 +1418,35 @@ async def get_capture_evidence(request: Request, agent_id: str, filename: str):
     )
 
 
+def _save_capture_bytes(agent_id: str, sct_b64: str, prefix: str = "ev") -> Optional[str]:
+    if not sct_b64:
+        return None
+    try:
+        img_bytes = base64.b64decode(sct_b64)
+        agent_captures_dir = CAPTURES_DIR / agent_id
+        agent_captures_dir.mkdir(parents=True, exist_ok=True)
+        is_already_webp = len(img_bytes) > 12 and img_bytes[:4] == b"RIFF" and img_bytes[8:12] == b"WEBP"
+        ext = "webp"
+        if not is_already_webp:
+            try:
+                from PIL import Image
+                img_obj = Image.open(io.BytesIO(img_bytes))
+                if img_obj.mode not in ("RGB", "RGBA"):
+                    img_obj = img_obj.convert("RGB")
+                webp_buf = io.BytesIO()
+                img_obj.save(webp_buf, format="WEBP", quality=80, method=4)
+                img_bytes = webp_buf.getvalue()
+            except Exception:
+                ext = "jpg"
+        fname = f"{prefix}_{int(time.time())}_{uuid.uuid4().hex[:6]}.{ext}"
+        fpath = agent_captures_dir / fname
+        fpath.write_bytes(img_bytes)
+        return f"/api/captures/{agent_id}/{fname}"
+    except Exception as e:
+        print(f"[Captures] Error al almacenar evidencia visual: {e}")
+        return None
+
+
 async def _ingest_keyboard_event_payload(
     agent_id: str,
     agent: AgentConnection,
@@ -1433,31 +1462,7 @@ async def _ingest_keyboard_event_payload(
     sct_b64 = str(data.get("screenshot_b64", "")).strip()
     custom_ts = str(data.get("timestamp") or "").strip() if is_offline_replay else None
 
-    evidence_url = None
-    if sct_b64:
-        try:
-            img_bytes = base64.b64decode(sct_b64)
-            agent_captures_dir = CAPTURES_DIR / agent_id
-            agent_captures_dir.mkdir(parents=True, exist_ok=True)
-            is_already_webp = len(img_bytes) > 12 and img_bytes[:4] == b"RIFF" and img_bytes[8:12] == b"WEBP"
-            ext = "webp"
-            if not is_already_webp:
-                try:
-                    from PIL import Image
-                    img_obj = Image.open(io.BytesIO(img_bytes))
-                    if img_obj.mode not in ("RGB", "RGBA"):
-                        img_obj = img_obj.convert("RGB")
-                    webp_buf = io.BytesIO()
-                    img_obj.save(webp_buf, format="WEBP", quality=80, method=4)
-                    img_bytes = webp_buf.getvalue()
-                except Exception:
-                    ext = "jpg"
-            fname = f"kb_{int(time.time())}_{uuid.uuid4().hex[:6]}.{ext}"
-            fpath = agent_captures_dir / fname
-            fpath.write_bytes(img_bytes)
-            evidence_url = f"/api/captures/{agent_id}/{fname}"
-        except Exception as e:
-            print(f"[Captures] Error al almacenar evidencia visual: {e}")
+    evidence_url = _save_capture_bytes(agent_id, sct_b64, prefix="kb")
 
     meta = {
         "text_content": txt_content,
@@ -1572,10 +1577,29 @@ async def ws_agent_endpoint(websocket: WebSocket):
                         increment_away_alert=away_alert,
                     )
 
+                    saved_batch_url = None
+                    saved_batch_b64 = None
                     for ev in data.get("log_events", []):
                         cat = ev.get("category", "WINDOW")
                         msg_txt = ev.get("message", "")
                         dur = ev.get("duration_seconds")
+                        ev_sct = str(ev.get("screenshot_b64") or "").strip()
+                        ev_url = None
+                        if ev_sct:
+                            if ev_sct == saved_batch_b64 and saved_batch_url:
+                                ev_url = saved_batch_url
+                            else:
+                                ev_url = _save_capture_bytes(agent_id, ev_sct, prefix="dvr")
+                                saved_batch_b64 = ev_sct
+                                saved_batch_url = ev_url
+                        ev_meta = {
+                            "category": cat,
+                            "active_window": str(ev.get("active_window") or agent.active_window or "Escritorio"),
+                            "previous_window": str(ev.get("previous_window") or ""),
+                            "duration_seconds": dur or 0,
+                            "message": msg_txt,
+                            "evidence_path": ev_url,
+                        }
                         if msg_txt:
                             log_entry = db.add_log(
                                 agent_id=agent_id,
@@ -1585,8 +1609,10 @@ async def ws_agent_endpoint(websocket: WebSocket):
                                 category=cat,
                                 message=msg_txt,
                                 duration_seconds=dur,
+                                evidence_path=ev_url,
+                                meta_json=json.dumps(ev_meta) if ev_url else None,
                             )
-                            await hub.broadcast_new_log(log_entry)
+                            await hub.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)
 
                     await hub.broadcast_telemetry_update(agent)
 
@@ -1618,11 +1644,31 @@ async def ws_agent_endpoint(websocket: WebSocket):
                                         app_name=str(inner_payload.get("app_name") or "Escritorio"),
                                         increment_away_alert=bool(inner_payload.get("away_alert", False)),
                                     )
+                                saved_off_url = None
+                                saved_off_b64 = None
                                 for ev in inner_payload.get("log_events", []):
                                     cat = ev.get("category", "WINDOW")
                                     msg_txt = ev.get("message", "")
                                     dur = ev.get("duration_seconds")
                                     ev_ts = str(ev.get("timestamp") or custom_ts or "").strip() or None
+                                    ev_sct = str(ev.get("screenshot_b64") or "").strip()
+                                    ev_url = None
+                                    if ev_sct:
+                                        if ev_sct == saved_off_b64 and saved_off_url:
+                                            ev_url = saved_off_url
+                                        else:
+                                            ev_url = _save_capture_bytes(agent_id, ev_sct, prefix="dvr")
+                                            saved_off_b64 = ev_sct
+                                            saved_off_url = ev_url
+                                    ev_meta = {
+                                        "category": cat,
+                                        "active_window": str(ev.get("active_window") or agent.active_window or "Escritorio"),
+                                        "previous_window": str(ev.get("previous_window") or ""),
+                                        "duration_seconds": dur or 0,
+                                        "message": msg_txt,
+                                        "evidence_path": ev_url,
+                                        "offline_vault": True,
+                                    }
                                     if msg_txt:
                                         log_entry = db.add_log(
                                             agent_id=agent_id,
@@ -1632,6 +1678,8 @@ async def ws_agent_endpoint(websocket: WebSocket):
                                             category=cat,
                                             message=msg_txt,
                                             duration_seconds=dur,
+                                            evidence_path=ev_url,
+                                            meta_json=json.dumps(ev_meta) if ev_url else None,
                                             custom_timestamp=ev_ts,
                                         )
                                         await hub.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)

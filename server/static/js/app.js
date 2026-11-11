@@ -1055,56 +1055,99 @@
 
   function openEvidenceModal(data) {
     if (!evidenceModal) return;
+    const cat = String(data.category || 'KEYBOARD').toUpperCase();
+    const isKeyboard = cat === 'KEYBOARD';
     if (evidenceModalTitle) {
       evidenceModalTitle.textContent = `Evidencia: ${data.alias} (${data.hostname})`;
     }
     if (evidenceModalSubtitle) {
-      evidenceModalSubtitle.textContent = `Registrado el ${data.time} • Pausa de 15s tras redacción activa`;
+      const catSubtitleMap = {
+        KEYBOARD: 'Pausa de 15s tras redacción activa',
+        WINDOW: 'Captura DVR automática al cambiar de ventana activa',
+        IDLE: 'Captura DVR automática al entrar en estado de inactividad',
+        RESUME: 'Captura DVR automática al retomar actividad en el equipo',
+      };
+      const subDesc = catSubtitleMap[cat] || 'Captura DVR de evento en bitácora';
+      evidenceModalSubtitle.textContent = `Registrado el ${data.time} • ${subDesc}`;
     }
-    const parsed = analyzeKeyboardTranscript(data.text || '');
-    const cleanLayout = normalizeKeyboardLayoutName(data.layout);
-    const cleanBlockHtml = parsed.cleanText
-      ? `
-        <div>
-          <div class="kb-box-caption">Texto Final Redactado (Limpio)</div>
-          <div class="kb-clean-box">${escapeHtml(parsed.cleanText)}</div>
-        </div>
-      `
-      : '';
-    const sequenceBlockHtml = parsed.sequenceHtml
-      ? `
-        <div>
-          <div class="kb-box-caption">${parsed.hasSpecialKeys ? 'Secuencia de Pulsaciones y Teclas Especiales' : 'Transcripción'}</div>
-          <div class="kb-raw-box">${parsed.sequenceHtml}</div>
-        </div>
-      `
-      : '<div class="kb-raw-box muted-text">(Pulsaciones especiales sin texto imprimible)</div>';
 
     if (evidenceMetaContainer) {
-      evidenceMetaContainer.innerHTML = `
-        <div class="evidence-meta-item">
-          <span class="evidence-meta-label">Ventana Activa</span>
-          <span class="evidence-meta-val">${escapeHtml(data.window || 'Escritorio')}</span>
-        </div>
-        <div class="evidence-meta-item">
-          <span class="evidence-meta-label">Pulsaciones</span>
-          <span class="evidence-meta-val">${escapeHtml(String(data.count || 0))} teclas</span>
-        </div>
-        <div class="evidence-meta-item">
-          <span class="evidence-meta-label">Duración</span>
-          <span class="evidence-meta-val">${escapeHtml(String(data.duration || 0))}s</span>
-        </div>
-        <div class="evidence-meta-item">
-          <span class="evidence-meta-label">Distribución / Idioma</span>
-          <span class="evidence-meta-val">${escapeHtml(cleanLayout)}</span>
-        </div>
-        <div class="evidence-meta-item full-width">
-          <div class="kb-transcript-stack">
-            ${cleanBlockHtml}
-            ${parsed.hasSpecialKeys || !parsed.cleanText ? sequenceBlockHtml : ''}
+      if (isKeyboard) {
+        const parsed = analyzeKeyboardTranscript(data.text || '');
+        const cleanLayout = normalizeKeyboardLayoutName(data.layout);
+        const cleanBlockHtml = parsed.cleanText
+          ? `
+            <div>
+              <div class="kb-box-caption">Texto Final Redactado (Limpio)</div>
+              <div class="kb-clean-box">${escapeHtml(parsed.cleanText)}</div>
+            </div>
+          `
+          : '';
+        const sequenceBlockHtml = parsed.sequenceHtml
+          ? `
+            <div>
+              <div class="kb-box-caption">${parsed.hasSpecialKeys ? 'Secuencia de Pulsaciones y Teclas Especiales' : 'Transcripción'}</div>
+              <div class="kb-raw-box">${parsed.sequenceHtml}</div>
+            </div>
+          `
+          : '<div class="kb-raw-box muted-text">(Pulsaciones especiales sin texto imprimible)</div>';
+
+        evidenceMetaContainer.innerHTML = `
+          <div class="evidence-meta-item">
+            <span class="evidence-meta-label">Ventana Activa</span>
+            <span class="evidence-meta-val">${escapeHtml(data.window || 'Escritorio')}</span>
           </div>
-        </div>
-      `;
+          <div class="evidence-meta-item">
+            <span class="evidence-meta-label">Pulsaciones</span>
+            <span class="evidence-meta-val">${escapeHtml(String(data.count || 0))} teclas</span>
+          </div>
+          <div class="evidence-meta-item">
+            <span class="evidence-meta-label">Duración</span>
+            <span class="evidence-meta-val">${escapeHtml(String(data.duration || 0))}s</span>
+          </div>
+          <div class="evidence-meta-item">
+            <span class="evidence-meta-label">Distribución / Idioma</span>
+            <span class="evidence-meta-val">${escapeHtml(cleanLayout)}</span>
+          </div>
+          <div class="evidence-meta-item full-width">
+            <div class="kb-transcript-stack">
+              ${cleanBlockHtml}
+              ${parsed.hasSpecialKeys || !parsed.cleanText ? sequenceBlockHtml : ''}
+            </div>
+          </div>
+        `;
+      } else {
+        const catLabelMap = {
+          WINDOW: 'Cambio de Ventana Activa',
+          IDLE: 'Transición de Inactividad',
+          RESUME: 'Regreso de Actividad',
+          NETWORK: 'Evento de Red',
+          AUDIT: 'Evento de Soporte',
+        };
+        const prevWin = (data.prevWindow || '').trim();
+        evidenceMetaContainer.innerHTML = `
+          <div class="evidence-meta-item">
+            <span class="evidence-meta-label">Tipo de Evento DVR</span>
+            <span class="evidence-meta-val">${escapeHtml(catLabelMap[cat] || cat)}</span>
+          </div>
+          <div class="evidence-meta-item">
+            <span class="evidence-meta-label">Ventana Activa Capturada</span>
+            <span class="evidence-meta-val">${escapeHtml(data.window || 'Escritorio')}</span>
+          </div>
+          <div class="evidence-meta-item">
+            <span class="evidence-meta-label">${prevWin ? 'Ventana Previa' : 'Duración Asociada'}</span>
+            <span class="evidence-meta-val">${escapeHtml(prevWin ? prevWin : `${data.duration || 0}s`)}</span>
+          </div>
+          <div class="evidence-meta-item">
+            <span class="evidence-meta-label">Permanencia / Tiempo</span>
+            <span class="evidence-meta-val">${escapeHtml(String(data.duration || 0))}s</span>
+          </div>
+          <div class="evidence-meta-item full-width">
+            <span class="evidence-meta-label">Detalle del Evento Registrado</span>
+            <div class="kb-clean-box" style="margin-top:4px; font-weight:500;">${escapeHtml(data.message || '')}</div>
+          </div>
+        `;
+      }
     }
     let imgUrl = data.url || '';
     if (imgUrl && state.password) {
@@ -1222,6 +1265,7 @@
           const evidenceBtnHtml = evidencePath
             ? `
               <button type="button" class="btn btn-secondary btn-sm js-open-evidence"
+                data-category="KEYBOARD"
                 data-evidence-url="${escapeHtml(evidencePath)}"
                 data-alias="${escapeHtml(row.alias)}"
                 data-hostname="${escapeHtml(row.hostname)}"
@@ -1230,7 +1274,8 @@
                 data-count="${escapeHtml(String(keystrokesCount))}"
                 data-duration="${escapeHtml(String(durSecs))}"
                 data-layout="${escapeHtml(layout)}"
-                data-text="${escapeHtml(textContent)}">
+                data-text="${escapeHtml(textContent)}"
+                data-message="${escapeHtml(row.message || '')}">
                 <svg class="icon-xs" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
                   <circle cx="12" cy="13" r="4"/>
@@ -1260,14 +1305,49 @@
             </div>
           `;
         } else {
+          let meta = null;
+          if (row.meta_json) {
+            try {
+              meta = typeof row.meta_json === 'string' ? JSON.parse(row.meta_json) : row.meta_json;
+            } catch (_) {}
+          }
+          const evidencePath = row.evidence_path || (meta && meta.evidence_path) || '';
+          const activeWin = (meta && meta.active_window) || 'Escritorio';
+          const prevWin = (meta && meta.previous_window) || '';
+          const durSecs = (meta && meta.duration_seconds) !== undefined ? meta.duration_seconds : (row.duration_seconds || 0);
+          const dvrBtnHtml = evidencePath
+            ? `
+              <button type="button" class="btn btn-secondary btn-sm js-open-evidence"
+                style="margin-left:auto;"
+                data-category="${escapeHtml(cat)}"
+                data-evidence-url="${escapeHtml(evidencePath)}"
+                data-alias="${escapeHtml(row.alias)}"
+                data-hostname="${escapeHtml(row.hostname)}"
+                data-window="${escapeHtml(activeWin)}"
+                data-prev-window="${escapeHtml(prevWin)}"
+                data-time="${escapeHtml(row.timestamp)}"
+                data-duration="${escapeHtml(String(durSecs))}"
+                data-message="${escapeHtml(row.message || '')}">
+                <svg class="icon-xs" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                  <circle cx="12" cy="13" r="4"/>
+                </svg>
+                <span>Ver Evidencia Visual</span>
+              </button>
+            `
+            : '';
+
           eventHtml = `
-            <div class="log-normal-entry">
-              <span>${formatSpecialKeysHtml(row.message)}</span>
-              ${
-                row.repeatCount > 1
-                  ? `<span class="log-repeat-pill" title="Evento repetido ${row.repeatCount} veces consecutivas (entre ${escapeHtml(row.firstTimestamp)} y ${escapeHtml(row.timestamp)})">x${row.repeatCount} repeticiones</span>`
-                  : ''
-              }
+            <div class="log-normal-entry" style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <span>${formatSpecialKeysHtml(row.message)}</span>
+                ${
+                  row.repeatCount > 1
+                    ? `<span class="log-repeat-pill" title="Evento repetido ${row.repeatCount} veces consecutivas (entre ${escapeHtml(row.firstTimestamp)} y ${escapeHtml(row.timestamp)})">x${row.repeatCount} repeticiones</span>`
+                    : ''
+                }
+              </div>
+              ${dvrBtnHtml}
             </div>
           `;
         }
@@ -2294,15 +2374,18 @@
       if (btn) {
         e.preventDefault();
         openEvidenceModal({
+          category: btn.dataset.category || 'KEYBOARD',
           url: btn.dataset.evidenceUrl,
           alias: btn.dataset.alias,
           hostname: btn.dataset.hostname,
           window: btn.dataset.window,
+          prevWindow: btn.dataset.prevWindow || '',
           time: btn.dataset.time,
           count: btn.dataset.count,
           duration: btn.dataset.duration,
           layout: btn.dataset.layout,
           text: btn.dataset.text,
+          message: btn.dataset.message || '',
         });
       }
     });
