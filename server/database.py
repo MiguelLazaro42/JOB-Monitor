@@ -680,8 +680,9 @@ class DatabaseManager:
         duration_seconds: Optional[int] = None,
         evidence_path: Optional[str] = None,
         meta_json: Optional[str] = None,
+        custom_timestamp: Optional[str] = None,
     ) -> dict:
-        now_str = self._now_dt().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = (custom_timestamp or "").strip() or self._now_dt().strftime("%Y-%m-%d %H:%M:%S")
         with self._lock:
             conn = self._get_conn()
             try:
