@@ -4,6 +4,9 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <AVFoundation/AVFoundation.h>
 #include <dlfcn.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -26,11 +29,50 @@ static NSDictionary *load_runtime_paths(NSString *installDir) {
     return [obj isKindOfClass:[NSDictionary class]] ? obj : @{};
 }
 
-static void write_status_json(NSString *statusPath, BOOL screenOk, BOOL axOk, BOOL micOk) {
+static BOOL check_full_disk_access(void) {
+    NSArray<NSString *> *dirs = @[
+        [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Safari"],
+        [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Messages"]
+    ];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    int tested = 0;
+    for (NSString *d in dirs) {
+        BOOL isDir = NO;
+        if ([fm fileExistsAtPath:d isDirectory:&isDir] && isDir) {
+            tested++;
+            errno = 0;
+            DIR *dp = opendir(d.UTF8String);
+            if (dp) {
+                closedir(dp);
+                return YES;
+            }
+            if (errno == EPERM || errno == EACCES) {
+                return NO;
+            }
+        }
+    }
+    const char *tmPlist = "/Library/Preferences/com.apple.TimeMachine.plist";
+    if (access(tmPlist, F_OK) == 0) {
+        tested++;
+        errno = 0;
+        int fd = open(tmPlist, O_RDONLY);
+        if (fd >= 0) {
+            close(fd);
+            return YES;
+        }
+        if (errno == EPERM || errno == EACCES) {
+            return NO;
+        }
+    }
+    return tested == 0;
+}
+
+static void write_status_json(NSString *statusPath, BOOL screenOk, BOOL axOk, BOOL micOk, BOOL fdaOk) {
     NSDictionary *dict = @{
         @"screen": @(screenOk),
         @"accessibility": @(axOk),
-        @"microphone": @(micOk)
+        @"microphone": @(micOk),
+        @"full_disk": @(fdaOk)
     };
     NSData *data = [NSJSONSerialization dataWithJSONObject:dict options:NSJSONWritingPrettyPrinted error:nil];
     if (data) {
@@ -60,8 +102,9 @@ int main(int argc, char **argv) {
             if (strcmp(argv[i], "--check-permissions") == 0) {
                 BOOL screenOk = CGPreflightScreenCaptureAccess();
                 BOOL axOk = AXIsProcessTrusted();
+                BOOL fdaOk = check_full_disk_access();
                 AVAuthorizationStatus micSt = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
-                write_status_json(statusPath, screenOk, axOk, micSt == AVAuthorizationStatusAuthorized);
+                write_status_json(statusPath, screenOk, axOk, micSt == AVAuthorizationStatusAuthorized, fdaOk);
                 return 0;
             }
             if (strcmp(argv[i], "--request-permissions") == 0) {
@@ -79,6 +122,8 @@ int main(int argc, char **argv) {
                     axOk = AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)axOpts);
                 }
 
+                BOOL fdaOk = check_full_disk_access();
+
                 AVAuthorizationStatus micSt = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
                 __block BOOL micOk = (micSt == AVAuthorizationStatusAuthorized);
                 if (micSt == AVAuthorizationStatusNotDetermined) {
@@ -92,9 +137,10 @@ int main(int argc, char **argv) {
 
                 screenOk = CGPreflightScreenCaptureAccess();
                 axOk = AXIsProcessTrusted();
+                fdaOk = check_full_disk_access();
                 micSt = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
                 micOk = (micSt == AVAuthorizationStatusAuthorized);
-                write_status_json(statusPath, screenOk, axOk, micOk);
+                write_status_json(statusPath, screenOk, axOk, micOk, fdaOk);
                 return 0;
             }
         }

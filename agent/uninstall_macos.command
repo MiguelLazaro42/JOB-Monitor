@@ -43,6 +43,7 @@ echo "[4/4] Limpiando registros previos en Privacidad y Seguridad (TCC)..."
 tccutil reset ScreenCapture "$PLIST_LABEL" >/dev/null 2>&1 || true
 tccutil reset Accessibility "$PLIST_LABEL" >/dev/null 2>&1 || true
 tccutil reset Microphone "$PLIST_LABEL" >/dev/null 2>&1 || true
+tccutil reset SystemPolicyAllFiles "$PLIST_LABEL" >/dev/null 2>&1 || true
 tccutil reset All "$PLIST_LABEL" >/dev/null 2>&1 || true
 
 echo ""

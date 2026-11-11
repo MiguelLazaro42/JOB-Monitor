@@ -2853,12 +2853,41 @@ def acquire_single_instance_lock() -> bool:
         return False
 
 
+def check_macos_full_disk_access() -> bool:
+    """Verifica si el bundle cuenta con Acceso Total al Disco (Privacy_AllFiles) en macOS."""
+    if not IS_MACOS:
+        return True
+    probes = [
+        Path("/Library/Preferences/com.apple.TimeMachine.plist"),
+        Path.home() / "Library" / "Safari",
+        Path.home() / "Library" / "Messages",
+    ]
+    tested = 0
+    for p in probes:
+        if not p.exists():
+            continue
+        tested += 1
+        try:
+            if p.is_dir():
+                os.listdir(p)
+            else:
+                with open(p, "rb") as fh:
+                    fh.read(4)
+            return True
+        except PermissionError:
+            return False
+        except Exception:
+            continue
+    return tested == 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Agente Silencioso JOB-Monitor con Watchdog")
     parser.add_argument("--server", type=str, default=None, help="URL WebSocket del Servidor Central")
     parser.add_argument("--token", type=str, default=None, help="Token secreto del servidor")
     parser.add_argument("--alias", type=str, default=None, help="Alias amigable de esta PC (ej. 'PC de Miguel')")
     parser.add_argument("--check-screen-only", action="store_true", help="Verifica permiso TCC de pantalla en macOS")
+    parser.add_argument("--check-fda", action="store_true", help="Verifica permiso TCC de Acceso Total al Disco en macOS")
     parser.add_argument("--check-permissions", action="store_true", help="Verifica permisos TCC de pantalla y accesibilidad en macOS")
     parser.add_argument("--request-permissions", action="store_true", help="Solicita permisos TCC de pantalla y accesibilidad en macOS")
     args = parser.parse_args()
@@ -2866,19 +2895,28 @@ def main():
     if args.check_screen_only:
         sys.exit(0 if check_macos_screen_permission(request_if_missing=False) else 2)
 
+    if args.check_fda:
+        fda_ok = check_macos_full_disk_access()
+        try:
+            (BASE_DIR / "fda_status.json").write_text(json.dumps({"full_disk": bool(fda_ok)}), encoding="utf-8")
+        except Exception:
+            pass
+        sys.exit(0 if fda_ok else 2)
+
     if args.check_permissions or args.request_permissions:
         req = bool(args.request_permissions)
         scr_ok = check_macos_screen_permission(request_if_missing=req)
         ax_ok = check_macos_accessibility_permission(request_if_missing=req)
+        fda_ok = check_macos_full_disk_access()
         try:
             status_path = BASE_DIR / "permissions_status.json"
             status_path.write_text(
-                json.dumps({"screen": bool(scr_ok), "accessibility": bool(ax_ok)}, indent=2),
+                json.dumps({"screen": bool(scr_ok), "accessibility": bool(ax_ok), "full_disk": bool(fda_ok)}, indent=2),
                 encoding="utf-8",
             )
         except Exception:
             pass
-        sys.exit(0 if (scr_ok and ax_ok) else 2)
+        sys.exit(0 if (scr_ok and ax_ok and fda_ok) else 2)
 
     if not acquire_single_instance_lock():
         # Ya existe una instancia activa del agente ejecutándose en este equipo

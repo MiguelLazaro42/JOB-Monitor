@@ -50,9 +50,10 @@ probe_app_permissions() {
     done
     SCREEN_OK=$("$VENV_PY" -c "import json, pathlib; p=pathlib.Path('$STATUS_JSON'); d=json.loads(p.read_text()) if p.exists() else {}; print('1' if d.get('screen') else '0')" 2>/dev/null || echo "0")
     AX_OK=$("$VENV_PY" -c "import json, pathlib; p=pathlib.Path('$STATUS_JSON'); d=json.loads(p.read_text()) if p.exists() else {}; print('1' if d.get('accessibility') else '0')" 2>/dev/null || echo "0")
+    FDA_OK=$("$VENV_PY" -c "import json, pathlib; p=pathlib.Path('$STATUS_JSON'); d=json.loads(p.read_text()) if p.exists() else {}; print('1' if d.get('full_disk') else '0')" 2>/dev/null || echo "0")
 }
 
-# Micro-funcion M2: Registrar el .app en TCC (Grabacion de Pantalla + Accesibilidad + Audio)
+# Micro-funcion M2: Registrar el .app en TCC (Grabacion de Pantalla + Accesibilidad + Audio + Acceso Total al Disco)
 request_app_permissions() {
     rm -f "$STATUS_JSON"
     open -n -a "$APP_BUNDLE" --args --request-permissions >/dev/null 2>&1 || true
@@ -64,6 +65,7 @@ request_app_permissions() {
     done
     SCREEN_OK=$("$VENV_PY" -c "import json, pathlib; p=pathlib.Path('$STATUS_JSON'); d=json.loads(p.read_text()) if p.exists() else {}; print('1' if d.get('screen') else '0')" 2>/dev/null || echo "0")
     AX_OK=$("$VENV_PY" -c "import json, pathlib; p=pathlib.Path('$STATUS_JSON'); d=json.loads(p.read_text()) if p.exists() else {}; print('1' if d.get('accessibility') else '0')" 2>/dev/null || echo "0")
+    FDA_OK=$("$VENV_PY" -c "import json, pathlib; p=pathlib.Path('$STATUS_JSON'); d=json.loads(p.read_text()) if p.exists() else {}; print('1' if d.get('full_disk') else '0')" 2>/dev/null || echo "0")
 }
 
 # Micro-funcion M3: Activar LaunchAgent de forma garantizada incluso si el usuario cierra con Ctrl+C
@@ -296,6 +298,7 @@ trap 'activate_launchagent' EXIT INT TERM
 echo "[4/5] Verificando y registrando permisos nativos en Privacidad y Seguridad..."
 SCREEN_OK="0"
 AX_OK="0"
+FDA_OK="0"
 probe_app_permissions
 
 # Si habia una version previa con CDHash distinto, limpiar el registro obsoleto de TCC antes de registrar el nuevo
@@ -305,47 +308,70 @@ fi
 if [ "$AX_OK" != "1" ]; then
     tccutil reset Accessibility "$PLIST_LABEL" >/dev/null 2>&1 || true
 fi
+if [ "$FDA_OK" != "1" ]; then
+    tccutil reset SystemPolicyAllFiles "$PLIST_LABEL" >/dev/null 2>&1 || true
+fi
 
-if [ "$SCREEN_OK" != "1" ] || [ "$AX_OK" != "1" ]; then
+if [ "$SCREEN_OK" != "1" ] || [ "$AX_OK" != "1" ] || [ "$FDA_OK" != "1" ]; then
     request_app_permissions
 fi
 
-if [ "$SCREEN_OK" != "1" ] || [ "$AX_OK" != "1" ]; then
+if [ "$SCREEN_OK" != "1" ] || [ "$AX_OK" != "1" ] || [ "$FDA_OK" != "1" ]; then
     echo ""
     echo "===================================================================="
     echo "  AUTORIZACION DE PERMISOS REQUERIDA EN ESTE MAC"
     echo "===================================================================="
+    OPENED_AX_PANE=0
+    OPENED_FDA_PANE=0
+
     if [ "$SCREEN_OK" != "1" ]; then
-        echo "  -> [1] Grabacion de pantalla y audio del sistema: PENDIENTE"
+        echo "  -> [1] Grabacion de pantalla y audio del sistema : PENDIENTE"
         open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" >/dev/null 2>&1 || true
     else
-        echo "  -> [1] Grabacion de pantalla y audio del sistema: CONCEDIDO"
+        echo "  -> [1] Grabacion de pantalla y audio del sistema : CONCEDIDO"
     fi
     if [ "$AX_OK" != "1" ]; then
-        echo "  -> [2] Accesibilidad (Teclado y Control Remoto) : PENDIENTE"
+        echo "  -> [2] Accesibilidad (Teclado y Control Remoto)  : PENDIENTE"
         if [ "$SCREEN_OK" = "1" ]; then
+            OPENED_AX_PANE=1
             open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" >/dev/null 2>&1 || true
         fi
     else
-        echo "  -> [2] Accesibilidad (Teclado y Control Remoto) : CONCEDIDO"
+        echo "  -> [2] Accesibilidad (Teclado y Control Remoto)  : CONCEDIDO"
+    fi
+    if [ "$FDA_OK" != "1" ]; then
+        echo "  -> [3] Acceso total al disco (Archivos sin avisos): PENDIENTE"
+        if [ "$SCREEN_OK" = "1" ] && [ "$AX_OK" = "1" ]; then
+            OPENED_FDA_PANE=1
+            open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" >/dev/null 2>&1 || true
+            open -R "$APP_BUNDLE" >/dev/null 2>&1 || true
+        fi
+    else
+        echo "  -> [3] Acceso total al disco (Archivos sin avisos): CONCEDIDO"
     fi
 
-    osascript -e 'display dialog "Activa los interruptores de \"JOB-Monitor Agent\" en Ajustes del Sistema:\n\n1. Grabación de pantalla y audio del sistema\n2. Accesibilidad\n\nEl instalador detectará cada interruptor automáticamente en 2 segundos." with title "SITAI JOB-Monitor — Permisos Requeridos" buttons {"Entendido"} default button 1 with icon caution giving up after 20' >/dev/null 2>&1 &
+    osascript -e 'display dialog "Activa los 3 interruptores de \"JOB-Monitor Agent\" en Ajustes del Sistema:\n\n1. Grabación de pantalla y audio del sistema\n2. Accesibilidad\n3. Acceso total al disco (para navegar carpetas sin avisos repetitivos)\n\nNota: Si en Acceso total al disco aún no aparece en la lista, arrastra \"JOB-Monitor Agent\" desde la ventana de Finder hacia Ajustes." with title "SITAI JOB-Monitor — Permisos Requeridos" buttons {"Entendido"} default button 1 with icon caution giving up after 25' >/dev/null 2>&1 &
 
     echo ""
     echo "  Esperando a que actives los interruptores de 'JOB-Monitor Agent'..."
-    OPENED_AX_PANE=0
-    for _ in $(seq 1 45); do
+    for _ in $(seq 1 60); do
         probe_app_permissions
 
-        if [ "$SCREEN_OK" = "1" ] && [ "$AX_OK" = "1" ]; then
-            echo "  [OK] Ambos permisos (Grabacion de Pantalla y Accesibilidad) han sido concedidos."
+        if [ "$SCREEN_OK" = "1" ] && [ "$AX_OK" = "1" ] && [ "$FDA_OK" = "1" ]; then
+            echo "  [OK] Los 3 permisos (Pantalla, Accesibilidad y Acceso Total al Disco) estan ACTIVOS."
             break
         fi
         if [ "$SCREEN_OK" = "1" ] && [ "$AX_OK" != "1" ] && [ "$OPENED_AX_PANE" = "0" ]; then
             OPENED_AX_PANE=1
             echo "  [OK] Grabacion de Pantalla activada. Abriendo panel de Accesibilidad..."
             open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" >/dev/null 2>&1 || true
+        fi
+        if [ "$SCREEN_OK" = "1" ] && [ "$AX_OK" = "1" ] && [ "$FDA_OK" != "1" ] && [ "$OPENED_FDA_PANE" = "0" ]; then
+            OPENED_FDA_PANE=1
+            echo "  [OK] Accesibilidad activada. Abriendo panel de Acceso Total al Disco..."
+            echo "       (Si no aparece en la lista, arrastra 'JOB-Monitor Agent' desde Finder hacia Ajustes)"
+            open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" >/dev/null 2>&1 || true
+            open -R "$APP_BUNDLE" >/dev/null 2>&1 || true
         fi
         sleep 2
     done
@@ -359,10 +385,10 @@ echo "===================================================================="
 echo "  AGENTE CONECTADO Y AUTO-INICIO CONFIGURADO EXITOSAMENTE"
 echo "  - Ruta de la App  : $APP_BUNDLE"
 echo "  - Auto-inicio Mac : Activo al encender/iniciar sesion (KeepAlive)"
-if [ "$SCREEN_OK" = "1" ] && [ "$AX_OK" = "1" ]; then
-    echo "  - Permisos macOS  : Pantalla/Audio y Accesibilidad ACTIVOS"
+if [ "$SCREEN_OK" = "1" ] && [ "$AX_OK" = "1" ] && [ "$FDA_OK" = "1" ]; then
+    echo "  - Permisos macOS  : Pantalla, Accesibilidad y Acceso Total ACTIVOS"
 else
-    echo "  - Permisos macOS  : En cuanto actives el interruptor, se aplicara en ~3s"
+    echo "  - Permisos macOS  : En cuanto actives los interruptores, se aplicaran al instante"
 fi
 echo "===================================================================="
 echo ""
