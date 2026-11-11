@@ -18,6 +18,7 @@
     authenticated: false,
     agents: new Map(),
     knownDevices: [],
+    selectedSessionTabs: new Map(),
     offlineCount: 0,
     currentFilter: 'all',
     tenantFilter: 'ALL',
@@ -412,19 +413,88 @@
     const showManageBtns = canManageDevices();
     const showTenantPill = isSuperAdmin();
 
-    agentsGrid.innerHTML = filtered
-      .map((ag) => {
+    // Agrupación por Hardware / PC Física (soporta multi-sesión de Windows de forma elegante)
+    const hardwareGroups = new Map();
+    filtered.forEach((item) => {
+      const rawId = item.agent_id ? item.agent_id.replace(/-S\d+$/, '') : item.agent_id;
+      const groupKey = `${rawId}__${(item.hostname || '').toLowerCase()}`;
+      if (!hardwareGroups.has(groupKey)) {
+        hardwareGroups.set(groupKey, []);
+      }
+      hardwareGroups.get(groupKey).push(item);
+    });
+
+    agentsGrid.innerHTML = Array.from(hardwareGroups.entries())
+      .map(([groupKey, groupItems]) => {
+        // Ordenar sesiones: poner en primer lugar la sesión activa con pantalla (o la seleccionada)
+        groupItems.sort((a, b) => {
+          if (a.is_offline_card && !b.is_offline_card) return 1;
+          if (!a.is_offline_card && b.is_offline_card) return -1;
+          if (!a.is_background_session && b.is_background_session) return -1;
+          if (a.is_background_session && !b.is_background_session) return 1;
+          return a.agent_id.localeCompare(b.agent_id);
+        });
+
+        const storedSelectedId = state.selectedSessionTabs.get(groupKey);
+        const activeItem = groupItems.find((it) => it.agent_id === storedSelectedId) || groupItems[0];
+        const ag = activeItem;
+
+        const isMultiSession = groupItems.length > 1;
+
+        // Construir barra de pestañas superior si esta PC tiene 2 o más sesiones
+        let sessionTabsHtml = '';
+        if (isMultiSession) {
+          const tabsButtons = groupItems
+            .map((item, idx) => {
+              const isCur = item.agent_id === ag.agent_id;
+              const isBg = Boolean(item.is_background_session);
+              const isOff = Boolean(item.is_offline_card);
+              let sessionLabel = item.alias || `Sesión ${idx + 1}`;
+              if (item.username && !sessionLabel.toLowerCase().includes(item.username.toLowerCase())) {
+                sessionLabel = `${sessionLabel} (${item.username})`;
+              }
+              const tabDot = isOff
+                ? 'dot-slate'
+                : (item.activity_status === 'active' ? 'dot-emerald' : (item.activity_status === 'idle' ? 'dot-amber' : 'dot-rose'));
+
+              const statePill = isOff
+                ? '<span class="session-tab-pill-bg">Off</span>'
+                : (isBg ? '<span class="session-tab-pill-bg">2ºP</span>' : '');
+
+              return `
+                <button type="button" class="session-tab-btn ${isCur ? 'active' : ''} js-switch-session-tab" data-group-key="${escapeHtml(groupKey)}" data-agent-id="${escapeHtml(item.agent_id)}" title="${escapeHtml(item.alias)} (${escapeHtml(item.username)})">
+                  <span class="indicator-dot ${tabDot}"></span>
+                  <span>${escapeHtml(sessionLabel)}</span>
+                  ${statePill}
+                </button>
+              `;
+            })
+            .join('');
+
+          sessionTabsHtml = `
+            <div class="card-session-tabs-bar">
+              <span class="card-session-meta-chip">
+                <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;">
+                  <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+                </svg>
+                ${groupItems.length} Sesiones
+              </span>
+              ${tabsButtons}
+            </div>
+          `;
+        }
+
         const tenantTagHtml = showTenantPill
           ? ` • <strong style="color:#0284c7;">${escapeHtml(ag.tenant_name || ag.tenant_id || 'Principal')}</strong>`
           : '';
         const manageIconsHtml = showManageBtns
           ? `
-            <button type="button" class="icon-btn js-edit-alias" data-agent-id="${escapeHtml(ag.agent_id)}" title="Renombrar">
+            <button type="button" class="icon-btn js-edit-alias" data-agent-id="${escapeHtml(ag.agent_id)}" title="Renombrar sesión actual">
               <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
                 <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
               </svg>
             </button>
-            <button type="button" class="icon-btn icon-btn-danger js-unlink-device" data-agent-id="${escapeHtml(ag.agent_id)}" data-alias="${escapeHtml(ag.alias)}" title="Desvincular o autodestruir equipo">
+            <button type="button" class="icon-btn icon-btn-danger js-unlink-device" data-agent-id="${escapeHtml(ag.agent_id)}" data-alias="${escapeHtml(ag.alias)}" title="Desvincular o autodestruir">
               <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
                 <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
               </svg>
@@ -435,6 +505,7 @@
         if (ag.is_offline_card) {
           return `
             <article class="agent-card card-offline-minimal" data-agent-id="${escapeHtml(ag.agent_id)}">
+              ${sessionTabsHtml}
               <div class="card-screen card-screen-offline">
                 <div class="screen-top-badges">
                   <span class="badge-status badge-offline-overlay">
@@ -503,7 +574,8 @@
 
         return `
           <article class="agent-card ${cardExtra}" data-agent-id="${escapeHtml(ag.agent_id)}">
-            <div class="card-screen js-open-viewer" data-agent-id="${escapeHtml(ag.agent_id)}" title="Haz clic para abrir pantalla en vivo">
+            ${sessionTabsHtml}
+            <div class="card-screen js-open-viewer" data-agent-id="${escapeHtml(ag.agent_id)}" title="Haz clic para abrir pantalla en vivo de esta sesión">
               ${
                 thumbSrc
                   ? `<img src="${thumbSrc}" alt="${escapeHtml(ag.alias)}" />`
@@ -515,6 +587,7 @@
                   ${escapeHtml(meta.label)}
                 </span>
                 <div style="display:flex; gap:4px; align-items:center;">
+                  ${isMultiSession ? `<span class="multi-session-badge" title="Esta PC física tiene múltiples usuarios/sesiones registradas">${groupItems.length}S</span>` : ''}
                   ${isBgSession ? `<span class="screen-mon-pill" title="Esta sesión de usuario está en segundo plano en Windows">2º Plano</span>` : ''}
                   <span class="screen-mon-pill">${monCount}M</span>
                 </div>
@@ -545,7 +618,7 @@
                 </svg>
                 <span>Conectar</span>
               </button>
-              <button type="button" class="btn btn-pastel-green card-btn-side js-open-chat" data-agent-id="${escapeHtml(ag.agent_id)}" title="Enviar mensaje directo">
+              <button type="button" class="btn btn-pastel-green card-btn-side js-open-chat" data-agent-id="${escapeHtml(ag.agent_id)}" title="Enviar mensaje directo a esta sesión">
                 <span>Chat</span>
               </button>
               <button type="button" class="btn btn-pastel-orange card-btn-side js-open-logs" data-agent-id="${escapeHtml(ag.agent_id)}" title="Ver bitácora del equipo">
@@ -1469,6 +1542,17 @@
   });
 
   agentsGrid.addEventListener('click', (e) => {
+    const tabBtn = e.target.closest('.js-switch-session-tab');
+    if (tabBtn) {
+      e.stopPropagation();
+      const gKey = tabBtn.dataset.groupKey;
+      const targetId = tabBtn.dataset.agentId;
+      if (gKey && targetId) {
+        state.selectedSessionTabs.set(gKey, targetId);
+        updateCountersAndGrid();
+      }
+      return;
+    }
     const unlinkBtn = e.target.closest('.js-unlink-device');
     if (unlinkBtn) {
       e.stopPropagation();
