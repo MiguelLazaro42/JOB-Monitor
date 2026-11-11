@@ -27,16 +27,22 @@ En un entorno corporativo de supervisión y asistencia remota:
 ```
 [Estado: Reposo]
        │
-       ▼ (Usuario presiona primera tecla)
-[MF-01 & MF-02: Inicio de Bloque de Escritura]
+       ▼ (Usuario presiona primera tecla: ej. 'm')
+[MF-01 & MF-02: Inicio de Bloque y Buffer en Memoria]
   • Registra timestamp inicial (t0) y ventana activa
-  • Arranca temporizador de inactividad (15s)
+  • Inicializa buffer volátil en RAM: buffer = ['m']
+  • Arranca temporizador de inactividad de 15s
        │
-       ├─► (Nueva pulsación antes de 15s) ──► [MF-03: Reset de temporizador a 15s]
-       │                                            │
-       ▼ (Transcurren 15 segundos sin teclas)       │
-[MF-04: Disparo de Fin de Redacción (Timeout 15s)] ◄┘
-  • Calcula duración total de la sesión de redacción
+       ├─► (Nuevas pulsaciones: ej. 'a', 'x', etc.) 
+       │   ──► [MF-03: BufferAggregator & Timer Reset]
+       │       • Agrega tecla al buffer en memoria (buffer = ['m', 'a', 'x'])
+       │       • CERO envíos de red, CERO registros en bitácora
+       │       • Reinicia el reloj a 15 segundos
+       │
+       ▼ (Transcurren 15 segundos continuos sin teclear)
+[MF-04: Cierre de Sesión Unificada (Timeout 15s)]
+  • Consolida todas las pulsaciones en un ÚNICO bloque unificado
+  • Calcula duración total de la ráfaga
   • Invoca inmediatamente captura de pantalla
        │
        ▼
@@ -44,12 +50,12 @@ En un entorno corporativo de supervisión y asistencia remota:
   • Toma snapshot de la pantalla completa
        │
        ▼
-[MF-06: Despacho Asíncrono por WebSocket al Servidor]
-  • Payload: category='KEYBOARD', ventana, duración, imagen JPEG
+[MF-06: Despacho Asíncrono de 1 ÚNICO Evento por WebSocket al Servidor]
+  • Payload único: category='KEYBOARD', contenido consolidado, ventana, duración, captura JPEG
        │
        ▼
-[MF-07: Persistencia en SQLite y Almacenamiento de Evidencia]
-  • Inserción en device_logs con ruta/enlace de captura
+[MF-07: Persistencia en SQLite (1 sola fila en device_logs)]
+  • Inserción de 1 registro consolidado (evita saturar la base de datos)
        │
        ▼
 [MF-08: Renderizado en Bitácora con Visor Modal SVG]
@@ -61,45 +67,46 @@ En un entorno corporativo de supervisión y asistencia remota:
 
 ### MF-01: `KeyboardEventHook` (Listener de Eventos de Teclado de Bajo Impacto)
 * **Ubicación:** `agent/agent.py`
-* **Responsabilidad:** Escuchar a nivel de sistema operativo (`pynput.keyboard.Listener` o gancho nativo en hilo dedicado) las pulsaciones de teclado sin interferir con la entrada del usuario.
+* **Responsabilidad:** Escuchar a nivel de sistema operativo (`pynput.keyboard.Listener` o gancho nativo en hilo dedicado) cada evento de tecla sin bloquear el hilo principal.
 * **Comportamiento:**
-  * Al recibir un evento `on_press`, notifica inmediatamente al despachador de estado (`MF-02`).
-  * No almacena caracteres específicos ni credenciales en archivos de texto, protegiendo la compatibilidad con McAfee Antivirus.
+  * Al detectar un evento `on_press`, convierte la tecla en su representación segura (carácter o nombre de tecla especial como `[Espacio]`, `[Enter]`, `[Borrar]`).
+  * Entrega el evento al despachador de buffer (`MF-02` / `MF-03`).
 
 ---
 
 ### MF-02: `TypingSessionTracker` (Inicializador del Bloque de Redacción)
 * **Ubicación:** `agent/agent.py`
-* **Responsabilidad:** Determinar si la pulsación pertenece a una ráfaga existente o si constituye el **inicio de un nuevo bloque de redacción**.
+* **Responsabilidad:** Detectar la **primera pulsación** de una ráfaga y abrir la sesión en memoria.
 * **Comportamiento:**
   * Si no hay sesión activa:
     * Establece `session_active = True`.
     * Guarda `start_time = time.monotonic()`.
-    * Consulta la ventana activa actual mediante `GetForegroundWindow()` / `GetWindowTextW()`.
-    * Inicializa el contador de pulsaciones `keystroke_count = 1`.
-  * Si la sesión ya estaba activa:
-    * Incrementa `keystroke_count += 1`.
-    * Notifica a `MF-03` para renovar el temporizador.
+    * Consulta la ventana activa actual (`GetForegroundWindow()` / `GetWindowTextW()`).
+    * Inicializa el buffer en memoria RAM: `keystrokes_buffer = [tecla]`.
+  * Transfiere el control al temporizador `MF-03`.
 
 ---
 
-### MF-03: `InactivityDebounceTimer` (Temporizador Reajustable de 15 Segundos)
+### MF-03: `KeystrokeBufferAggregator & DebounceTimer` (Buffer en RAM y Reloj de 15s)
 * **Ubicación:** `agent/agent.py`
-* **Responsabilidad:** Gestionar el reloj de cuenta regresiva de 15 segundos.
+* **Responsabilidad:** **Acumular las pulsaciones intermedias en memoria RAM sin emitir eventos al servidor** y renovar la cuenta regresiva de 15 segundos.
 * **Comportamiento:**
-  * Con cada pulsación recibida, cancela cualquier temporizador anterior y programa un nuevo callback tras **15.0 segundos exactos**.
-  * Si transcurren los 15 segundos sin cancelaciones, ejecuta la rutina de cierre `MF-04`.
+  * Si el usuario escribe `"m"`, `"a"`, `"x"`:
+    * Cada pulsación se anexa al buffer en memoria (`['m', 'a', 'x']`).
+    * **NO se envía nada a la red ni a la base de datos** por cada tecla individual.
+    * Cancela cualquier temporizador previo y programa un nuevo callback tras **15.0 segundos exactos**.
+  * Si pasan los 15 segundos continuos sin ninguna pulsación adicional, se dispara automáticamente el cierre `MF-04`.
 
 ---
 
-### MF-04: `TypingSessionFinalizer` (Consolidador de Métricas al Expirar 15s)
+### MF-04: `TypingSessionFinalizer` (Consolidador del Evento Único al Expirar 15s)
 * **Ubicación:** `agent/agent.py`
-* **Responsabilidad:** Declarar formalmente concluido el bloque de redacción y calcular métricas consolidadas.
+* **Responsabilidad:** Unificar todo el buffer en una sola cadena consolidada, calcular métricas y preparar el paquete único.
 * **Comportamiento:**
-  * Calcula la duración efectiva: $\text{duración} = (\text{timestamp\_última\_tecla} - \text{timestamp\_primera\_tecla})$.
-  * Obtiene la ventana activa final para cotejar si cambió de programa durante la redacción.
-  * Restablece el estado interno del agente a reposo (`session_active = False`).
-  * Desencadena sincrónicamente la captura de pantalla (`MF-05`).
+  * Une las pulsaciones del buffer en un texto final estructurado (ej. `"max"` o el párrafo completo redactado).
+  * Calcula la duración total: $\text{duración} = (\text{tiempo\_última\_tecla} - \text{tiempo\_primera\_tecla})$.
+  * Concluye la sesión activa (`session_active = False`) y vacía el buffer para la siguiente ráfaga.
+  * Solicita sincrónicamente la captura de pantalla (`MF-05`).
 
 ---
 
@@ -107,51 +114,51 @@ En un entorno corporativo de supervisión y asistencia remota:
 * **Ubicación:** `agent/agent.py`
 * **Responsabilidad:** Tomar una captura nítida del escritorio en el instante exacto en que cesó la escritura.
 * **Comportamiento:**
-  * Utiliza la instancia de `mss` del monitor primario o activo.
-  * Comprime el cuadro a JPEG (calidad optimizada 75-80) para equilibrar nitidez de texto y tamaño de transferencia (< 120 KB).
-  * Devuelve los bytes JPEG codificados en Base64 o adjuntos para su transmisión.
+  * Utiliza `mss` sobre el monitor activo.
+  * Comprime el cuadro a JPEG (calidad 75-80) para equilibrar legibilidad de texto y peso ligero (< 120 KB).
+  * Entrega la imagen codificada en Base64.
 
 ---
 
-### MF-06: `KeyboardTelemetryDispatcher` (Emisor de Paquete WebSocket)
+### MF-06: `KeyboardTelemetryDispatcher` (Emisor de 1 Solo Paquete WebSocket)
 * **Ubicación:** `agent/agent.py`
-* **Responsabilidad:** Enviar el evento consolidado al Servidor Central mediante el WebSocket `/ws/agent`.
-* **Estructura del Payload:**
+* **Responsabilidad:** Transmitir **un único mensaje JSON** hacia el servidor conteniendo todo el bloque redactado.
+* **Estructura del Payload Único:**
   ```json
   {
     "type": "keyboard_event",
     "timestamp": "2026-11-11 12:30:15",
-    "active_window": "Microsoft Word - Informe Trimestral.docx",
-    "duration_seconds": 38,
+    "active_window": "Google Chrome - Correo Corporativo",
+    "duration_seconds": 18,
     "idle_pause_seconds": 15,
-    "keystrokes_count": 142,
+    "keystrokes_count": 3,
+    "text_content": "max",
     "screenshot_b64": "/9j/4AAQSkZJRg..."
   }
   ```
 
 ---
 
-### MF-07: `LogPersistenceAndStorage` (Recepción y Guardado en Servidor)
+### MF-07: `LogPersistenceAndStorage` (Persistencia de 1 Sola Fila en Base de Datos)
 * **Ubicación:** `server/app.py` y `server/database.py`
-* **Responsabilidad:** Almacenar la captura y registrar el evento en la base de datos SQLite.
+* **Responsabilidad:** Registrar **una única fila consolidada** en la tabla `device_logs` de SQLite y guardar la captura de pantalla.
 * **Comportamiento:**
-  * Guarda la imagen en disco estructurado: `/data/captures/<agent_id>/keyboard_<timestamp>.jpg`.
-  * Inserta una fila en `device_logs`:
+  * Guarda la captura en disco: `/data/captures/<agent_id>/kb_<timestamp>.jpg`.
+  * Inserta 1 solo registro en `device_logs`:
     * `category`: `"KEYBOARD"`
-    * `message`: `"Redacción activa durante 38s en 'Microsoft Word - Informe Trimestral.docx' (142 pulsaciones • Pausa de 15s detectada)"`
-    * `duration_seconds`: `38`
-    * `evidence_path`: `"captures/<agent_id>/keyboard_<timestamp>.jpg"`
-  * Notifica a los administradores conectados vía WebSocket `/ws/admin` con `new_log`.
+    * `message`: `"Redacción en 'Google Chrome - Correo Corporativo' (Pulsaciones: 'max' • Duración: 18s • Pausa de 15s)"`
+    * `duration_seconds`: `18`
+  * Emite el evento por WebSocket `/ws/admin` para que la bitácora lo pinte en vivo sin saturar la pantalla.
 
 ---
 
-### MF-08: `LogViewerEvidenceModal` (Visualización Interactiva en el Panel Web)
-* **Ubicación:** `server/static/js/app.js` y `server/templates/index.html`
-* **Responsabilidad:** Desplegar el evento en la Vista 4 (Bitácora) con capacidad de ver la evidencia capturada.
+### MF-08: `LogViewerEvidenceModal` (Visualización Unificada en Dashboard)
+* **Ubicación:** `server/static/js/app.js`
+* **Responsabilidad:** Mostrar en la tabla de bitácora un único renglón limpio con el texto consolidado y botón SVG para ver la captura.
 * **Comportamiento:**
-  * Muestra la insignia morada/índigo `TECLADO`.
-  * Añade un botón con icono vectorial SVG de imagen/ojo para abrir la captura de pantalla a resolución completa en un modal emergente.
-  * Permite filtrar en el selector de categoría por `"Eventos de Teclado / Redacción"`.
+  * Muestra el bloque redactado completo (ej. `"max"`).
+  * Incluye botón con icono SVG para abrir la captura de pantalla en grande en el visor modal.
+  * Garantiza que la bitácora permanezca 100% legible y sin spam de teclas sueltas.
 
 ---
 
@@ -165,3 +172,4 @@ En un entorno corporativo de supervisión y asistencia remota:
 | Integrar a la bitácora de eventos | `MF-06` y `MF-07` | Categoría `KEYBOARD` en SQLite `device_logs` |
 | Cero alertas en McAfee Antivirus | `MF-01` | Sin inyección DLL ni keylogger en texto plano |
 | Cero emojis en interfaz | `MF-08` | Iconos vectoriales SVG limpios |
+
