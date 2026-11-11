@@ -545,6 +545,7 @@ class DatabaseManager:
             conn = self._get_conn()
             try:
                 conn.execute("DELETE FROM devices WHERE agent_id = ?", (agent_id,))
+                conn.execute("DELETE FROM device_logs WHERE agent_id = ?", (agent_id,))
                 conn.execute("DELETE FROM daily_activity_summary WHERE agent_id = ?", (agent_id,))
                 conn.execute("DELETE FROM window_usage_daily WHERE agent_id = ?", (agent_id,))
                 conn.execute("DELETE FROM chat_messages WHERE agent_id = ?", (agent_id,))

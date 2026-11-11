@@ -765,11 +765,18 @@ async def remove_device_endpoint(
         )
 
     db.delete_device(agent_id, revoke=bool(self_destruct))
+    try:
+        import shutil
+        agent_cap_dir = CAPTURES_DIR / os.path.basename(agent_id)
+        if agent_cap_dir.exists() and agent_cap_dir.is_dir():
+            shutil.rmtree(agent_cap_dir, ignore_errors=True)
+    except Exception:
+        pass
     mode_lbl = "con orden de autodestrucción y revocación" if self_destruct else "desvinculado del panel"
     log_entry = db.add_log(
-        agent_id=agent_id,
-        alias=alias_lbl,
-        hostname=live_agent.hostname if live_agent else "Equipo",
+        agent_id="SYSTEM-SERVER",
+        alias="Consola de Administración",
+        hostname="Servidor Central",
         username=requester["username"],
         category="AUDIT",
         message=f"{requester['display_name']} eliminó el equipo '{alias_lbl}' ({mode_lbl})",

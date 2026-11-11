@@ -1256,25 +1256,27 @@ class SilentRemoteAgent:
 
     def capture_evidence_webp(self, sct: Optional[mss.base.MSSBase] = None) -> tuple[str, str]:
         """
-        Captura la pantalla actual en alta resolución (hasta 1920px de ancho) y la comprime
-        en formato WebP (calidad 80, método 4) para anexar evidencia visual tipo DVR a eventos de bitácora.
+        Captura la pantalla actual en alta resolución y la comprime en formato WebP (calidad 80, método 4).
+        Si el equipo tiene múltiples monitores conectados, captura automáticamente el escritorio combinado
+        completo (monitors[0]) para que la evidencia DVR abarque todas las pantallas simultáneamente.
         """
         screenshot_b64 = ""
         screenshot_fmt = "webp"
         try:
             if sct is not None:
-                mon_idx = min(self.current_monitor, len(sct.monitors) - 1)
-                mon = sct.monitors[mon_idx]
+                mon_count = max(1, len(sct.monitors) - 1)
+                mon = sct.monitors[0] if mon_count > 1 else sct.monitors[min(self.current_monitor, len(sct.monitors) - 1)]
                 raw_grab = sct.grab(mon)
             else:
                 with mss.mss() as local_sct:
-                    mon_idx = min(self.current_monitor, len(local_sct.monitors) - 1)
-                    mon = local_sct.monitors[mon_idx]
+                    mon_count = max(1, len(local_sct.monitors) - 1)
+                    mon = local_sct.monitors[0] if mon_count > 1 else local_sct.monitors[min(self.current_monitor, len(local_sct.monitors) - 1)]
                     raw_grab = local_sct.grab(mon)
             img = Image.frombytes("RGB", raw_grab.size, raw_grab.bgra, "raw", "BGRX")
-            if img.width > 1920:
-                ratio = 1920.0 / img.width
-                img = img.resize((1920, int(img.height * ratio)), Image.LANCZOS)
+            max_w = 3200 if mon_count > 1 else 1920
+            if img.width > max_w:
+                ratio = float(max_w) / img.width
+                img = img.resize((max_w, int(img.height * ratio)), Image.LANCZOS)
             buf = io.BytesIO()
             try:
                 img.save(buf, format="WEBP", quality=80, method=4)
@@ -1796,7 +1798,12 @@ class SilentRemoteAgent:
                                 vbs.unlink()
                             except Exception:
                                 pass
-                for fname in ("config_agent.json", "agent_client.crt", "agent_client.key"):
+                for cfg_f in BASE_DIR.glob("config_agent*.json"):
+                    try:
+                        cfg_f.unlink()
+                    except Exception:
+                        pass
+                for fname in ("agent_client.crt", "agent_client.key"):
                     fp = BASE_DIR / fname
                     if fp.exists():
                         fp.unlink()
@@ -1825,7 +1832,12 @@ class SilentRemoteAgent:
                         except Exception:
                             pass
                 if "monitoreoempresa" in str(BASE_DIR).lower():
-                    for fname in ("config_agent.json", "agent_client.crt", "agent_client.key"):
+                    for cfg_f in BASE_DIR.glob("config_agent*.json"):
+                        try:
+                            cfg_f.unlink()
+                        except Exception:
+                            pass
+                    for fname in ("agent_client.crt", "agent_client.key"):
                         fp = BASE_DIR / fname
                         if fp.exists():
                             fp.unlink()

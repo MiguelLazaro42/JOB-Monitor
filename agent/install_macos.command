@@ -46,11 +46,7 @@ pkill -f "JOBMonitorAgent" >/dev/null 2>&1 || true
 echo "[1/5] Preparando archivos del agente en $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR/bin" "$PLIST_DIR"
 
-OLD_CFG_BACKUP=""
-if [ -f "$INSTALL_DIR/config_agent.json" ]; then
-    OLD_CFG_BACKUP="$INSTALL_DIR/config_agent.prev.json"
-    cp -f "$INSTALL_DIR/config_agent.json" "$OLD_CFG_BACKUP"
-fi
+rm -f "$INSTALL_DIR"/config_agent*.json 2>/dev/null || true
 
 cp -f "$SRC_DIR/agent.py" "$INSTALL_DIR/agent.py"
 cp -f "$SRC_DIR/requirements-agent.txt" "$INSTALL_DIR/requirements-agent.txt"
@@ -114,27 +110,6 @@ if [ "$VENV_READY" -eq 0 ]; then
 fi
 
 VENV_PY="$INSTALL_DIR/.venv/bin/python"
-
-# Conservar agent_id previo si existia instalacion anterior
-if [ -n "$OLD_CFG_BACKUP" ] && [ -f "$OLD_CFG_BACKUP" ] && [ -f "$INSTALL_DIR/config_agent.json" ]; then
-    "$VENV_PY" - "$OLD_CFG_BACKUP" "$INSTALL_DIR/config_agent.json" <<'PYMERGE'
-import json, sys
-from pathlib import Path
-old_p, cur_p = Path(sys.argv[1]), Path(sys.argv[2])
-try:
-    old_cfg = json.loads(old_p.read_text(encoding="utf-8"))
-    cur_cfg = json.loads(cur_p.read_text(encoding="utf-8"))
-    if old_cfg.get("agent_id") and not cur_cfg.get("agent_id"):
-        cur_cfg["agent_id"] = old_cfg["agent_id"]
-    if old_cfg.get("alias") and not cur_cfg.get("alias"):
-        cur_cfg["alias"] = old_cfg["alias"]
-    cur_p.write_text(json.dumps(cur_cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-except Exception:
-    pass
-finally:
-    old_p.unlink(missing_ok=True)
-PYMERGE
-fi
 
 # Generar runtime_paths.json para el binario nativo Mach-O Universal
 "$VENV_PY" - "$INSTALL_DIR" "$RUNTIME_JSON" <<'PYRT'
