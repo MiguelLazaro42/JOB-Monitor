@@ -843,25 +843,37 @@ def build_agent_package_zip(server_url: str, alias: str = "", tenant_id: str = "
             if fpath.exists():
                 zinfo = zipfile.ZipInfo(f"{folder_prefix}/{fname}")
                 zinfo.compress_type = zipfile.ZIP_DEFLATED
+                zinfo.create_system = 3  # 3 = UNIX (Permite a macOS Archive Utility extraer con permisos ejecutables)
                 if fname.endswith(".command") or fname.endswith(".py"):
-                    zinfo.external_attr = (0o100755 & 0xFFFF) << 16
+                    zinfo.external_attr = 0o100755 << 16
                 else:
-                    zinfo.external_attr = (0o100644 & 0xFFFF) << 16
+                    zinfo.external_attr = 0o100644 << 16
                 zf.writestr(zinfo, fpath.read_bytes())
 
-        zf.writestr(f"{folder_prefix}/config_agent.json", cfg_json_str)
-        zf.writestr(f"{folder_prefix}/LEEME_INSTALACION.txt", readme_str)
+        cfg_info = zipfile.ZipInfo(f"{folder_prefix}/config_agent.json")
+        cfg_info.compress_type = zipfile.ZIP_DEFLATED
+        cfg_info.create_system = 3
+        cfg_info.external_attr = 0o100644 << 16
+        zf.writestr(cfg_info, cfg_json_str)
+
+        readme_info = zipfile.ZipInfo(f"{folder_prefix}/LEEME_INSTALACION.txt")
+        readme_info.compress_type = zipfile.ZIP_DEFLATED
+        readme_info.create_system = 3
+        readme_info.external_attr = 0o100644 << 16
+        zf.writestr(readme_info, readme_str)
 
         cli_crt_bytes, cli_key_bytes = ensure_mtls_certificates()
         if cli_crt_bytes and cli_key_bytes:
             crt_info = zipfile.ZipInfo(f"{folder_prefix}/agent_client.crt")
             crt_info.compress_type = zipfile.ZIP_DEFLATED
-            crt_info.external_attr = (0o100644 & 0xFFFF) << 16
+            crt_info.create_system = 3
+            crt_info.external_attr = 0o100644 << 16
             zf.writestr(crt_info, cli_crt_bytes)
 
             key_info = zipfile.ZipInfo(f"{folder_prefix}/agent_client.key")
             key_info.compress_type = zipfile.ZIP_DEFLATED
-            key_info.external_attr = (0o100600 & 0xFFFF) << 16
+            key_info.create_system = 3
+            key_info.external_attr = 0o100600 << 16
             zf.writestr(key_info, cli_key_bytes)
 
     mem_zip.seek(0)

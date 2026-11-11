@@ -151,12 +151,29 @@ elif IS_MAC:
         except Exception:
             return "macOS"
 
+    def check_macos_screen_permission(request_if_missing: bool = False) -> bool:
+        try:
+            cg = ctypes.cdll.LoadLibrary('/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics')
+            if hasattr(cg, 'CGPreflightScreenCaptureAccess'):
+                cg.CGPreflightScreenCaptureAccess.restype = ctypes.c_bool
+                granted = cg.CGPreflightScreenCaptureAccess()
+                if not granted and request_if_missing and hasattr(cg, 'CGRequestScreenCaptureAccess'):
+                    cg.CGRequestScreenCaptureAccess.restype = ctypes.c_bool
+                    cg.CGRequestScreenCaptureAccess()
+                return bool(granted)
+        except Exception:
+            pass
+        return True
+
 else:
     def get_idle_seconds() -> int:
         return 0
 
     def get_active_window_title() -> str:
         return platform.system()
+
+    def check_macos_screen_permission(request_if_missing: bool = False) -> bool:
+        return True
 
 
 def extract_app_name(window_title: str) -> str:
@@ -1017,6 +1034,11 @@ class SilentRemoteAgent:
                         monitors = self.get_monitors_info(sct)
                         thumb = self.capture_thumbnail_b64(sct)
 
+                    has_screen = check_macos_screen_permission(request_if_missing=True)
+                    os_label = f"{platform.system()} {platform.release()}"
+                    if IS_MAC and not has_screen:
+                        os_label += " (Falta permiso de Pantalla)"
+
                     hello = {
                         "type": "register",
                         "token": self.token,
@@ -1025,7 +1047,7 @@ class SilentRemoteAgent:
                         "tenant_id": str(self.cfg.get("tenant_id") or ""),
                         "hostname": self.hostname,
                         "username": self.username,
-                        "os": f"{platform.system()} {platform.release()}",
+                        "os": os_label,
                         "local_ip": self.get_local_ip(),
                         "monitors": monitors,
                         "current_monitor": self.current_monitor,

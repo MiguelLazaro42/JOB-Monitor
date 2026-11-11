@@ -702,7 +702,9 @@
     viewerStatusDot.className = `indicator-dot ${meta.dotClass}`;
     viewerDeviceAlias.textContent = agent.alias;
     viewerActiveWindow.textContent = agent.active_window || 'Escritorio';
-    tabViewerLabel.textContent = `Visor: ${agent.alias}`;
+    const shortAlias = (agent.alias || '').slice(0, 14);
+    tabViewerLabel.textContent = `Visor: ${shortAlias}${(agent.alias || '').length > 14 ? '…' : ''}`;
+    tabViewerLabel.title = `Visor: ${agent.alias}`;
   }
 
   function populateMonitorsDropdown(agent) {
