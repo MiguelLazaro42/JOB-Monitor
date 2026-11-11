@@ -376,6 +376,7 @@ def read_system_clipboard() -> str:
                 ["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
                 stderr=subprocess.DEVNULL,
                 timeout=2.0,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             ).decode("utf-8", errors="ignore").rstrip("\r\n")
         except Exception:
             pass
@@ -402,6 +403,7 @@ def write_system_clipboard(text: str) -> bool:
                 ["clip"],
                 stdin=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             p.communicate(input=text.encode("utf-16le"), timeout=2.0)
             return True
@@ -1049,17 +1051,30 @@ class SilentRemoteAgent:
         """
         try:
             if IS_WINDOWS:
+                no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 for task_name in ("ServicioMonitoreoCorporativoWatchdog", "ServicioMonitoreoCorporativo"):
                     subprocess.run(
                         ["schtasks", "/delete", "/tn", task_name, "/f"],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        creationflags=no_win,
                     )
-                appdata = os.environ.get("APPDATA", "")
-                if appdata:
-                    vbs = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "ServicioMonitoreoCorporativo.vbs"
-                    if vbs.exists():
-                        vbs.unlink()
+                for hive in ("HKCU", "HKLM"):
+                    subprocess.run(
+                        ["reg", "delete", f"{hive}\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/v", "ServicioMonitoreoCorporativo", "/f"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=no_win,
+                    )
+                for env_key, startup_leaf in (("APPDATA", "Startup"), ("ProgramData", "StartUp")):
+                    base_env = os.environ.get(env_key, "")
+                    if base_env:
+                        vbs = Path(base_env) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / startup_leaf / "ServicioMonitoreoCorporativo.vbs"
+                        if vbs.exists():
+                            try:
+                                vbs.unlink()
+                            except Exception:
+                                pass
                 for fname in ("config_agent.json", "agent_client.crt", "agent_client.key"):
                     fp = BASE_DIR / fname
                     if fp.exists():
@@ -1070,6 +1085,7 @@ class SilentRemoteAgent:
                         shell=True,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        creationflags=no_win,
                     )
             elif IS_MAC:
                 import shutil
@@ -1291,6 +1307,7 @@ class SilentRemoteAgent:
 
 
 _SINGLE_INSTANCE_LOCK_FH = None
+_SINGLE_INSTANCE_MUTEX = None
 
 
 def acquire_single_instance_lock() -> bool:
@@ -1300,7 +1317,23 @@ def acquire_single_instance_lock() -> bool:
     Si el agente ya está corriendo, retorna False y la segunda instancia termina en 0ms.
     Si el agente se cerró o cayó, el SO libera el candado automáticamente y el Watchdog lo levanta.
     """
-    global _SINGLE_INSTANCE_LOCK_FH
+    global _SINGLE_INSTANCE_LOCK_FH, _SINGLE_INSTANCE_MUTEX
+    if IS_WINDOWS:
+        try:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+            kernel32.CreateMutexW.restype = ctypes.c_void_p
+            ctypes.set_last_error(0)
+            handle = kernel32.CreateMutexW(None, False, "Local\\SITAI_JOBMonitor_Agent_Mutex")
+            err = ctypes.get_last_error()
+            # 183 = ERROR_ALREADY_EXISTS, 5 = ERROR_ACCESS_DENIED (instancia activa con mayor privilegio)
+            if not handle or err in (183, 5):
+                return False
+            _SINGLE_INSTANCE_MUTEX = handle
+            return True
+        except Exception:
+            pass
+
     lock_path = Path(tempfile.gettempdir()) / "job_monitor_agent.lock"
     try:
         fh = open(lock_path, "a+", encoding="utf-8")
