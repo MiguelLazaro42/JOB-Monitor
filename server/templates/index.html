@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=20261111-v11" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261111-v12" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -705,12 +705,11 @@
             <span>Portapapeles</span>
           </button>
 
-          <button id="open-file-btn" type="button" class="btn btn-secondary btn-sm" title="Enviar archivo a la PC">
+          <button id="open-file-btn" type="button" class="btn btn-secondary btn-sm" title="Explorador de archivos del equipo remoto">
             <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
             </svg>
-            <span>Archivo</span>
+            <span>Archivos</span>
           </button>
 
           <button id="viewer-logs-btn" type="button" class="btn btn-secondary btn-sm" title="Ver bitácora de este equipo">
@@ -1093,6 +1092,7 @@
             <option value="powershell">PowerShell (Win)</option>
             <option value="cmd">CMD (Win)</option>
           </select>
+          <button type="button" id="rsh-switch-finder-btn" class="rsh-btn" title="Cambiar al Explorador de Archivos">Archivos</button>
           <button type="button" id="rsh-ctrlc-btn" class="rsh-btn rsh-btn-warn" title="Enviar Ctrl+C / Interrumpir comando">Ctrl+C</button>
           <button type="button" id="rsh-clear-btn" class="rsh-btn" title="Limpiar pantalla">Limpiar</button>
           <button type="button" id="rsh-close-btn" class="rsh-btn rsh-btn-close" title="Cerrar sesion de consola">Cerrar</button>
@@ -1115,10 +1115,132 @@
       </form>
     </div>
   </div>
+
+  <!-- Modal Explorador de Archivos Estilo Finder (Sobre Canal Inverso WSS) -->
+  <div id="finder-modal" class="modal-backdrop hidden">
+    <div class="modal-card fnd-modal-card">
+      <div class="fnd-topbar">
+        <div class="fnd-brand">
+          <div class="fnd-brand-icon">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+          </div>
+          <div>
+            <h2 id="fnd-device-title">Archivos del Equipo</h2>
+            <p id="fnd-subtitle" class="fnd-sub">Navegacion silenciosa en tiempo real</p>
+          </div>
+        </div>
+
+        <div class="fnd-top-actions">
+          <button type="button" id="fnd-new-folder-btn" class="btn btn-secondary btn-sm">
+            <svg class="icon-xs" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              <line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/>
+            </svg>
+            <span>Nueva carpeta</span>
+          </button>
+          <label class="btn btn-primary btn-sm fnd-upload-label">
+            <svg class="icon-xs" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <span>Subir archivos</span>
+            <input id="fnd-upload-input" type="file" multiple class="hidden" />
+          </label>
+          <button type="button" id="fnd-switch-term-btn" class="btn btn-secondary btn-sm" title="Abrir Consola de este equipo">Consola</button>
+          <button type="button" id="fnd-close-btn" class="icon-btn" title="Cerrar explorador">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="fnd-workspace" id="fnd-dropzone">
+        <div id="fnd-drop-overlay" class="fnd-drop-overlay hidden">
+          <div class="fnd-drop-box">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <strong>Suelta tus archivos aqui</strong>
+            <span>Se subiran directamente a la carpeta abierta</span>
+          </div>
+        </div>
+
+        <aside class="fnd-sidebar">
+          <div class="fnd-side-group">
+            <span class="fnd-side-heading">FAVORITOS</span>
+            <div id="fnd-favs-list" class="fnd-side-list"></div>
+          </div>
+          <div class="fnd-side-group">
+            <span class="fnd-side-heading">UNIDADES</span>
+            <div id="fnd-drives-list" class="fnd-side-list"></div>
+          </div>
+          <label class="fnd-hidden-toggle">
+            <input type="checkbox" id="fnd-hidden-check" />
+            <span>Mostrar ocultos</span>
+          </label>
+        </aside>
+
+        <div class="fnd-main">
+          <div class="fnd-nav-bar">
+            <button type="button" id="fnd-up-btn" class="fnd-icon-btn" title="Subir a carpeta superior">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <polyline points="15 18 9 12 15 6"/>
+              </svg>
+            </button>
+            <div id="fnd-breadcrumbs" class="fnd-breadcrumbs"></div>
+            <div class="fnd-search-box">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <input id="fnd-filter-input" type="text" placeholder="Filtrar..." autocomplete="off" />
+            </div>
+            <button type="button" id="fnd-refresh-btn" class="fnd-icon-btn" title="Actualizar carpeta">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+            </button>
+          </div>
+
+          <form id="fnd-inline-form" class="fnd-inline-bar hidden">
+            <span id="fnd-inline-label" class="fnd-inline-lbl">Nueva carpeta:</span>
+            <input id="fnd-inline-input" type="text" class="text-input fnd-inline-inp" autocomplete="off" />
+            <button type="submit" class="btn btn-primary btn-sm">Guardar</button>
+            <button type="button" id="fnd-inline-cancel" class="btn btn-secondary btn-sm">Cancelar</button>
+          </form>
+
+          <div class="fnd-list-head">
+            <span>Nombre</span>
+            <span>Modificado</span>
+            <span>Tamano</span>
+            <span style="text-align:right;">Acciones</span>
+          </div>
+
+          <div id="fnd-rows" class="fnd-rows"></div>
+
+          <div id="fnd-preview-drawer" class="fnd-preview-drawer hidden">
+            <div class="fnd-preview-head">
+              <strong id="fnd-preview-title">Vista rapida</strong>
+              <button type="button" id="fnd-preview-close" class="btn btn-secondary btn-sm">Cerrar vista</button>
+            </div>
+            <div id="fnd-preview-body" class="fnd-preview-body"></div>
+          </div>
+
+          <div class="fnd-statusbar">
+            <span id="fnd-count-label">0 elementos</span>
+            <span id="fnd-status-pill" class="fnd-status-pill hidden"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
   </div><!-- /#app-shell -->
 
   <script src="/static/js/audio.js?v=20261111-v9"></script>
   <script src="/static/js/viewer.js?v=20261111-v9"></script>
-  <script src="/static/js/app.js?v=20261111-v11"></script>
+  <script src="/static/js/app.js?v=20261111-v12"></script>
 </body>
 </html>

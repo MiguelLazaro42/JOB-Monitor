@@ -825,7 +825,8 @@
               </button>
               ${
                 !state.user || state.user.can_control !== false
-                  ? `<button type="button" class="btn btn-secondary card-btn-side js-open-terminal" data-agent-id="${escapeHtml(ag.agent_id)}" title="Abrir consola inversa silenciosa"><span>SSH</span></button>`
+                  ? `<button type="button" class="btn btn-secondary card-btn-side js-open-finder" data-agent-id="${escapeHtml(ag.agent_id)}" title="Explorar archivos del equipo"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button>
+                     <button type="button" class="btn btn-secondary card-btn-side js-open-terminal" data-agent-id="${escapeHtml(ag.agent_id)}" title="Abrir consola inversa silenciosa"><span>SSH</span></button>`
                   : ''
               }
               ${
@@ -2297,6 +2298,11 @@
         return;
       }
 
+      if (msg.type === 'fs_list_res' || msg.type === 'fs_download_res' || msg.type === 'fs_op_res') {
+        handleFinderWsMessage(msg);
+        return;
+      }
+
       if (msg.type === 'agent_disconnected') {
         state.agents.delete(msg.agent_id);
         updateCountersAndGrid();
@@ -2444,6 +2450,12 @@
     if (logsBtn) {
       e.stopPropagation();
       openLogsForAgent(logsBtn.dataset.agentId);
+      return;
+    }
+    const fndBtn = e.target.closest('.js-open-finder');
+    if (fndBtn) {
+      e.stopPropagation();
+      openFinderExplorer(fndBtn.dataset.agentId);
       return;
     }
     const termBtn = e.target.closest('.js-open-terminal');
@@ -2795,10 +2807,9 @@
     }
   }
 
-  if (openFileBtn && fileModal) {
+  if (openFileBtn) {
     openFileBtn.addEventListener('click', () => {
-      if (fileStatusMsg) fileStatusMsg.classList.add('hidden');
-      fileModal.classList.remove('hidden');
+      if (state.selectedAgentId) openFinderExplorer(state.selectedAgentId);
     });
   }
 
@@ -3375,6 +3386,374 @@
         if (rshInput) rshInput.focus();
       }
     });
+  });
+
+  // =====================================================================
+  // EXPLORADOR DE ARCHIVOS ESTILO FINDER SOBRE WSS (MF-FS06 / MF-FS07)
+  // =====================================================================
+  const finderModal = document.getElementById('finder-modal');
+  const fndDeviceTitle = document.getElementById('fnd-device-title');
+  const fndSubtitle = document.getElementById('fnd-subtitle');
+  const fndFavsList = document.getElementById('fnd-favs-list');
+  const fndDrivesList = document.getElementById('fnd-drives-list');
+  const fndHiddenCheck = document.getElementById('fnd-hidden-check');
+  const fndUpBtn = document.getElementById('fnd-up-btn');
+  const fndBreadcrumbs = document.getElementById('fnd-breadcrumbs');
+  const fndFilterInput = document.getElementById('fnd-filter-input');
+  const fndRefreshBtn = document.getElementById('fnd-refresh-btn');
+  const fndRows = document.getElementById('fnd-rows');
+  const fndCountLabel = document.getElementById('fnd-count-label');
+  const fndStatusPill = document.getElementById('fnd-status-pill');
+  const fndCloseBtn = document.getElementById('fnd-close-btn');
+  const fndSwitchTermBtn = document.getElementById('fnd-switch-term-btn');
+  const rshSwitchFinderBtn = document.getElementById('rsh-switch-finder-btn');
+  const fndNewFolderBtn = document.getElementById('fnd-new-folder-btn');
+  const fndUploadInput = document.getElementById('fnd-upload-input');
+  const fndDropzone = document.getElementById('fnd-dropzone');
+  const fndDropOverlay = document.getElementById('fnd-drop-overlay');
+  const fndInlineForm = document.getElementById('fnd-inline-form');
+  const fndInlineLabel = document.getElementById('fnd-inline-label');
+  const fndInlineInput = document.getElementById('fnd-inline-input');
+  const fndInlineCancel = document.getElementById('fnd-inline-cancel');
+  const fndPreviewDrawer = document.getElementById('fnd-preview-drawer');
+  const fndPreviewTitle = document.getElementById('fnd-preview-title');
+  const fndPreviewBody = document.getElementById('fnd-preview-body');
+  const fndPreviewClose = document.getElementById('fnd-preview-close');
+
+  let fndAgentId = null;
+  let fndCwd = '';
+  let fndParent = '';
+  let fndEntries = [];
+  let fndPendingDeletePath = '';
+  let fndInlineAction = null;
+
+  function fmtBytes(b) {
+    const n = Number(b || 0);
+    if (n < 1024) return `${n} B`;
+    if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1073741824) return `${(n / 1048576).toFixed(1)} MB`;
+    return `${(n / 1073741824).toFixed(2)} GB`;
+  }
+
+  function fmtMtime(epochSec) {
+    if (!epochSec) return '---';
+    const d = new Date(epochSec * 1000);
+    return d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+
+  function isPreviewableExt(name) {
+    return /\.(png|jpe?g|webp|gif|svg|txt|log|md|json|csv|ini|ya?ml|py|js|bat|sh|xml)$/i.test(name || '');
+  }
+
+  function getFileIconSvg(name, isDir) {
+    if (isDir) {
+      return '<svg width="18" height="18" viewBox="0 0 24 24" fill="#3b82f6" stroke="#2563eb" stroke-width="1.4"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
+    }
+    const low = (name || '').toLowerCase();
+    let col = '#64748b';
+    if (/\.(xlsx?|csv)$/.test(low)) col = '#10b981';
+    else if (/\.(pdf|docx?|pptx?)$/.test(low)) col = '#124fae';
+    else if (/\.(png|jpe?g|webp|gif|svg|ai|psd)$/.test(low)) col = '#f87b02';
+    else if (/\.(zip|rar|7z|tar|gz)$/.test(low)) col = '#8b5cf6';
+    return `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="${col}" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+  }
+
+  function setFinderStatus(text, isErr = false) {
+    if (!fndStatusPill) return;
+    if (!text) {
+      fndStatusPill.classList.add('hidden');
+      return;
+    }
+    fndStatusPill.textContent = text;
+    fndStatusPill.className = 'fnd-status-pill' + (isErr ? ' fnd-status-err' : '');
+  }
+
+  function requestFinderDir(targetPath) {
+    if (!fndAgentId) return;
+    fndPendingDeletePath = '';
+    if (fndPreviewDrawer) fndPreviewDrawer.classList.add('hidden');
+    setFinderStatus('Cargando carpeta...');
+    sendWsJson({
+      type: 'fs_list',
+      agent_id: fndAgentId,
+      path: targetPath || '',
+      show_hidden: Boolean(fndHiddenCheck && fndHiddenCheck.checked),
+    });
+  }
+
+  function openFinderExplorer(agentId) {
+    if (!finderModal || !agentId) return;
+    const ag = state.agents.get(agentId);
+    if (!ag) return;
+    fndAgentId = agentId;
+    if (fndDeviceTitle) fndDeviceTitle.textContent = `Archivos — ${ag.alias || ag.hostname}`;
+    if (fndSubtitle) fndSubtitle.textContent = `${ag.hostname} · ${ag.username}`;
+    if (fndFilterInput) fndFilterInput.value = '';
+    if (fndInlineForm) fndInlineForm.classList.add('hidden');
+    finderModal.classList.remove('hidden');
+    requestFinderDir('');
+  }
+
+  function renderFinderBreadcrumbs(cwd) {
+    if (!fndBreadcrumbs) return;
+    const isWin = /^[A-Za-z]:\\/.test(cwd || '');
+    const sep = isWin ? '\\' : '/';
+    const parts = (cwd || '').split(sep).filter(Boolean);
+    const crumbs = [];
+    if (isWin && parts.length > 0) {
+      let acc = parts[0] + '\\';
+      crumbs.push({ label: parts[0], path: acc });
+      for (let i = 1; i < parts.length; i++) {
+        acc = acc.endsWith('\\') ? acc + parts[i] : acc + '\\' + parts[i];
+        crumbs.push({ label: parts[i], path: acc });
+      }
+    } else {
+      crumbs.push({ label: 'Raiz (/)', path: '/' });
+      let acc = '';
+      parts.forEach((p) => {
+        acc += '/' + p;
+        crumbs.push({ label: p, path: acc });
+      });
+    }
+    fndBreadcrumbs.innerHTML = crumbs
+      .map((c, idx) => `${idx > 0 ? '<span class="fnd-crumb-sep">/</span>' : ''}<button type="button" class="fnd-crumb" data-path="${escapeHtml(c.path)}">${escapeHtml(c.label)}</button>`)
+      .join('');
+    fndBreadcrumbs.scrollLeft = fndBreadcrumbs.scrollWidth;
+  }
+
+  function renderFinderRows() {
+    if (!fndRows) return;
+    const q = ((fndFilterInput && fndFilterInput.value) || '').trim().toLowerCase();
+    const list = q ? fndEntries.filter((it) => it.name.toLowerCase().includes(q)) : fndEntries;
+    if (fndCountLabel) fndCountLabel.textContent = `${list.length} elemento${list.length === 1 ? '' : 's'} · ${fndCwd}`;
+    if (list.length === 0) {
+      fndRows.innerHTML = '<div class="fnd-empty">Esta carpeta esta vacia o no hay coincidencias con el filtro.</div>';
+      return;
+    }
+    fndRows.innerHTML = list
+      .map((it) => {
+        const canPrev = !it.is_dir && isPreviewableExt(it.name);
+        const isConfirming = fndPendingDeletePath === it.path;
+        return `<div class="fnd-row ${it.is_dir ? 'fnd-row-dir' : ''}" data-path="${escapeHtml(it.path)}" data-isdir="${it.is_dir ? '1' : '0'}" data-name="${escapeHtml(it.name)}">
+          <div class="fnd-name-cell">
+            ${getFileIconSvg(it.name, it.is_dir)}
+            <span class="fnd-item-name" title="${escapeHtml(it.name)}">${escapeHtml(it.name)}</span>
+          </div>
+          <span class="fnd-col-date">${escapeHtml(fmtMtime(it.mtime))}</span>
+          <span class="fnd-col-size">${it.is_dir ? 'Carpeta' : escapeHtml(fmtBytes(it.size))}</span>
+          <div class="fnd-actions-cell" style="${isConfirming ? 'opacity:1;' : ''}">
+            ${
+              isConfirming
+                ? `<button type="button" class="fnd-confirm-del js-fnd-del-ok">Borrar</button>`
+                : `${
+                    canPrev
+                      ? `<button type="button" class="fnd-act-btn js-fnd-preview" title="Vista rapida"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>`
+                      : ''
+                  }
+                  <button type="button" class="fnd-act-btn js-fnd-download" title="${it.is_dir ? 'Descargar carpeta en .ZIP' : 'Descargar archivo'}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
+                  <button type="button" class="fnd-act-btn js-fnd-rename" title="Renombrar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></button>
+                  <button type="button" class="fnd-act-btn fnd-act-del js-fnd-delete" title="Eliminar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></button>`
+            }
+          </div>
+        </div>`;
+      })
+      .join('');
+  }
+
+  function handleFinderWsMessage(msg) {
+    if (msg.agent_id !== fndAgentId) return;
+    if (msg.type === 'fs_list_res') {
+      fndCwd = msg.cwd || fndCwd;
+      fndParent = msg.parent || '';
+      fndEntries = Array.isArray(msg.entries) ? msg.entries : [];
+      if (fndFavsList && Array.isArray(msg.favorites)) {
+        fndFavsList.innerHTML = msg.favorites
+          .map((f) => `<button type="button" class="fnd-side-btn ${f.path === fndCwd ? 'active' : ''}" data-path="${escapeHtml(f.path)}">${escapeHtml(f.label)}</button>`)
+          .join('');
+      }
+      if (fndDrivesList && Array.isArray(msg.drives)) {
+        fndDrivesList.innerHTML = msg.drives
+          .map((d) => `<button type="button" class="fnd-side-btn ${d.path === fndCwd ? 'active' : ''}" data-path="${escapeHtml(d.path)}">${escapeHtml(d.label)}</button>`)
+          .join('');
+      }
+      renderFinderBreadcrumbs(fndCwd);
+      renderFinderRows();
+      setFinderStatus(msg.ok === false ? msg.error || 'Error de acceso' : '', msg.ok === false);
+    } else if (msg.type === 'fs_download_res') {
+      if (!msg.ok) {
+        setFinderStatus(msg.error || 'No se pudo descargar', true);
+        return;
+      }
+      setFinderStatus('');
+      if (msg.preview && fndPreviewDrawer && fndPreviewBody) {
+        if (fndPreviewTitle) fndPreviewTitle.textContent = msg.filename || 'Vista rapida';
+        if (String(msg.mime || '').startsWith('image/')) {
+          fndPreviewBody.innerHTML = `<img src="data:${escapeHtml(msg.mime)};base64,${msg.data_b64}" alt="${escapeHtml(msg.filename)}" />`;
+        } else {
+          try {
+            const bytes = Uint8Array.from(atob(msg.data_b64), (c) => c.charCodeAt(0));
+            const txt = new TextDecoder('utf-8').decode(bytes);
+            fndPreviewBody.innerHTML = `<pre>${escapeHtml(txt.slice(0, 80000))}</pre>`;
+          } catch (_) {
+            fndPreviewBody.innerHTML = '<pre>No se pudo decodificar la vista previa.</pre>';
+          }
+        }
+        fndPreviewDrawer.classList.remove('hidden');
+        return;
+      }
+      const byteChars = atob(msg.data_b64);
+      const arr = new Uint8Array(byteChars.length);
+      for (let i = 0; i < byteChars.length; i++) arr[i] = byteChars.charCodeAt(i);
+      const blob = new Blob([arr], { type: msg.mime || 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = msg.filename || 'archivo';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    } else if (msg.type === 'fs_op_res') {
+      if (!msg.ok) {
+        setFinderStatus(msg.error || 'Operacion rechazada', true);
+      } else {
+        setFinderStatus('Listo');
+        setTimeout(() => setFinderStatus(''), 1800);
+        requestFinderDir(msg.cwd || fndCwd);
+      }
+    }
+  }
+
+  function closeFinderExplorer() {
+    if (finderModal) finderModal.classList.add('hidden');
+    if (fndPreviewDrawer) fndPreviewDrawer.classList.add('hidden');
+    fndAgentId = null;
+  }
+
+  if (fndCloseBtn) fndCloseBtn.addEventListener('click', closeFinderExplorer);
+  if (fndPreviewClose) fndPreviewClose.addEventListener('click', () => fndPreviewDrawer.classList.add('hidden'));
+  if (fndSwitchTermBtn) {
+    fndSwitchTermBtn.addEventListener('click', () => {
+      const id = fndAgentId;
+      closeFinderExplorer();
+      if (id) openReverseTerminal(id);
+    });
+  }
+  if (rshSwitchFinderBtn) {
+    rshSwitchFinderBtn.addEventListener('click', () => {
+      const id = rshActiveAgentId;
+      closeReverseTerminal();
+      if (id) openFinderExplorer(id);
+    });
+  }
+  if (fndUpBtn) fndUpBtn.addEventListener('click', () => { if (fndParent) requestFinderDir(fndParent); });
+  if (fndRefreshBtn) fndRefreshBtn.addEventListener('click', () => requestFinderDir(fndCwd));
+  if (fndHiddenCheck) fndHiddenCheck.addEventListener('change', () => requestFinderDir(fndCwd));
+  if (fndFilterInput) fndFilterInput.addEventListener('input', () => renderFinderRows());
+
+  [fndFavsList, fndDrivesList, fndBreadcrumbs].forEach((box) => {
+    if (!box) return;
+    box.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-path]');
+      if (btn && btn.dataset.path) requestFinderDir(btn.dataset.path);
+    });
+  });
+
+  if (fndNewFolderBtn && fndInlineForm && fndInlineInput) {
+    fndNewFolderBtn.addEventListener('click', () => {
+      fndInlineAction = { op: 'mkdir', path: fndCwd };
+      if (fndInlineLabel) fndInlineLabel.textContent = 'Nueva carpeta:';
+      fndInlineInput.value = '';
+      fndInlineForm.classList.remove('hidden');
+      fndInlineInput.focus();
+    });
+  }
+  if (fndInlineCancel && fndInlineForm) {
+    fndInlineCancel.addEventListener('click', () => fndInlineForm.classList.add('hidden'));
+  }
+  if (fndInlineForm && fndInlineInput) {
+    fndInlineForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const val = fndInlineInput.value.trim();
+      if (!val || !fndInlineAction || !fndAgentId) return;
+      sendWsJson({ type: 'fs_mutate', agent_id: fndAgentId, op: fndInlineAction.op, path: fndInlineAction.path, new_name: val });
+      fndInlineForm.classList.add('hidden');
+    });
+  }
+
+  if (fndRows) {
+    fndRows.addEventListener('click', (e) => {
+      const row = e.target.closest('.fnd-row');
+      if (!row || !fndAgentId) return;
+      const rowPath = row.dataset.path || '';
+      const rowName = row.dataset.name || '';
+      const isDir = row.dataset.isdir === '1';
+
+      if (e.target.closest('.js-fnd-preview')) {
+        setFinderStatus('Abriendo vista rapida...');
+        sendWsJson({ type: 'fs_download', agent_id: fndAgentId, path: rowPath, preview: true });
+      } else if (e.target.closest('.js-fnd-download')) {
+        setFinderStatus(isDir ? 'Comprimiendo carpeta (.zip)...' : 'Preparando descarga...');
+        sendWsJson({ type: 'fs_download', agent_id: fndAgentId, path: rowPath, preview: false });
+      } else if (e.target.closest('.js-fnd-rename')) {
+        fndInlineAction = { op: 'rename', path: rowPath };
+        if (fndInlineLabel) fndInlineLabel.textContent = 'Renombrar:';
+        if (fndInlineInput) { fndInlineInput.value = rowName; fndInlineForm.classList.remove('hidden'); fndInlineInput.focus(); }
+      } else if (e.target.closest('.js-fnd-delete')) {
+        fndPendingDeletePath = rowPath;
+        renderFinderRows();
+      } else if (e.target.closest('.js-fnd-del-ok')) {
+        fndPendingDeletePath = '';
+        setFinderStatus('Eliminando...');
+        sendWsJson({ type: 'fs_mutate', agent_id: fndAgentId, op: 'delete', path: rowPath });
+      } else if (isDir && !e.target.closest('.fnd-actions-cell')) {
+        requestFinderDir(rowPath);
+      }
+    });
+  }
+
+  function uploadFilesToFinder(fileList) {
+    if (!fndAgentId || !fndCwd || !fileList || !fileList.length) return;
+    Array.from(fileList).forEach((file) => {
+      if (file.size > 16 * 1024 * 1024) {
+        setFinderStatus(`"${file.name}" supera el limite de 16 MB`, true);
+        return;
+      }
+      setFinderStatus(`Subiendo ${file.name}...`);
+      const reader = new FileReader();
+      reader.onload = () => {
+        const res = String(reader.result || '');
+        const comma = res.indexOf(',');
+        const b64 = comma >= 0 ? res.slice(comma + 1) : res;
+        sendWsJson({ type: 'fs_upload', agent_id: fndAgentId, dest_dir: fndCwd, filename: file.name, data_b64: b64 });
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  if (fndUploadInput) {
+    fndUploadInput.addEventListener('change', () => {
+      uploadFilesToFinder(fndUploadInput.files);
+      fndUploadInput.value = '';
+    });
+  }
+  if (fndDropzone && fndDropOverlay) {
+    fndDropzone.addEventListener('dragover', (e) => { e.preventDefault(); fndDropOverlay.classList.remove('hidden'); });
+    fndDropzone.addEventListener('dragleave', (e) => {
+      if (!fndDropzone.contains(e.relatedTarget)) fndDropOverlay.classList.add('hidden');
+    });
+    fndDropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      fndDropOverlay.classList.add('hidden');
+      if (e.dataTransfer && e.dataTransfer.files) uploadFilesToFinder(e.dataTransfer.files);
+    });
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && finderModal && !finderModal.classList.contains('hidden')) {
+      if (fndInlineForm && !fndInlineForm.classList.contains('hidden')) fndInlineForm.classList.add('hidden');
+      else if (fndPreviewDrawer && !fndPreviewDrawer.classList.contains('hidden')) fndPreviewDrawer.classList.add('hidden');
+      else closeFinderExplorer();
+    }
   });
 
   setInterval(checkAndRecoverConnection, 12000);

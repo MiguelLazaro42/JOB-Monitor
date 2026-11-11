@@ -163,6 +163,7 @@ class HubManager:
         self.admin_users: Dict[WebSocket, dict] = {}
         self.subscriptions: Dict[WebSocket, Optional[str]] = {}
         self.shell_sessions: Dict[str, tuple[WebSocket, str]] = {}
+        self.fs_requests: Dict[str, tuple[WebSocket, str]] = {}
         self._last_connect_log: Dict[str, float] = {}
         self._last_disconnect_log: Dict[str, float] = {}
 
@@ -504,6 +505,9 @@ class HubManager:
             if owner_ws == ws:
                 self.shell_sessions.pop(skey, None)
                 await self.send_to_agent(ag_id, {"type": "shell_close", "session_key": skey})
+        for rkey, (owner_ws, _) in list(self.fs_requests.items()):
+            if owner_ws == ws:
+                self.fs_requests.pop(rkey, None)
 
 
 hub = HubManager()
@@ -1919,6 +1923,15 @@ async def ws_agent_endpoint(websocket: WebSocket):
                         if bool(data.get("closed")):
                             hub.shell_sessions.pop(skey, None)
 
+                elif msg_type in ("fs_list_res", "fs_download_res", "fs_op_res"):
+                    rkey = str(data.get("req_key") or "")
+                    owner_info = hub.fs_requests.pop(rkey, None)
+                    if owner_info and owner_info[1] == agent_id:
+                        try:
+                            await owner_info[0].send_json({**data, "agent_id": agent_id})
+                        except Exception:
+                            pass
+
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -2127,6 +2140,32 @@ async def ws_admin_endpoint(websocket: WebSocket):
                     elif msg_type == "shell_close":
                         hub.shell_sessions.pop(skey, None)
                         await hub.send_to_agent(target_id, {"type": "shell_close", "session_key": skey})
+
+                elif msg_type in ("fs_list", "fs_download", "fs_upload", "fs_mutate"):
+                    target_id = str(data.get("agent_id") or hub.subscriptions.get(websocket) or "").strip()
+                    if not target_id or not hub.can_user_access_agent(user, target_id) or not user.get("can_control", True):
+                        continue
+                    ag = hub.agents.get(target_id)
+                    if not ag:
+                        await websocket.send_json({"type": "fs_op_res", "agent_id": target_id, "ok": False, "error": "El equipo remoto esta desconectado."})
+                        continue
+                    rkey = f"fs_{id(websocket)}_{uuid.uuid4().hex[:6]}"
+                    hub.fs_requests[rkey] = (websocket, target_id)
+                    if len(hub.fs_requests) > 200:
+                        for old_k in list(hub.fs_requests.keys())[:50]:
+                            hub.fs_requests.pop(old_k, None)
+                    await hub.send_to_agent(target_id, {**data, "req_key": rkey})
+                    if msg_type != "fs_list":
+                        act_desc = {
+                            "fs_download": f"descargo/previsualizo '{os.path.basename(str(data.get('path') or ''))}'",
+                            "fs_upload": f"subio '{data.get('filename', '')}' a '{data.get('dest_dir', '')}'",
+                            "fs_mutate": f"ejecuto '{data.get('op', '')}' sobre '{os.path.basename(str(data.get('path') or ''))}'",
+                        }.get(msg_type, "opero archivos")
+                        log_entry = db.add_log(
+                            agent_id=ag.agent_id, alias=ag.alias, hostname=ag.hostname, username=ag.username,
+                            category="AUDIT", message=f"Explorador de Archivos ({user['display_name']}): {act_desc}",
+                        )
+                        await hub.broadcast_new_log(log_entry, tenant_id=ag.tenant_id)
 
                 elif msg_type == "audit_ptt_start":
                     target_id = data.get("agent_id") or hub.subscriptions.get(websocket)

