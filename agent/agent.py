@@ -835,37 +835,45 @@ def get_current_keyboard_layout() -> str:
     return "Estándar"
 
 
-SPECIAL_KEYS_MAP = {
-    Key.space: "[Espacio]",
-    Key.enter: "[Enter]",
-    Key.backspace: "[Borrar]",
-    Key.tab: "[Tab]",
-    Key.esc: "[Esc]",
-    Key.delete: "[Supr]",
-    Key.up: "[↑ Arriba]",
-    Key.down: "[↓ Abajo]",
-    Key.left: "[← Izquierda]",
-    Key.right: "[→ Derecha]",
-    Key.shift: "[Shift]",
-    Key.shift_l: "[Shift]",
-    Key.shift_r: "[Shift]",
-    Key.ctrl: "[Ctrl]",
-    Key.ctrl_l: "[Ctrl]",
-    Key.ctrl_r: "[Ctrl]",
-    Key.alt: "[Alt]",
-    Key.alt_l: "[Alt]",
-    Key.alt_r: "[Alt]",
-    Key.alt_gr: "[AltGr]",
-    Key.cmd: "[Cmd]",
-    Key.cmd_l: "[Cmd]",
-    Key.cmd_r: "[Cmd]",
-    Key.caps_lock: "[BloqMayús]",
-    Key.home: "[Inicio]",
-    Key.end: "[Fin]",
-    Key.page_up: "[RePág]",
-    Key.page_down: "[AvPág]",
-    Key.insert: "[Insert]",
-}
+SPECIAL_KEYS_MAP = {}
+def _init_special_keys_map():
+    mapping = {
+        "space": "[Espacio]",
+        "enter": "[Enter]",
+        "backspace": "[Borrar]",
+        "tab": "[Tab]",
+        "esc": "[Esc]",
+        "delete": "[Supr]",
+        "up": "[↑ Arriba]",
+        "down": "[↓ Abajo]",
+        "left": "[← Izquierda]",
+        "right": "[→ Derecha]",
+        "shift": "[Shift]",
+        "shift_l": "[Shift]",
+        "shift_r": "[Shift]",
+        "ctrl": "[Ctrl]",
+        "ctrl_l": "[Ctrl]",
+        "ctrl_r": "[Ctrl]",
+        "alt": "[Alt]",
+        "alt_l": "[Alt]",
+        "alt_r": "[Alt]",
+        "alt_gr": "[AltGr]",
+        "cmd": "[Cmd]",
+        "cmd_l": "[Cmd]",
+        "cmd_r": "[Cmd]",
+        "caps_lock": "[BloqMayús]",
+        "home": "[Inicio]",
+        "end": "[Fin]",
+        "page_up": "[RePág]",
+        "page_down": "[AvPág]",
+        "insert": "[Insert]",
+    }
+    for attr, label in mapping.items():
+        k = getattr(Key, attr, None)
+        if k is not None:
+            SPECIAL_KEYS_MAP[k] = label
+
+_init_special_keys_map()
 
 
 class KeyboardEventHook:
