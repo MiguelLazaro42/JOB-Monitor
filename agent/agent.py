@@ -244,6 +244,42 @@ elif IS_MAC:
             pass
         return True
 
+    def check_macos_accessibility_permission(request_if_missing: bool = False) -> bool:
+        try:
+            app_services = ctypes.cdll.LoadLibrary('/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices')
+            app_services.AXIsProcessTrusted.restype = ctypes.c_bool
+            trusted = bool(app_services.AXIsProcessTrusted())
+            if not trusted and request_if_missing:
+                try:
+                    core_foundation = ctypes.cdll.LoadLibrary('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation')
+                    kAXTrustedCheckOptionPrompt = ctypes.c_void_p.in_dll(app_services, 'kAXTrustedCheckOptionPrompt')
+                    kCFBooleanTrue = ctypes.c_void_p.in_dll(core_foundation, 'kCFBooleanTrue')
+                    CFDictionaryCreate = core_foundation.CFDictionaryCreate
+                    CFDictionaryCreate.restype = ctypes.c_void_p
+                    CFDictionaryCreate.argtypes = [
+                        ctypes.c_void_p,
+                        ctypes.POINTER(ctypes.c_void_p),
+                        ctypes.POINTER(ctypes.c_void_p),
+                        ctypes.c_long,
+                        ctypes.c_void_p,
+                        ctypes.c_void_p,
+                    ]
+                    keys = (ctypes.c_void_p * 1)(kAXTrustedCheckOptionPrompt)
+                    values = (ctypes.c_void_p * 1)(kCFBooleanTrue)
+                    kCFTypeDictionaryKeyCallBacks = ctypes.c_void_p.in_dll(core_foundation, 'kCFTypeDictionaryKeyCallBacks')
+                    kCFTypeDictionaryValueCallBacks = ctypes.c_void_p.in_dll(core_foundation, 'kCFTypeDictionaryValueCallBacks')
+                    options = CFDictionaryCreate(None, keys, values, 1, ctypes.byref(kCFTypeDictionaryKeyCallBacks), ctypes.byref(kCFTypeDictionaryValueCallBacks))
+                    ax_func = getattr(app_services, 'AXIsProcessTrustedWithOptions', None)
+                    if ax_func:
+                        ax_func.restype = ctypes.c_bool
+                        ax_func.argtypes = [ctypes.c_void_p]
+                        trusted = bool(ax_func(options))
+                except Exception:
+                    pass
+            return trusted
+        except Exception:
+            return False
+
     def get_windows_session_context() -> tuple[Optional[int], str, bool]:
         try:
             u = getpass.getuser()
@@ -259,6 +295,9 @@ else:
         return platform.system()
 
     def check_macos_screen_permission(request_if_missing: bool = False) -> bool:
+        return True
+
+    def check_macos_accessibility_permission(request_if_missing: bool = False) -> bool:
         return True
 
     def get_windows_session_context() -> tuple[Optional[int], str, bool]:
@@ -973,6 +1012,7 @@ class SilentRemoteAgent:
         self.scale_factor: float = 1.0
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self.macos_screen_ok: bool = check_macos_screen_permission(request_if_missing=False) if IS_MAC else True
+        self.macos_ax_ok: bool = check_macos_accessibility_permission(request_if_missing=False) if IS_MAC else True
 
         # Estado de monitoreo para generación de logs (Fase 2)
         self.last_window_title: str = get_active_window_title()
@@ -1549,28 +1589,41 @@ class SilentRemoteAgent:
 
     async def macos_permission_heal_loop(self):
         """
-        En macOS, si el agente arrancó antes de que el usuario activara Grabación de Pantalla,
-        sondea cada 3s en un subproceso limpio. En cuanto detecta el permiso concedido,
-        termina para que LaunchAgent (KeepAlive=true) lo relance en 1s con video real activo.
+        En macOS, si el agente arrancó antes de que el usuario activara Grabación de Pantalla o Accesibilidad,
+        sondea cada 3.5s. En cuanto detecta que cualquiera de los permisos fue concedido, reinicia el proceso
+        de forma limpia para que launchd (KeepAlive=true) lo relance al instante con captura de video y teclado al 100%.
         """
-        if not IS_MAC or self.macos_screen_ok:
+        if not IS_MAC or (self.macos_screen_ok and self.macos_ax_ok):
             return
         exe = sys.executable
         is_app_bin = "JOBMonitorAgent" in os.path.basename(exe)
         cmd = [exe, "--check-screen-only"] if is_app_bin else [exe, str(Path(__file__).resolve()), "--check-screen-only"]
-        while not self.macos_screen_ok:
+        while True:
             await asyncio.sleep(3.5)
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                rc = await asyncio.wait_for(proc.wait(), timeout=3.0)
-                if rc == 0:
-                    os._exit(0)
-            except Exception:
-                pass
+            # 1. Recuperación de Grabación de Pantalla
+            if not self.macos_screen_ok:
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    rc = await asyncio.wait_for(proc.wait(), timeout=3.0)
+                    if rc == 0:
+                        os._exit(0)
+                except Exception:
+                    pass
+
+            # 2. Recuperación de Accesibilidad (Teclado)
+            if not self.macos_ax_ok:
+                try:
+                    if check_macos_accessibility_permission(request_if_missing=False):
+                        os._exit(0)
+                except Exception:
+                    pass
+
+            if self.macos_screen_ok and self.macos_ax_ok:
+                break
 
     def _build_ssl_context(self) -> Optional[ssl.SSLContext]:
         """
@@ -1615,15 +1668,26 @@ class SilentRemoteAgent:
                         self.keyboard_hook = KeyboardEventHook(on_key_callback=self._handle_raw_key_event)
                         self.keyboard_hook.start()
 
-                    self.macos_screen_ok = check_macos_screen_permission(request_if_missing=True) if IS_MAC else True
+                    if IS_MAC:
+                        self.macos_screen_ok = check_macos_screen_permission(request_if_missing=True)
+                        self.macos_ax_ok = check_macos_accessibility_permission(request_if_missing=True)
+                    else:
+                        self.macos_screen_ok = True
+                        self.macos_ax_ok = True
 
                     with mss.mss() as sct:
                         monitors = self.get_monitors_info(sct)
                         thumb = self.capture_thumbnail_b64(sct)
 
                     os_label = f"{platform.system()} {platform.release()}"
-                    if IS_MAC and not self.macos_screen_ok:
-                        os_label += " (Falta permiso de Pantalla)"
+                    missing_perms = []
+                    if IS_MAC:
+                        if not self.macos_screen_ok:
+                            missing_perms.append("Falta Pantalla")
+                        if not self.macos_ax_ok:
+                            missing_perms.append("Falta Accesibilidad")
+                    if missing_perms:
+                        os_label += f" ({', '.join(missing_perms)})"
 
                     _, _, is_bg = get_windows_session_context() if IS_WINDOWS else (None, self.username, False)
                     hello = {
