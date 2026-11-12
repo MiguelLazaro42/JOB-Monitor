@@ -4078,6 +4078,11 @@
       dvrSlots[sl].events = (dvrSlots[sl].events || 0) + 1;
       if (parseEvMeta(enriched).cap) dvrSlots[sl].captures = (dvrSlots[sl].captures || 0) + 1;
     }
+    const evMin = Math.floor(sec / 60);
+    if (!dvrPlayTimer && Math.abs(evMin - dvrCenterMin) <= 30) {
+      dvrCenterMin = evMin;
+      dvrSelectedEvId = enriched.id;
+    }
     renderDvrTimelineTrack();
     syncDvrPlaybackStage();
   }
