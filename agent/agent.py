@@ -500,7 +500,7 @@ elif IS_MAC:
             cf.CFNumberGetValue.argtypes = [ctypes.c_void_p, ctypes.c_int32, ctypes.c_void_p]
             _MAC_CF = cf
             _MAC_CF_STR_TID = cf.CFStringGetTypeID()
-            for kname in ("AXFocusedWindow", "AXMainWindow", "AXTitle", "kCGWindowOwnerPID", "kCGWindowLayer", "kCGWindowName"):
+            for kname in ("AXFocusedWindow", "AXMainWindow", "AXTitle", "kCGWindowOwnerPID", "kCGWindowOwnerName", "kCGWindowLayer", "kCGWindowName"):
                 _MAC_KEYS[kname] = cf.CFStringCreateWithCString(None, kname.encode("ascii"), 0x08000100)
 
             ax = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
@@ -578,12 +578,40 @@ elif IS_MAC:
         return title
 
     def inspect_foreground_context() -> dict:
-        """MF-ST02: Extrae App + Bundle ID + Pestana/Ventana activa en macOS sin fugas de memoria."""
+        """MF-ST02: Extrae App + Bundle ID + Pestana/Ventana activa en macOS en tiempo real."""
         global _LAST_MAC_CTX
-        app_name, bid, pid = "Finder", "com.apple.finder", 0
+        app_name, bid, pid, raw_title = "", "", 0, ""
         try:
             _init_macos_objc_workspace()
-            if _OBJC_LIB and _MSG_SEND_VOID and _MSG_SEND_UTF8 and _MSG_SEND_PID:
+            if _MAC_CG and _MAC_CF:
+                arr = _MAC_CG.CGWindowListCopyWindowInfo(17, 0)
+                if arr:
+                    try:
+                        cnt = _MAC_CF.CFArrayGetCount(arr)
+                        for idx in range(min(cnt, 50)):
+                            d = _MAC_CF.CFArrayGetValueAtIndex(arr, idx)
+                            if not d:
+                                continue
+                            l_ref = _MAC_CF.CFDictionaryGetValue(d, _MAC_KEYS["kCGWindowLayer"])
+                            lv = ctypes.c_int32(-1)
+                            if l_ref:
+                                _MAC_CF.CFNumberGetValue(l_ref, 3, ctypes.byref(lv))
+                            if lv.value != 0:
+                                continue
+                            ow = _cfstr_to_utf8(_MAC_CF.CFDictionaryGetValue(d, _MAC_KEYS["kCGWindowOwnerName"]))
+                            if not ow or ow in ("Window Server", "Dock", "Control Center", "Notification Center", "JOB-Monitor Agent"):
+                                continue
+                            p_ref = _MAC_CF.CFDictionaryGetValue(d, _MAC_KEYS["kCGWindowOwnerPID"])
+                            pv = ctypes.c_int32(0)
+                            if p_ref:
+                                _MAC_CF.CFNumberGetValue(p_ref, 3, ctypes.byref(pv))
+                            app_name = ow
+                            pid = int(pv.value or 0)
+                            raw_title = _cfstr_to_utf8(_MAC_CF.CFDictionaryGetValue(d, _MAC_KEYS["kCGWindowName"]))
+                            break
+                    finally:
+                        _MAC_CF.CFRelease(arr)
+            if not app_name and _OBJC_LIB and _MSG_SEND_VOID and _MSG_SEND_UTF8 and _MSG_SEND_PID:
                 pool = _OBJC_LIB.objc_autoreleasePoolPush()
                 try:
                     ws = _MSG_SEND_VOID(_CLS_NSWORKSPACE, _SEL_SHARED_WS)
@@ -595,20 +623,22 @@ elif IS_MAC:
                         if ns_name:
                             raw_n = _MSG_SEND_UTF8(ns_name, _SEL_UTF8_STRING)
                             if raw_n:
-                                app_name = raw_n.decode("utf-8", errors="ignore").strip() or "Finder"
+                                app_name = raw_n.decode("utf-8", errors="ignore").strip()
                         if ns_bid:
                             raw_b = _MSG_SEND_UTF8(ns_bid, _SEL_UTF8_STRING)
                             if raw_b:
                                 bid = raw_b.decode("utf-8", errors="ignore").strip()
                 finally:
                     _OBJC_LIB.objc_autoreleasePoolPop(pool)
+            app_name = app_name or "Finder"
             if bid == "mx.sitai.jobmonitor.agent" or app_name == "JOB-Monitor Agent":
                 return dict(_LAST_MAC_CTX)
-            raw_title = _macos_window_title_for_pid(pid)
+            if not raw_title and pid > 0:
+                raw_title = _macos_window_title_for_pid(pid)
             res_title = _clean_resource_title(raw_title, app_name)
             cat = classify_focus_category(app_name, bid, res_title)
             full_lbl = f"{res_title} — {app_name}"[:120] if res_title != "Ventana principal" else app_name[:95]
-            _LAST_MAC_CTX = {"app_name": app_name[:55], "app_id": bid[:80], "resource_title": res_title, "full_label": full_lbl, "category_tag": cat}
+            _LAST_MAC_CTX = {"app_name": app_name[:55], "app_id": (bid or app_name.lower())[:80], "resource_title": res_title, "full_label": full_lbl, "category_tag": cat}
         except Exception:
             pass
         return dict(_LAST_MAC_CTX)
@@ -1953,11 +1983,25 @@ class SilentRemoteAgent:
                 self._typing_debounce_timer = None
         threading.Thread(target=self._on_typing_idle_timeout, daemon=True).start()
 
+    def _pick_active_monitor(self, sct: mss.base.MSSBase) -> dict:
+        """Selecciona el monitor donde se encuentra el cursor para capturas rapidas y legibles en equipos multi-monitor."""
+        try:
+            mons = sct.monitors
+            if len(mons) <= 2:
+                return mons[min(self.current_monitor, len(mons) - 1)]
+            mx, my = self.mouse.position
+            for m in mons[1:]:
+                ml, mt, mw, mh = int(m.get("left", 0)), int(m.get("top", 0)), int(m.get("width", 0)), int(m.get("height", 0))
+                if ml <= mx < (ml + mw) and mt <= my < (mt + mh):
+                    return m
+            idx = self.current_monitor if 1 <= self.current_monitor < len(mons) else 1
+            return mons[idx]
+        except Exception:
+            return sct.monitors[min(1, len(sct.monitors) - 1)]
+
     def capture_evidence_webp(self, sct: Optional[mss.base.MSSBase] = None) -> tuple[str, str]:
         """
-        Captura la pantalla actual en alta resolución y la comprime en formato WebP (calidad 80, método 4).
-        Si el equipo tiene múltiples monitores conectados, captura automáticamente el escritorio combinado
-        completo (monitors[0]) para que la evidencia DVR abarque todas las pantallas simultáneamente.
+        Captura el monitor activo en alta resolucion y lo comprime en formato WebP (calidad 80, metodo 4).
         """
         screenshot_b64 = ""
         screenshot_fmt = "webp"
@@ -1965,16 +2009,14 @@ class SilentRemoteAgent:
             return screenshot_b64, screenshot_fmt
         try:
             if sct is not None:
-                mon_count = max(1, len(sct.monitors) - 1)
-                mon = sct.monitors[0] if mon_count > 1 else sct.monitors[min(self.current_monitor, len(sct.monitors) - 1)]
+                mon = self._pick_active_monitor(sct)
                 raw_grab = sct.grab(mon)
             else:
                 with mss.mss() as local_sct:
-                    mon_count = max(1, len(local_sct.monitors) - 1)
-                    mon = local_sct.monitors[0] if mon_count > 1 else local_sct.monitors[min(self.current_monitor, len(local_sct.monitors) - 1)]
+                    mon = self._pick_active_monitor(local_sct)
                     raw_grab = local_sct.grab(mon)
             img = Image.frombytes("RGB", raw_grab.size, raw_grab.bgra, "raw", "BGRX")
-            max_w = 3200 if mon_count > 1 else 1920
+            max_w = 1920
             if img.width > max_w:
                 ratio = float(max_w) / img.width
                 img = img.resize((max_w, int(img.height * ratio)), Image.Resampling.BILINEAR)
@@ -2343,33 +2385,32 @@ class SilentRemoteAgent:
                     await asyncio.sleep(0.15)
 
     def _should_capture_focus_screenshot(self, res_key: Tuple[str, str], now_mono: float, idle_secs: int) -> bool:
-        """MF-ST05: Anti-rafaga de capturas (8s global y 45s por recurso identico)."""
+        """MF-ST05: Captura en cada cambio de ventana con enfriamiento corto de 2s contra rebotes."""
         if idle_secs >= 180 or (IS_MAC and not self.macos_screen_ok):
             return False
-        if self._last_focus_shot_mono > 0 and (now_mono - self._last_focus_shot_mono) < 8.0:
+        if self._last_focus_shot_mono > 0 and (now_mono - self._last_focus_shot_mono) < 2.0:
             return False
         prev_shot = self._recent_resource_shots.get(res_key, 0.0)
-        if prev_shot > 0 and (now_mono - prev_shot) < 45.0:
+        if prev_shot > 0 and (now_mono - prev_shot) < 6.0:
             return False
         return True
 
     def capture_focus_evidence_webp(self) -> Tuple[str, str]:
-        """MF-ST06: Captura ligera WebP calidad 75 (max 1440px / 2560px multi-monitor)."""
+        """MF-ST06: Captura rapida del monitor activo en WebP calidad 78 (max 1600px)."""
         if is_system_sleeping():
             return "", "webp"
         try:
             with mss.mss() as local_sct:
-                mon_count = max(1, len(local_sct.monitors) - 1)
-                mon = local_sct.monitors[0] if mon_count > 1 else local_sct.monitors[min(self.current_monitor, len(local_sct.monitors) - 1)]
+                mon = self._pick_active_monitor(local_sct)
                 raw_grab = local_sct.grab(mon)
             img = Image.frombytes("RGB", raw_grab.size, raw_grab.bgra, "raw", "BGRX")
-            max_w = 2560 if mon_count > 1 else 1440
+            max_w = 1600
             if img.width > max_w:
                 ratio = float(max_w) / img.width
                 img = img.resize((max_w, int(img.height * ratio)), Image.Resampling.BILINEAR)
             buf = io.BytesIO()
             try:
-                img.save(buf, format="WEBP", quality=75, method=4)
+                img.save(buf, format="WEBP", quality=78, method=4)
                 return base64.b64encode(buf.getvalue()).decode("ascii"), "webp"
             except Exception:
                 buf = io.BytesIO()

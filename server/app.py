@@ -1509,8 +1509,24 @@ async def get_screen_time(
     return {"ok": True, "devices": devices, **data}
 
 
+def _build_preview_webp_bytes(raw_bytes: bytes) -> Optional[bytes]:
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(raw_bytes))
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGB")
+        if im.width > 640:
+            ratio = 640.0 / float(im.width)
+            im = im.resize((640, max(1, int(im.height * ratio))), Image.Resampling.BILINEAR)
+        out = io.BytesIO()
+        im.save(out, format="WEBP", quality=58, method=3)
+        return out.getvalue()
+    except Exception:
+        return None
+
+
 @app.get("/api/captures/{agent_id}/{filename}")
-async def get_capture_evidence(request: Request, agent_id: str, filename: str):
+async def get_capture_evidence(request: Request, agent_id: str, filename: str, preview: int = Query(0)):
     user = verify_admin_access(request)
     if not hub.can_user_access_agent(user, agent_id):
         raise HTTPException(status_code=403, detail="No tienes acceso a las capturas de este equipo")
@@ -1518,12 +1534,28 @@ async def get_capture_evidence(request: Request, agent_id: str, filename: str):
     file_path = CAPTURES_DIR / agent_id / clean_filename
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Evidencia no encontrada")
-    mime_type = "image/webp" if clean_filename.lower().endswith(".webp") else "image/jpeg"
+    serve_path = file_path
+    serve_name = clean_filename
+    if preview == 1:
+        prev_name = f".prev_{os.path.splitext(clean_filename)[0]}.webp"
+        prev_path = CAPTURES_DIR / agent_id / prev_name
+        if not prev_path.exists():
+            p_bytes = _build_preview_webp_bytes(file_path.read_bytes())
+            if p_bytes:
+                try:
+                    prev_path.write_bytes(p_bytes)
+                except Exception:
+                    pass
+        if prev_path.exists() and prev_path.is_file():
+            serve_path = prev_path
+            serve_name = prev_name
+    mime_type = "image/webp" if serve_name.lower().endswith(".webp") else "image/jpeg"
     return FileResponse(
-        path=str(file_path),
+        path=str(serve_path),
         media_type=mime_type,
         filename=clean_filename,
         content_disposition_type="inline",
+        headers={"Cache-Control": "public, max-age=86400"},
     )
 
 
@@ -1550,6 +1582,12 @@ def _save_capture_bytes(agent_id: str, sct_b64: str, prefix: str = "ev") -> Opti
         fname = f"{prefix}_{int(time.time())}_{uuid.uuid4().hex[:6]}.{ext}"
         fpath = agent_captures_dir / fname
         fpath.write_bytes(img_bytes)
+        prev_bytes = _build_preview_webp_bytes(img_bytes)
+        if prev_bytes:
+            try:
+                (agent_captures_dir / f".prev_{os.path.splitext(fname)[0]}.webp").write_bytes(prev_bytes)
+            except Exception:
+                pass
         return f"/api/captures/{agent_id}/{fname}"
     except Exception as e:
         print(f"[Captures] Error al almacenar evidencia visual: {e}")

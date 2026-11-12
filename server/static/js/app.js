@@ -348,6 +348,8 @@
   const evidenceStageNext = document.getElementById('evidence-stage-next');
   const evidenceOriginBadge = document.getElementById('evidence-origin-badge');
   const evidenceNoImage = document.getElementById('evidence-no-image');
+  const evidenceHdBtn = document.getElementById('evidence-hd-btn');
+  const evidenceHdLabel = document.getElementById('evidence-hd-label');
 
   // Función para obtener la fecha YYYY-MM-DD en la zona horaria configurada (por defecto America/Merida)
   function getTodayInTimezone(tz) {
@@ -1274,6 +1276,47 @@
   let evidenceNavList = [];
   let evidenceNavIdx = -1;
   let evidenceOnStepSync = null;
+  let evidenceCurrentRawUrl = '';
+  let evidenceIsHd = false;
+  let evidenceInheritedLbl = '';
+
+  function buildCaptureUrl(rawPath, isPreview = false) {
+    if (!rawPath) return '';
+    let u = rawPath;
+    if (state.password) {
+      const sep = u.includes('?') ? '&' : '?';
+      u = `${u}${sep}admin_pass=${encodeURIComponent(state.password)}`;
+    }
+    if (isPreview) {
+      const sep = u.includes('?') ? '&' : '?';
+      u = `${u}${sep}preview=1`;
+    }
+    return u;
+  }
+
+  function syncEvidenceQualityUI() {
+    if (!evidenceCurrentRawUrl) {
+      if (evidenceHdBtn) evidenceHdBtn.classList.add('hidden');
+      if (evidenceOriginBadge) evidenceOriginBadge.classList.add('hidden');
+      return;
+    }
+    if (evidenceHdBtn) {
+      evidenceHdBtn.classList.remove('hidden');
+      evidenceHdBtn.classList.toggle('is-hd-on', evidenceIsHd);
+    }
+    if (evidenceHdLabel) {
+      evidenceHdLabel.textContent = evidenceIsHd ? 'Alta Calidad (HD) activa' : 'Ver en Alta Calidad (HD)';
+    }
+    if (evidenceOriginBadge) {
+      evidenceOriginBadge.classList.remove('hidden');
+      evidenceOriginBadge.classList.toggle('is-inherited', Boolean(evidenceInheritedLbl));
+      const baseTxt = evidenceInheritedLbl ? `Última captura previa · ${evidenceInheritedLbl}` : 'Captura del evento';
+      evidenceOriginBadge.textContent = `${baseTxt} · ${evidenceIsHd ? 'Alta Calidad HD' : 'Vista previa ligera'}`;
+    }
+    if (evidenceImagePreview) {
+      evidenceImagePreview.src = buildCaptureUrl(evidenceCurrentRawUrl, !evidenceIsHd);
+    }
+  }
 
   function logRowToEvidencePayload(row, chronoList) {
     if (!row) return null;
@@ -1451,40 +1494,28 @@
       b.disabled = evidenceNavIdx >= evidenceNavList.length - 1;
     });
 
-    let imgUrl = data.url || '';
-    if (imgUrl && state.password) {
-      const sep = imgUrl.includes('?') ? '&' : '?';
-      imgUrl = `${imgUrl}${sep}admin_pass=${encodeURIComponent(state.password)}`;
-    }
-    if (evidenceOriginBadge) {
-      if (!imgUrl) {
-        evidenceOriginBadge.classList.add('hidden');
-      } else {
-        evidenceOriginBadge.classList.remove('hidden');
-        evidenceOriginBadge.classList.toggle('is-inherited', Boolean(data.inheritedTime));
-        evidenceOriginBadge.textContent = data.inheritedTime
-          ? `Última captura previa · ${data.inheritedTime}`
-          : 'Captura exacta del evento';
-      }
-    }
+    evidenceCurrentRawUrl = data.url || '';
+    evidenceInheritedLbl = data.inheritedTime || '';
+    evidenceIsHd = false;
+    const fullImgUrl = buildCaptureUrl(evidenceCurrentRawUrl, false);
     if (evidenceImagePreview && evidenceNoImage) {
-      if (imgUrl) {
+      if (evidenceCurrentRawUrl) {
         evidenceImagePreview.classList.remove('hidden');
         evidenceNoImage.classList.add('hidden');
         evidenceImagePreview.alt = 'Cargando captura de pantalla...';
         evidenceImagePreview.onerror = function () {
           this.alt = 'No se pudo cargar la imagen de evidencia visual.';
         };
-        evidenceImagePreview.src = imgUrl;
       } else {
         evidenceImagePreview.src = '';
         evidenceImagePreview.classList.add('hidden');
         evidenceNoImage.classList.remove('hidden');
       }
     }
+    syncEvidenceQualityUI();
     if (evidenceDownloadLink) {
-      evidenceDownloadLink.classList.toggle('hidden', !imgUrl);
-      evidenceDownloadLink.href = imgUrl || '#';
+      evidenceDownloadLink.classList.toggle('hidden', !fullImgUrl);
+      evidenceDownloadLink.href = fullImgUrl || '#';
       const cleanAlias = (data.alias || 'equipo').replace(/[^a-zA-Z0-9_-]/g, '_');
       const isWebp = String(data.url || '').toLowerCase().includes('.webp');
       const fileExt = isWebp ? 'webp' : 'jpg';
@@ -1535,8 +1566,7 @@
 
   function buildLogThumbHtml(row, cat, activeWin, prevWin, durSecs, countVal, layoutVal, textVal, evidencePath) {
     if (!evidencePath) return '';
-    const sep = evidencePath.includes('?') ? '&' : '?';
-    const authedSrc = state.password ? `${evidencePath}${sep}admin_pass=${encodeURIComponent(state.password)}` : evidencePath;
+    const authedSrc = buildCaptureUrl(evidencePath, true);
     return `
       <button type="button" class="log-thumb-card js-open-evidence" title="Ampliar captura de pantalla"
         data-log-id="${escapeHtml(String(row.id || ''))}"
@@ -2797,6 +2827,12 @@
   [evidenceNextBtn, evidenceStageNext].forEach((b) => {
     if (b) b.addEventListener('click', () => stepEvidenceModal(1));
   });
+  if (evidenceHdBtn) {
+    evidenceHdBtn.addEventListener('click', () => {
+      evidenceIsHd = !evidenceIsHd;
+      syncEvidenceQualityUI();
+    });
+  }
   document.addEventListener('keydown', (e) => {
     if (evidenceModal && !evidenceModal.classList.contains('hidden')) {
       if (e.key === 'Escape') {
@@ -3936,6 +3972,7 @@
   const dvrPrevEvBtn = document.getElementById('dvr-prev-ev-btn');
   const dvrNextEvBtn = document.getElementById('dvr-next-ev-btn');
   const dvrEvPosLabel = document.getElementById('dvr-ev-pos-label');
+  const dvrHdBtn = document.getElementById('dvr-hd-btn');
   const dvrExpandBtn = document.getElementById('dvr-expand-btn');
   const dvrCapOriginBadge = document.getElementById('dvr-cap-origin-badge');
   const dvrStagePrev = document.getElementById('dvr-stage-prev');
@@ -3952,6 +3989,7 @@
   let dvrPlayTimer = null;
   let dvrCurrentEvObj = null;
   let dvrScope = 'tramo';
+  let dvrMainIsHd = false;
   if (dvrDateInput) dvrDateInput.value = dvrDate;
 
   function minToHhMm(m) {
@@ -3961,10 +3999,8 @@
     return `${hh}:${mm}`;
   }
 
-  function authedMediaUrl(p) {
-    if (!p) return '';
-    const sep = p.includes('?') ? '&' : '?';
-    return state.password ? `${p}${sep}admin_pass=${encodeURIComponent(state.password)}` : p;
+  function authedMediaUrl(p, isPreview = false) {
+    return buildCaptureUrl(p, isPreview);
   }
 
   function parseEvMeta(ev) {
@@ -4171,13 +4207,14 @@
       if (dvrOsdClock) dvrOsdClock.textContent = String(activeEv.timestamp || '').slice(11, 19) || minToHhMm(dvrCenterMin);
 
       if (resolvedCap.cap && dvrMainImg && dvrEmptyOverlay) {
-        dvrMainImg.src = authedMediaUrl(resolvedCap.cap);
+        dvrMainImg.src = authedMediaUrl(resolvedCap.cap, !dvrMainIsHd);
         dvrMainImg.classList.remove('hidden');
         dvrEmptyOverlay.classList.add('hidden');
         if (dvrCapOriginBadge) {
           dvrCapOriginBadge.classList.remove('hidden');
           dvrCapOriginBadge.classList.toggle('is-inherited', !resolvedCap.exact);
-          dvrCapOriginBadge.textContent = resolvedCap.exact ? 'Captura del evento' : `Última captura previa · ${resolvedCap.capTime}`;
+          const baseOrigin = resolvedCap.exact ? 'Captura del evento' : `Última captura previa · ${resolvedCap.capTime}`;
+          dvrCapOriginBadge.textContent = `${baseOrigin} · ${dvrMainIsHd ? 'HD' : 'Vista ligera'}`;
         }
       } else if (dvrMainImg && dvrEmptyOverlay) {
         dvrMainImg.classList.add('hidden');
@@ -4208,7 +4245,7 @@
       const pool = capsInTramo.length > 0 ? capsInTramo : dvrEvents.filter((e) => Boolean(parseEvMeta(e).cap)).slice(-14);
       dvrFilmstrip.innerHTML = pool.map((ev) => {
         const { cap } = parseEvMeta(ev);
-        return `<button type="button" class="dvr-film-item ${String(ev.id) === String(dvrSelectedEvId) ? 'active' : ''}" data-evid="${ev.id}" title="${escapeHtml(String(ev.timestamp || '').slice(11, 19))} · ${escapeHtml(ev.alias)}"><img src="${escapeHtml(authedMediaUrl(cap))}" alt="Miniatura" loading="lazy" /></button>`;
+        return `<button type="button" class="dvr-film-item ${String(ev.id) === String(dvrSelectedEvId) ? 'active' : ''}" data-evid="${ev.id}" title="${escapeHtml(String(ev.timestamp || '').slice(11, 19))} · ${escapeHtml(ev.alias)}"><img src="${escapeHtml(authedMediaUrl(cap, true))}" alt="Miniatura" loading="lazy" /></button>`;
       }).join('');
       const actFilm = dvrFilmstrip.querySelector('.dvr-film-item.active');
       if (actFilm) actFilm.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -4226,7 +4263,7 @@
             const parsed = analyzeKeyboardTranscript(meta.text_content);
             summary = parsed.cleanText || summary;
           }
-          const thumbEl = cap ? `<div class="dvr-ev-mini-thumb"><img src="${escapeHtml(authedMediaUrl(cap))}" alt="Cap" loading="lazy" /></div>` : '';
+          const thumbEl = cap ? `<div class="dvr-ev-mini-thumb"><img src="${escapeHtml(authedMediaUrl(cap, true))}" alt="Cap" loading="lazy" /></div>` : '';
           return `<div class="dvr-ev-card ${String(ev.id) === String(dvrSelectedEvId) ? 'active' : ''}" data-evid="${ev.id}">
             <div class="dvr-ev-body">
               <div class="dvr-ev-top">
@@ -4401,6 +4438,13 @@
 
   if (dvrMainImg) dvrMainImg.addEventListener('click', openDvrCurrentInModal);
   if (dvrExpandBtn) dvrExpandBtn.addEventListener('click', openDvrCurrentInModal);
+  if (dvrHdBtn) {
+    dvrHdBtn.addEventListener('click', () => {
+      dvrMainIsHd = !dvrMainIsHd;
+      dvrHdBtn.classList.toggle('is-hd-on', dvrMainIsHd);
+      syncDvrPlaybackStage();
+    });
+  }
   if (dvrDetailCard) {
     dvrDetailCard.addEventListener('click', (e) => {
       if (e.target.closest('.js-dvr-open-modal')) openDvrCurrentInModal();

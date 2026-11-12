@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=20261111-v15" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261111-v16" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -445,13 +445,18 @@
         <div id="evidence-meta-container" class="evidence-meta-grid"></div>
       </div>
 
-      <div class="modal-actions" style="justify-content: space-between; margin-top: 14px; padding-top: 12px; border-top: 1px solid #e2e8f0;">
-        <a id="evidence-download-link" href="#" target="_blank" download="evidencia_teclado.webp" class="btn btn-secondary btn-sm" style="text-decoration:none;">
-          <svg class="icon-xs" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-          </svg>
-          <span>Descargar Evidencia WebP</span>
-        </a>
+      <div class="modal-actions" style="justify-content: space-between; margin-top: 14px; padding-top: 12px; border-top: 1px solid #e2e8f0; gap: 8px; flex-wrap: wrap;">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <button type="button" id="evidence-hd-btn" class="btn btn-secondary btn-sm" title="Cargar captura en máxima resolución original">
+            <span id="evidence-hd-label">Ver en Alta Calidad (HD)</span>
+          </button>
+          <a id="evidence-download-link" href="#" target="_blank" download="evidencia_teclado.webp" class="btn btn-secondary btn-sm" style="text-decoration:none;">
+            <svg class="icon-xs" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            <span>Descargar Evidencia WebP</span>
+          </a>
+        </div>
         <button type="button" id="evidence-modal-close-btn" class="btn btn-primary btn-sm">Cerrar</button>
       </div>
     </div>
@@ -1070,6 +1075,7 @@
                     <span id="dvr-ev-pos-label" class="dvr-ev-pos-label">0 / 0</span>
                     <button type="button" id="dvr-next-ev-btn" class="dvr-ctrl-btn" title="Siguiente evento (Flecha derecha)">Evento &rsaquo;</button>
                   </div>
+                  <button type="button" id="dvr-hd-btn" class="dvr-ctrl-btn" title="Alternar entre vista previa ligera y alta calidad HD">HD</button>
                   <button type="button" id="dvr-expand-btn" class="dvr-ctrl-btn" title="Ampliar visor y detalle">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
                   </button>
@@ -1367,6 +1373,6 @@
 
   <script src="/static/js/audio.js?v=20261111-v9"></script>
   <script src="/static/js/viewer.js?v=20261111-v9"></script>
-  <script src="/static/js/app.js?v=20261111-v15"></script>
+  <script src="/static/js/app.js?v=20261111-v16"></script>
 </body>
 </html>
