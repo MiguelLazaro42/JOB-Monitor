@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=20261111-v14" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261111-v15" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -398,8 +398,8 @@
   <!-- Modal de Evidencia Visual de Actividad de Teclado (MF-08) -->
   <div id="evidence-modal" class="modal-backdrop hidden">
     <div class="modal-card modal-card-wide" style="max-width: 920px; max-height: 92vh; display: flex; flex-direction: column; overflow: hidden;">
-      <div class="modal-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
-        <div style="display:flex; align-items:center; gap:12px;">
+      <div class="modal-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <div style="display:flex; align-items:center; gap:12px; min-width:0;">
           <div class="brand-badge" style="background:#f5f3ff; color:#7c3aed; flex-shrink:0;">
             <svg class="icon-md" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="2" y="4" width="20" height="16" rx="2"/>
@@ -411,26 +411,38 @@
               <line x1="6" y1="16" x2="18" y2="16"/>
             </svg>
           </div>
-          <div>
-            <h2 id="evidence-modal-title">Evidencia de Actividad de Teclado</h2>
-            <p id="evidence-modal-subtitle" class="muted-text">Captura automática al segundo 15 de pausa en la redacción.</p>
+          <div style="min-width:0;">
+            <h2 id="evidence-modal-title">Evidencia de Actividad</h2>
+            <p id="evidence-modal-subtitle" class="muted-text">Detalle completo del evento y captura asociada.</p>
           </div>
         </div>
-        <button type="button" id="close-evidence-modal-btn" class="modal-close-icon" aria-label="Cerrar" title="Cerrar (Esc)">
-          <svg class="icon-sm" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-        </button>
+        <div class="ev-modal-nav-wrap">
+          <button type="button" id="evidence-prev-btn" class="ev-step-btn" title="Evento anterior (Flecha izquierda)">&lsaquo; Evento ant.</button>
+          <span id="evidence-pos-badge" class="ev-pos-badge hidden">1 / 1</span>
+          <button type="button" id="evidence-next-btn" class="ev-step-btn" title="Siguiente evento (Flecha derecha)">Sig. evento &rsaquo;</button>
+          <button type="button" id="close-evidence-modal-btn" class="modal-close-icon" aria-label="Cerrar" title="Cerrar (Esc)">
+            <svg class="icon-sm" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
       </div>
 
-      <div class="modal-body" style="display:flex; flex-direction:column; gap:16px; overflow-y:auto; flex:1;">
-        <!-- Metadatos de la sesión de escritura -->
-        <div id="evidence-meta-container" class="evidence-meta-grid"></div>
-
-        <!-- Vista de la captura en alta resolución -->
-        <div class="evidence-image-container">
+      <div class="modal-body" style="display:flex; flex-direction:column; gap:14px; overflow-y:auto; flex:1;">
+        <!-- Vista de la captura en alta resolución con flechas laterales -->
+        <div class="evidence-image-container" style="position:relative;">
+          <span id="evidence-origin-badge" class="dvr-cap-origin-badge hidden"></span>
+          <button type="button" id="evidence-stage-prev" class="dvr-stage-arrow prev" title="Evento anterior (←)" aria-label="Evento anterior">&lsaquo;</button>
           <img id="evidence-image-preview" src="" alt="Captura de pantalla de evidencia" />
+          <div id="evidence-no-image" class="dvr-empty-overlay hidden" style="padding:36px 20px;">
+            <strong>Sin captura en este evento</strong>
+            <p>Usa las flechas laterales o del teclado para desplazarte a los eventos contiguos.</p>
+          </div>
+          <button type="button" id="evidence-stage-next" class="dvr-stage-arrow next" title="Siguiente evento (→)" aria-label="Siguiente evento">&rsaquo;</button>
         </div>
+
+        <!-- Metadatos del evento -->
+        <div id="evidence-meta-container" class="evidence-meta-grid"></div>
       </div>
 
       <div class="modal-actions" style="justify-content: space-between; margin-top: 14px; padding-top: 12px; border-top: 1px solid #e2e8f0;">
@@ -993,66 +1005,24 @@
 
       <!-- MODO 1: CONSOLA REPRODUCTORA DVR -->
       <div id="dvr-console-wrap" class="dvr-console-wrap">
-        <div class="dvr-split-stage">
-          <div class="dvr-monitor-panel">
-            <div class="dvr-osd-bar">
-              <div class="dvr-osd-left">
-                <span id="dvr-osd-state" class="dvr-state-pill dvr-state-active">ACTIVO</span>
-                <strong id="dvr-osd-device">Todos los equipos</strong>
-                <span id="dvr-osd-win" class="dvr-osd-win">Selecciona o desliza la línea de tiempo</span>
-              </div>
-              <span id="dvr-osd-clock" class="dvr-osd-clock">--:--:--</span>
-            </div>
-
-            <div id="dvr-screen-box" class="dvr-screen-box">
-              <img id="dvr-main-img" class="dvr-main-img hidden" alt="Captura DVR" />
-              <div id="dvr-empty-overlay" class="dvr-empty-overlay">
-                <strong id="dvr-empty-title">Sin captura en este tramo</strong>
-                <p id="dvr-empty-sub">Desliza la barra inferior o salta a la siguiente captura registrada.</p>
-              </div>
-            </div>
-
-            <div class="dvr-transport-bar">
-              <div class="dvr-transport-btns">
-                <button type="button" id="dvr-prev-cap-btn" class="dvr-ctrl-btn" title="Captura anterior">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
-                </button>
-                <button type="button" id="dvr-play-btn" class="dvr-ctrl-btn dvr-play-btn" title="Reproducir / Pausar recorrido de capturas">
-                  <span id="dvr-play-label">Reproducir</span>
-                </button>
-                <button type="button" id="dvr-next-cap-btn" class="dvr-ctrl-btn" title="Siguiente captura">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
-                </button>
-              </div>
-              <span id="dvr-tramo-badge" class="dvr-tramo-badge">Tramo 15 min</span>
-              <div id="dvr-filmstrip" class="dvr-filmstrip"></div>
-            </div>
-          </div>
-
-          <div class="dvr-side-panel">
-            <div class="dvr-side-head">
-              <strong id="dvr-side-title">Eventos del tramo</strong>
-              <span id="dvr-tramo-count" class="badge-pill muted-badge">0</span>
-            </div>
-            <div id="dvr-side-events" class="dvr-side-events"></div>
-          </div>
-        </div>
-
+        <!-- Barra superior de línea de tiempo de 24h siempre visible -->
         <div class="dvr-scrubber-panel">
           <div class="dvr-scrubber-head">
             <div class="dvr-legend">
               <span><i class="dvr-dot dvr-dot-green"></i>Con actividad</span>
-              <span><i class="dvr-dot dvr-dot-amber"></i>Inactivo (Conectado)</span>
-              <span><i class="dvr-dot dvr-dot-red"></i>Tiempo muerto (Sin conexión)</span>
-              <span><i class="dvr-dot dvr-dot-blue"></i>Captura visual</span>
+              <span><i class="dvr-dot dvr-dot-amber"></i>Inactivo</span>
+              <span><i class="dvr-dot dvr-dot-red"></i>Tiempo muerto</span>
+              <span><i class="dvr-dot dvr-dot-blue"></i>Captura</span>
             </div>
             <div class="dvr-zoom-box">
-              <span>Tramo:</span>
+              <span id="dvr-tramo-badge" class="dvr-tramo-pill">Tramo 15m</span>
+              <button type="button" id="dvr-step-tramo-prev" class="dvr-tramo-step" title="Retroceder un tramo">&lsaquo; Tramo</button>
               <div id="dvr-window-group" class="st-segmented" role="group" aria-label="Tamaño de tramo">
-                <button type="button" class="st-seg-btn" data-win="5">5 min</button>
-                <button type="button" class="st-seg-btn active" data-win="15">15 min</button>
-                <button type="button" class="st-seg-btn" data-win="30">30 min</button>
+                <button type="button" class="st-seg-btn" data-win="5">5m</button>
+                <button type="button" class="st-seg-btn active" data-win="15">15m</button>
+                <button type="button" class="st-seg-btn" data-win="30">30m</button>
               </div>
+              <button type="button" id="dvr-step-tramo-next" class="dvr-tramo-step" title="Avanzar un tramo">Tramo &rsaquo;</button>
             </div>
           </div>
 
@@ -1066,6 +1036,79 @@
           <div class="dvr-ruler">
             <span>00:00</span><span>03:00</span><span>06:00</span><span>09:00</span>
             <span>12:00</span><span>15:00</span><span>18:00</span><span>21:00</span><span>24:00</span>
+          </div>
+        </div>
+
+        <!-- Espacio de trabajo Maestro-Detalle: Lista interactiva + Visor e Inspector de Evento -->
+        <div class="dvr-split-stage">
+          <div class="dvr-side-panel">
+            <div class="dvr-side-head">
+              <div class="dvr-side-head-left">
+                <div id="dvr-scope-toggle" class="st-segmented st-segmented-xs" role="group" aria-label="Alcance de eventos">
+                  <button type="button" class="st-seg-btn active" data-scope="tramo">Tramo</button>
+                  <button type="button" class="st-seg-btn" data-scope="day">Todo el día</button>
+                </div>
+                <span id="dvr-tramo-count" class="badge-pill muted-badge">0</span>
+              </div>
+              <span class="dvr-side-hint">Clic para ver captura</span>
+            </div>
+            <div id="dvr-side-events" class="dvr-side-events"></div>
+          </div>
+
+          <div class="dvr-inspector-col">
+            <div class="dvr-monitor-panel">
+              <div class="dvr-osd-bar">
+                <div class="dvr-osd-left">
+                  <span id="dvr-osd-state" class="dvr-state-pill dvr-state-active">ACTIVO</span>
+                  <strong id="dvr-osd-device">Todos los equipos</strong>
+                  <span id="dvr-osd-win" class="dvr-osd-win">Selecciona un evento o desliza la barra</span>
+                </div>
+                <div class="dvr-osd-right">
+                  <span id="dvr-osd-clock" class="dvr-osd-clock">--:--:--</span>
+                  <div class="dvr-ev-stepper">
+                    <button type="button" id="dvr-prev-ev-btn" class="dvr-ctrl-btn" title="Evento anterior (Flecha izquierda)">&lsaquo; Evento</button>
+                    <span id="dvr-ev-pos-label" class="dvr-ev-pos-label">0 / 0</span>
+                    <button type="button" id="dvr-next-ev-btn" class="dvr-ctrl-btn" title="Siguiente evento (Flecha derecha)">Evento &rsaquo;</button>
+                  </div>
+                  <button type="button" id="dvr-expand-btn" class="dvr-ctrl-btn" title="Ampliar visor y detalle">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                  </button>
+                </div>
+              </div>
+
+              <div id="dvr-screen-box" class="dvr-screen-box">
+                <span id="dvr-cap-origin-badge" class="dvr-cap-origin-badge hidden"></span>
+                <button type="button" id="dvr-stage-prev" class="dvr-stage-arrow prev" title="Evento anterior (←)" aria-label="Evento anterior">&lsaquo;</button>
+                <img id="dvr-main-img" class="dvr-main-img hidden" alt="Captura DVR" />
+                <div id="dvr-empty-overlay" class="dvr-empty-overlay">
+                  <strong id="dvr-empty-title">Sin captura en este tramo</strong>
+                  <p id="dvr-empty-sub">Selecciona un evento a la izquierda o desliza la línea de tiempo superior.</p>
+                </div>
+                <button type="button" id="dvr-stage-next" class="dvr-stage-arrow next" title="Siguiente evento (→)" aria-label="Siguiente evento">&rsaquo;</button>
+              </div>
+
+              <div class="dvr-transport-bar">
+                <div class="dvr-transport-btns">
+                  <button type="button" id="dvr-prev-cap-btn" class="dvr-ctrl-btn" title="Saltar a captura anterior">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
+                    <span>Cap. ant.</span>
+                  </button>
+                  <button type="button" id="dvr-play-btn" class="dvr-ctrl-btn dvr-play-btn" title="Reproducir recorrido evento por evento">
+                    <span id="dvr-play-label">Reproducir</span>
+                  </button>
+                  <button type="button" id="dvr-next-cap-btn" class="dvr-ctrl-btn" title="Saltar a siguiente captura">
+                    <span>Sig. cap.</span>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+                  </button>
+                </div>
+                <div id="dvr-filmstrip" class="dvr-filmstrip"></div>
+              </div>
+            </div>
+
+            <!-- Tarjeta integrada de detalles del evento seleccionado -->
+            <div id="dvr-detail-card" class="dvr-detail-card">
+              <div class="muted-text" style="font-size:12.5px;">Selecciona cualquier evento para inspeccionar su captura y detalles completos.</div>
+            </div>
           </div>
         </div>
       </div>
@@ -1324,6 +1367,6 @@
 
   <script src="/static/js/audio.js?v=20261111-v9"></script>
   <script src="/static/js/viewer.js?v=20261111-v9"></script>
-  <script src="/static/js/app.js?v=20261111-v14"></script>
+  <script src="/static/js/app.js?v=20261111-v15"></script>
 </body>
 </html>
