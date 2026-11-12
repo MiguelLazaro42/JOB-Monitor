@@ -1374,6 +1374,36 @@ async def get_logs(
     }
 
 
+@app.get("/api/dvr-day")
+async def get_dvr_day(
+    request: Request,
+    agent_id: Optional[str] = Query("ALL"),
+    date: Optional[str] = Query(None),
+    category: Optional[str] = Query("ALL"),
+    q: Optional[str] = Query(""),
+    tenant_id: Optional[str] = Query(None),
+):
+    user = verify_admin_access(request)
+    if user["role"] == "superadmin":
+        allowed_tid = (tenant_id or "").strip() if (tenant_id and tenant_id != "ALL") else None
+    else:
+        allowed_tid = user["tenant_id"]
+
+    payload = db.get_dvr_day_data(
+        agent_id=agent_id,
+        target_date=date,
+        category=category,
+        search_q=q,
+        allowed_tenant_id=allowed_tid,
+    )
+    devices = db.get_all_known_devices(allowed_tenant_id=allowed_tid)
+    return {
+        "ok": True,
+        **payload,
+        "devices": devices,
+    }
+
+
 @app.get("/api/logs/export-csv")
 async def export_logs_csv(
     request: Request,

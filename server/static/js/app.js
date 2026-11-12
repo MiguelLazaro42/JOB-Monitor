@@ -1611,6 +1611,7 @@
       }
       state.logsCache = data.logs || [];
       renderLogsTable();
+      fetchDvrDayFromServer();
     } catch (err) {
       console.error('Error al consultar bitácora de logs:', err);
     }
@@ -2235,6 +2236,7 @@
             state.logsCache.unshift(l);
             if (state.logsCache.length > 250) state.logsCache.pop();
             renderLogsTable();
+            pushLiveLogToDvr(l);
           }
         }
         return;
@@ -3775,6 +3777,405 @@
       else closeFinderExplorer();
     }
   });
+
+  // =====================================================================
+  // CONSOLA REPRODUCTORA DVR / NVR EN BITACORA (MF-DVR05)
+  // =====================================================================
+  const dvrModeToggle = document.getElementById('dvr-mode-toggle');
+  const dvrConsoleWrap = document.getElementById('dvr-console-wrap');
+  const dvrClassicListWrap = document.getElementById('dvr-classic-list-wrap');
+  const dvrDateInput = document.getElementById('dvr-date-input');
+  const dvrPrevDayBtn = document.getElementById('dvr-prev-day');
+  const dvrNextDayBtn = document.getElementById('dvr-next-day');
+  const dvrQuickDates = document.getElementById('dvr-quick-dates');
+  const dvrOsdState = document.getElementById('dvr-osd-state');
+  const dvrOsdDevice = document.getElementById('dvr-osd-device');
+  const dvrOsdWin = document.getElementById('dvr-osd-win');
+  const dvrOsdClock = document.getElementById('dvr-osd-clock');
+  const dvrMainImg = document.getElementById('dvr-main-img');
+  const dvrEmptyOverlay = document.getElementById('dvr-empty-overlay');
+  const dvrEmptyTitle = document.getElementById('dvr-empty-title');
+  const dvrEmptySub = document.getElementById('dvr-empty-sub');
+  const dvrPrevCapBtn = document.getElementById('dvr-prev-cap-btn');
+  const dvrPlayBtn = document.getElementById('dvr-play-btn');
+  const dvrPlayLabel = document.getElementById('dvr-play-label');
+  const dvrNextCapBtn = document.getElementById('dvr-next-cap-btn');
+  const dvrTramoBadge = document.getElementById('dvr-tramo-badge');
+  const dvrFilmstrip = document.getElementById('dvr-filmstrip');
+  const dvrSideEvents = document.getElementById('dvr-side-events');
+  const dvrTramoCount = document.getElementById('dvr-tramo-count');
+  const dvrWindowGroup = document.getElementById('dvr-window-group');
+  const dvrTrackWrap = document.getElementById('dvr-track-wrap');
+  const dvrHoverTip = document.getElementById('dvr-Hover-tip');
+  const dvrCapturesTicks = document.getElementById('dvr-captures-ticks');
+  const dvrSlotsBar = document.getElementById('dvr-slots-bar');
+  const dvrLens = document.getElementById('dvr-lens');
+
+  let dvrDate = todayIso;
+  let dvrToday = todayIso;
+  let dvrSlots = [];
+  let dvrEvents = [];
+  let dvrWindowMins = 15;
+  let dvrCenterMin = 720;
+  let dvrSelectedEvId = null;
+  let dvrPlayTimer = null;
+  let dvrCurrentEvObj = null;
+  if (dvrDateInput) dvrDateInput.value = dvrDate;
+
+  function minToHhMm(m) {
+    const cl = Math.max(0, Math.min(1440, Math.round(m)));
+    const hh = String(Math.floor(cl / 60)).padStart(2, '0');
+    const mm = String(cl % 60).padStart(2, '0');
+    return `${hh}:${mm}`;
+  }
+
+  function authedMediaUrl(p) {
+    if (!p) return '';
+    const sep = p.includes('?') ? '&' : '?';
+    return state.password ? `${p}${sep}admin_pass=${encodeURIComponent(state.password)}` : p;
+  }
+
+  function parseEvMeta(ev) {
+    let m = null;
+    if (ev && ev.meta_json) {
+      try { m = typeof ev.meta_json === 'string' ? JSON.parse(ev.meta_json) : ev.meta_json; } catch (_) {}
+    }
+    const cap = (ev && ev.evidence_path) || (m && m.evidence_path) || '';
+    return { meta: m, cap };
+  }
+
+  async function fetchDvrDayFromServer(keepScrub = false) {
+    if (!dvrSlotsBar) return;
+    const dev = (logDeviceFilter && logDeviceFilter.value) || 'ALL';
+    const cat = (logCategoryFilter && logCategoryFilter.value) || 'ALL';
+    const q = (logSearchInput && logSearchInput.value.trim()) || '';
+    const dt = (dvrDateInput && dvrDateInput.value) || dvrDate || todayIso;
+    const params = new URLSearchParams({ agent_id: dev, date: dt, category: cat, q });
+    if (state.tenantFilter && state.tenantFilter !== 'ALL') params.set('tenant_id', state.tenantFilter);
+    try {
+      const res = await authFetch(`/api/dvr-day?${params.toString()}`);
+      const data = await res.json();
+      if (!data || !data.ok) return;
+      dvrDate = data.date || dt;
+      dvrToday = data.today || todayIso;
+      if (dvrDateInput) dvrDateInput.value = dvrDate;
+      dvrSlots = Array.isArray(data.slots) ? data.slots : [];
+      dvrEvents = Array.isArray(data.events) ? data.events : [];
+      renderDvrQuickDates(data.available_dates || []);
+      renderDvrTimelineTrack();
+      if (!keepScrub) {
+        if (dvrEvents.length > 0) {
+          const lastEv = dvrEvents[dvrEvents.length - 1];
+          dvrCenterMin = Math.floor((lastEv.sec_of_day || 0) / 60);
+          dvrSelectedEvId = lastEv.id;
+        } else {
+          dvrCenterMin = Number(data.now_minute || 720);
+          dvrSelectedEvId = null;
+        }
+      }
+      syncDvrPlaybackStage();
+    } catch (err) {
+      console.error('Error al cargar dia DVR:', err);
+    }
+  }
+
+  function pushLiveLogToDvr(rawLog) {
+    if (!rawLog || dvrDate !== dvrToday) return;
+    const ts = String(rawLog.timestamp || '');
+    if (!ts.startsWith(dvrDate)) return;
+    const h = Number(ts.slice(11, 13) || 0), m = Number(ts.slice(14, 16) || 0), s = Number(ts.slice(17, 19) || 0);
+    const sec = h * 3600 + m * 60 + s;
+    const sl = Math.max(0, Math.min(287, Math.floor(sec / 300)));
+    const enriched = { ...rawLog, sec_of_day: sec, slot_5m: sl };
+    dvrEvents.push(enriched);
+    if (dvrSlots[sl]) {
+      dvrSlots[sl].state = 'active';
+      dvrSlots[sl].events = (dvrSlots[sl].events || 0) + 1;
+      if (parseEvMeta(enriched).cap) dvrSlots[sl].captures = (dvrSlots[sl].captures || 0) + 1;
+    }
+    renderDvrTimelineTrack();
+    syncDvrPlaybackStage();
+  }
+
+  function renderDvrQuickDates(availDates) {
+    if (!dvrQuickDates) return;
+    dvrQuickDates.innerHTML = availDates.slice(0, 6).map((dt) => {
+      const lbl = dt === dvrToday ? 'Hoy' : dt.slice(5);
+      return `<button type="button" class="dvr-qdate-btn ${dt === dvrDate ? 'active' : ''}" data-date="${escapeHtml(dt)}">${escapeHtml(lbl)}</button>`;
+    }).join('');
+  }
+
+  function renderDvrTimelineTrack() {
+    if (!dvrSlotsBar) return;
+    dvrSlotsBar.innerHTML = dvrSlots.map((s) => `<span class="dvr-slot dvr-slot-${escapeHtml(s.state || 'offline')}"></span>`).join('');
+    if (dvrCapturesTicks) {
+      const capEvs = dvrEvents.filter((ev) => Boolean(parseEvMeta(ev).cap));
+      dvrCapturesTicks.innerHTML = capEvs.map((ev) => {
+        const pct = ((ev.sec_of_day || 0) / 86400) * 100;
+        return `<span class="dvr-cap-tick" style="left:${pct.toFixed(2)}%;"></span>`;
+      }).join('');
+    }
+  }
+
+  function syncDvrPlaybackStage() {
+    const half = dvrWindowMins / 2;
+    const startMin = Math.max(0, Math.min(1440 - dvrWindowMins, dvrCenterMin - half));
+    const endMin = Math.min(1440, startMin + dvrWindowMins);
+    const startSec = startMin * 60;
+    const endSec = endMin * 60;
+
+    if (dvrLens) {
+      dvrLens.style.left = `${(startMin / 1440) * 100}%`;
+      dvrLens.style.width = `${Math.max(0.7, (dvrWindowMins / 1440) * 100)}%`;
+    }
+    if (dvrTramoBadge) {
+      dvrTramoBadge.textContent = `Tramo ${dvrWindowMins}m: ${minToHhMm(startMin)} - ${minToHhMm(endMin)}`;
+    }
+
+    const tramoEvs = dvrEvents.filter((ev) => ev.sec_of_day >= startSec && ev.sec_of_day <= endSec);
+    if (dvrTramoCount) dvrTramoCount.textContent = String(tramoEvs.length);
+
+    const centerSlotIdx = Math.max(0, Math.min(287, Math.floor(dvrCenterMin / 5)));
+    const slotInfo = dvrSlots[centerSlotIdx] || { state: 'offline' };
+
+    let activeEv = tramoEvs.find((e) => e.id === dvrSelectedEvId);
+    if (!activeEv && tramoEvs.length > 0) {
+      const withCap = tramoEvs.filter((e) => Boolean(parseEvMeta(e).cap));
+      activeEv = withCap.length > 0 ? withCap[withCap.length - 1] : tramoEvs[tramoEvs.length - 1];
+      dvrSelectedEvId = activeEv.id;
+    }
+    dvrCurrentEvObj = activeEv || null;
+
+    if (dvrOsdState) {
+      if (slotInfo.state === 'active' || (activeEv && ['WINDOW', 'KEYBOARD', 'RESUME', 'AUDIT'].includes(activeEv.category))) {
+        dvrOsdState.textContent = 'ACTIVO';
+        dvrOsdState.className = 'dvr-state-pill dvr-state-active';
+      } else if (slotInfo.state === 'idle') {
+        dvrOsdState.textContent = 'INACTIVO';
+        dvrOsdState.className = 'dvr-state-pill dvr-state-idle';
+      } else {
+        dvrOsdState.textContent = 'SIN CONEXIÓN';
+        dvrOsdState.className = 'dvr-state-pill dvr-state-offline';
+      }
+    }
+
+    if (activeEv) {
+      const { meta, cap } = parseEvMeta(activeEv);
+      const winLbl = (meta && (meta.active_window || meta.app_name)) || activeEv.message || 'Evento';
+      if (dvrOsdDevice) dvrOsdDevice.textContent = activeEv.alias || 'Equipo';
+      if (dvrOsdWin) dvrOsdWin.textContent = winLbl;
+      if (dvrOsdClock) dvrOsdClock.textContent = String(activeEv.timestamp || '').slice(11, 19) || minToHhMm(dvrCenterMin);
+
+      if (cap && dvrMainImg && dvrEmptyOverlay) {
+        dvrMainImg.src = authedMediaUrl(cap);
+        dvrMainImg.classList.remove('hidden');
+        dvrEmptyOverlay.classList.add('hidden');
+      } else if (dvrMainImg && dvrEmptyOverlay) {
+        dvrMainImg.classList.add('hidden');
+        dvrEmptyOverlay.classList.remove('hidden');
+        dvrEmptyOverlay.classList.remove('is-dead');
+        if (dvrEmptyTitle) dvrEmptyTitle.textContent = `${activeEv.category}: ${activeEv.alias}`;
+        if (dvrEmptySub) dvrEmptySub.textContent = activeEv.message || 'Evento registrado sin imagen adjunta en este segundo.';
+      }
+    } else if (dvrMainImg && dvrEmptyOverlay) {
+      dvrMainImg.classList.add('hidden');
+      dvrEmptyOverlay.classList.remove('hidden');
+      if (dvrOsdClock) dvrOsdClock.textContent = `${minToHhMm(startMin)} - ${minToHhMm(endMin)}`;
+      if (dvrOsdWin) dvrOsdWin.textContent = slotInfo.state === 'future' ? 'Horario futuro' : 'Sin registros en este tramo';
+      const isDead = slotInfo.state === 'offline';
+      dvrEmptyOverlay.classList.toggle('is-dead', isDead);
+      if (dvrEmptyTitle) {
+        dvrEmptyTitle.textContent = slotInfo.state === 'future' ? 'Tramo aún no transcurrido' : (isDead ? 'Tiempo muerto — Sin conexión con el equipo' : 'Equipo conectado sin eventos en este tramo');
+      }
+      if (dvrEmptySub) {
+        dvrEmptySub.textContent = 'Desliza la línea de tiempo hacia las zonas verdes o usa los botones de captura anterior/siguiente.';
+      }
+    }
+
+    if (dvrFilmstrip) {
+      const capsInTramo = tramoEvs.filter((e) => Boolean(parseEvMeta(e).cap));
+      const pool = capsInTramo.length > 0 ? capsInTramo : dvrEvents.filter((e) => Boolean(parseEvMeta(e).cap)).slice(-12);
+      dvrFilmstrip.innerHTML = pool.map((ev) => {
+        const { cap } = parseEvMeta(ev);
+        return `<button type="button" class="dvr-film-item ${ev.id === dvrSelectedEvId ? 'active' : ''}" data-evid="${ev.id}" title="${escapeHtml(String(ev.timestamp || '').slice(11, 19))} · ${escapeHtml(ev.alias)}"><img src="${escapeHtml(authedMediaUrl(cap))}" alt="Miniatura" loading="lazy" /></button>`;
+      }).join('');
+    }
+
+    if (dvrSideEvents) {
+      if (tramoEvs.length === 0) {
+        dvrSideEvents.innerHTML = `<div class="logs-empty-feed" style="padding:28px 12px;">Sin eventos entre ${minToHhMm(startMin)} y ${minToHhMm(endMin)}.</div>`;
+      } else {
+        dvrSideEvents.innerHTML = tramoEvs.slice().reverse().map((ev) => {
+          const { meta, cap } = parseEvMeta(ev);
+          const hhmmss = String(ev.timestamp || '').slice(11, 19);
+          let summary = ev.message || '';
+          if (ev.category === 'KEYBOARD' && meta && meta.text_content) {
+            const parsed = analyzeKeyboardTranscript(meta.text_content);
+            summary = parsed.cleanText || summary;
+          }
+          return `<div class="dvr-ev-card ${ev.id === dvrSelectedEvId ? 'active' : ''}" data-evid="${ev.id}">
+            <div class="dvr-ev-top">
+              <span class="dvr-ev-time">${escapeHtml(hhmmss)} · ${escapeHtml(ev.alias)}</span>
+              <span class="cat-badge cat-${escapeHtml(ev.category || 'WINDOW')}">${escapeHtml(ev.category || 'WINDOW')}</span>
+            </div>
+            <div class="dvr-ev-msg">${escapeHtml(summary)}</div>
+            ${cap ? '<div class="dvr-ev-cap-tag">Ver captura en monitor</div>' : ''}
+          </div>`;
+        }).join('');
+      }
+    }
+  }
+
+  function stopDvrAutoplay() {
+    if (dvrPlayTimer) { clearInterval(dvrPlayTimer); dvrPlayTimer = null; }
+    if (dvrPlayBtn) dvrPlayBtn.classList.remove('playing');
+    if (dvrPlayLabel) dvrPlayLabel.textContent = 'Reproducir';
+  }
+
+  function jumpToDvrEvent(evObj) {
+    if (!evObj) return;
+    dvrSelectedEvId = evObj.id;
+    dvrCenterMin = Math.floor((evObj.sec_of_day || 0) / 60);
+    syncDvrPlaybackStage();
+  }
+
+  function stepDvrCapture(dir) {
+    const caps = dvrEvents.filter((e) => Boolean(parseEvMeta(e).cap));
+    const list = caps.length > 0 ? caps : dvrEvents;
+    if (list.length === 0) return false;
+    let idx = list.findIndex((e) => e.id === dvrSelectedEvId);
+    if (idx < 0) {
+      const curSec = dvrCenterMin * 60;
+      idx = dir > 0 ? list.findIndex((e) => e.sec_of_day > curSec) : list.length - 1;
+      if (idx < 0) idx = 0;
+    } else {
+      idx += dir;
+      if (idx < 0 || idx >= list.length) return false;
+    }
+    jumpToDvrEvent(list[idx]);
+    return true;
+  }
+
+  if (dvrTrackWrap) {
+    let dragging = false;
+    const scrubAtClientX = (clientX) => {
+      const rect = dvrTrackWrap.getBoundingClientRect();
+      if (!rect.width) return;
+      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      dvrCenterMin = Math.round(ratio * 1440);
+      dvrSelectedEvId = null;
+      syncDvrPlaybackStage();
+    };
+    dvrTrackWrap.addEventListener('pointerdown', (e) => {
+      stopDvrAutoplay();
+      dragging = true;
+      dvrTrackWrap.setPointerCapture(e.pointerId);
+      scrubAtClientX(e.clientX);
+    });
+    dvrTrackWrap.addEventListener('pointermove', (e) => {
+      const rect = dvrTrackWrap.getBoundingClientRect();
+      if (rect.width && dvrHoverTip) {
+        const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        dvrHoverTip.textContent = minToHhMm(ratio * 1440);
+        dvrHoverTip.style.left = `${(ratio * 100).toFixed(2)}%`;
+        dvrHoverTip.classList.remove('hidden');
+      }
+      if (dragging) scrubAtClientX(e.clientX);
+    });
+    dvrTrackWrap.addEventListener('pointerup', () => { dragging = false; });
+    dvrTrackWrap.addEventListener('pointercancel', () => { dragging = false; });
+    dvrTrackWrap.addEventListener('pointerleave', () => { if (dvrHoverTip) dvrHoverTip.classList.add('hidden'); });
+  }
+
+  if (dvrWindowGroup) {
+    dvrWindowGroup.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-win]');
+      if (!btn) return;
+      dvrWindowMins = Number(btn.dataset.win || 15);
+      dvrWindowGroup.querySelectorAll('.st-seg-btn').forEach((b) => b.classList.toggle('active', b === btn));
+      syncDvrPlaybackStage();
+    });
+  }
+
+  if (dvrPrevCapBtn) dvrPrevCapBtn.addEventListener('click', () => { stopDvrAutoplay(); stepDvrCapture(-1); });
+  if (dvrNextCapBtn) dvrNextCapBtn.addEventListener('click', () => { stopDvrAutoplay(); stepDvrCapture(1); });
+  if (dvrPlayBtn) {
+    dvrPlayBtn.addEventListener('click', () => {
+      if (dvrPlayTimer) { stopDvrAutoplay(); return; }
+      dvrPlayBtn.classList.add('playing');
+      if (dvrPlayLabel) dvrPlayLabel.textContent = 'Pausar';
+      dvrPlayTimer = setInterval(() => {
+        if (!stepDvrCapture(1)) stopDvrAutoplay();
+      }, 1600);
+    });
+  }
+
+  [dvrFilmstrip, dvrSideEvents].forEach((box) => {
+    if (!box) return;
+    box.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-evid]');
+      if (!el) return;
+      stopDvrAutoplay();
+      const target = dvrEvents.find((x) => String(x.id) === String(el.dataset.evid));
+      if (target) jumpToDvrEvent(target);
+    });
+  });
+
+  if (dvrMainImg) {
+    dvrMainImg.addEventListener('click', () => {
+      if (!dvrCurrentEvObj) return;
+      const { meta, cap } = parseEvMeta(dvrCurrentEvObj);
+      if (!cap) return;
+      openEvidenceModal({
+        category: dvrCurrentEvObj.category || 'WINDOW',
+        url: cap,
+        alias: dvrCurrentEvObj.alias,
+        hostname: dvrCurrentEvObj.hostname,
+        window: (meta && meta.active_window) || 'Escritorio',
+        prevWindow: (meta && meta.previous_window) || '',
+        time: dvrCurrentEvObj.timestamp,
+        count: meta && meta.keystrokes_count,
+        duration: dvrCurrentEvObj.duration_seconds,
+        layout: meta && meta.keyboard_layout,
+        text: meta && meta.text_content,
+        message: dvrCurrentEvObj.message || '',
+      });
+    });
+  }
+
+  function shiftDvrDateBy(days) {
+    if (!dvrDateInput) return;
+    const base = new Date(`${dvrDate || todayIso}T12:00:00`);
+    base.setDate(base.getDate() + days);
+    dvrDateInput.value = base.toISOString().slice(0, 10);
+    stopDvrAutoplay();
+    fetchDvrDayFromServer(false);
+  }
+  if (dvrPrevDayBtn) dvrPrevDayBtn.addEventListener('click', () => shiftDvrDateBy(-1));
+  if (dvrNextDayBtn) dvrNextDayBtn.addEventListener('click', () => shiftDvrDateBy(1));
+  if (dvrDateInput) dvrDateInput.addEventListener('change', () => { stopDvrAutoplay(); fetchDvrDayFromServer(false); });
+  if (dvrQuickDates) {
+    dvrQuickDates.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-date]');
+      if (!btn || !dvrDateInput) return;
+      dvrDateInput.value = btn.dataset.date;
+      stopDvrAutoplay();
+      fetchDvrDayFromServer(false);
+    });
+  }
+
+  if (dvrModeToggle) {
+    dvrModeToggle.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-mode]');
+      if (!btn) return;
+      const isList = btn.dataset.mode === 'list';
+      stopDvrAutoplay();
+      dvrModeToggle.querySelectorAll('.st-seg-btn').forEach((b) => b.classList.toggle('active', b === btn));
+      if (dvrConsoleWrap) dvrConsoleWrap.classList.toggle('hidden', isList);
+      if (dvrClassicListWrap) dvrClassicListWrap.classList.toggle('hidden', !isList);
+      if (groupLogsToggleBtn) groupLogsToggleBtn.classList.toggle('hidden', !isList);
+    });
+  }
 
   setInterval(checkAndRecoverConnection, 12000);
   window.addEventListener('online', checkAndRecoverConnection);

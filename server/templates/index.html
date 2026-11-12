@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=20261111-v13" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261111-v14" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -928,14 +928,24 @@
     <div class="panel-card logs-panel-card">
       <div class="panel-card-header logs-panel-header">
         <div class="logs-title-wrap">
-          <h2>Bitácora de Actividad</h2>
+          <h2>Bitácora DVR</h2>
           <span id="logs-counter-badge" class="badge-pill muted-badge">0 eventos</span>
+          <div id="dvr-mode-toggle" class="st-segmented" role="group" aria-label="Modo de visualización">
+            <button type="button" class="st-seg-btn active" data-mode="dvr">Consola DVR</button>
+            <button type="button" class="st-seg-btn" data-mode="list">Lista</button>
+          </div>
         </div>
         <div class="panel-controls">
           <div class="control-select-wrap">
             <select id="log-device-filter" class="toolbar-select" aria-label="Filtrar por equipo">
               <option value="ALL">Todos los equipos</option>
             </select>
+          </div>
+
+          <div class="dvr-date-nav">
+            <button type="button" id="dvr-prev-day" class="dvr-day-step" title="Día anterior" aria-label="Día anterior">&lsaquo;</button>
+            <input type="date" id="dvr-date-input" class="dvr-date-field" aria-label="Fecha de reproducción" />
+            <button type="button" id="dvr-next-day" class="dvr-day-step" title="Día siguiente" aria-label="Día siguiente">&rsaquo;</button>
           </div>
 
           <select id="log-category-filter" class="hidden" aria-hidden="true">
@@ -955,14 +965,11 @@
             <input id="log-search-input" type="text" placeholder="Buscar app, texto o evento..." />
           </div>
 
-          <button id="group-logs-toggle-btn" type="button" class="btn btn-secondary btn-sm active" title="Agrupar eventos repetitivos consecutivos">
-            <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M4 6h16M4 12h16M4 18h16"/>
-            </svg>
+          <button id="group-logs-toggle-btn" type="button" class="btn btn-secondary btn-sm active hidden" title="Agrupar eventos repetitivos consecutivos">
             <span id="group-logs-label">Agrupar</span>
           </button>
 
-          <button id="export-csv-btn" type="button" class="btn btn-secondary btn-sm" title="Descargar eventos actuales en formato CSV">
+          <button id="export-csv-btn" type="button" class="btn btn-secondary btn-sm" title="Descargar eventos en CSV">
             <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
             </svg>
@@ -971,18 +978,103 @@
         </div>
       </div>
 
-      <div id="log-category-chips" class="logs-chip-bar" role="tablist" aria-label="Categorías de bitácora">
-        <button type="button" class="log-cat-chip active" data-cat="ALL">Todos</button>
-        <button type="button" class="log-cat-chip" data-cat="WINDOW">Apps y Pestañas</button>
-        <button type="button" class="log-cat-chip" data-cat="KEYBOARD">Teclado</button>
-        <button type="button" class="log-cat-chip" data-cat="IDLE">Inactividad</button>
-        <button type="button" class="log-cat-chip" data-cat="RESUME">Regresos</button>
-        <button type="button" class="log-cat-chip" data-cat="AUDIT">Soporte y Archivos</button>
-        <button type="button" class="log-cat-chip" data-cat="NETWORK">Conexiones</button>
+      <div class="dvr-subbar">
+        <div id="log-category-chips" class="logs-chip-bar" role="tablist" aria-label="Categorías de bitácora">
+          <button type="button" class="log-cat-chip active" data-cat="ALL">Todos</button>
+          <button type="button" class="log-cat-chip" data-cat="WINDOW">Apps y Pestañas</button>
+          <button type="button" class="log-cat-chip" data-cat="KEYBOARD">Teclado</button>
+          <button type="button" class="log-cat-chip" data-cat="IDLE">Inactividad</button>
+          <button type="button" class="log-cat-chip" data-cat="RESUME">Regresos</button>
+          <button type="button" class="log-cat-chip" data-cat="AUDIT">Soporte y Archivos</button>
+          <button type="button" class="log-cat-chip" data-cat="NETWORK">Conexiones</button>
+        </div>
+        <div id="dvr-quick-dates" class="dvr-quick-dates"></div>
       </div>
 
-      <div id="logs-tbody" class="logs-timeline-feed">
-        <div class="logs-empty-feed">Sin eventos registrados para este filtro.</div>
+      <!-- MODO 1: CONSOLA REPRODUCTORA DVR -->
+      <div id="dvr-console-wrap" class="dvr-console-wrap">
+        <div class="dvr-split-stage">
+          <div class="dvr-monitor-panel">
+            <div class="dvr-osd-bar">
+              <div class="dvr-osd-left">
+                <span id="dvr-osd-state" class="dvr-state-pill dvr-state-active">ACTIVO</span>
+                <strong id="dvr-osd-device">Todos los equipos</strong>
+                <span id="dvr-osd-win" class="dvr-osd-win">Selecciona o desliza la línea de tiempo</span>
+              </div>
+              <span id="dvr-osd-clock" class="dvr-osd-clock">--:--:--</span>
+            </div>
+
+            <div id="dvr-screen-box" class="dvr-screen-box">
+              <img id="dvr-main-img" class="dvr-main-img hidden" alt="Captura DVR" />
+              <div id="dvr-empty-overlay" class="dvr-empty-overlay">
+                <strong id="dvr-empty-title">Sin captura en este tramo</strong>
+                <p id="dvr-empty-sub">Desliza la barra inferior o salta a la siguiente captura registrada.</p>
+              </div>
+            </div>
+
+            <div class="dvr-transport-bar">
+              <div class="dvr-transport-btns">
+                <button type="button" id="dvr-prev-cap-btn" class="dvr-ctrl-btn" title="Captura anterior">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
+                </button>
+                <button type="button" id="dvr-play-btn" class="dvr-ctrl-btn dvr-play-btn" title="Reproducir / Pausar recorrido de capturas">
+                  <span id="dvr-play-label">Reproducir</span>
+                </button>
+                <button type="button" id="dvr-next-cap-btn" class="dvr-ctrl-btn" title="Siguiente captura">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+                </button>
+              </div>
+              <span id="dvr-tramo-badge" class="dvr-tramo-badge">Tramo 15 min</span>
+              <div id="dvr-filmstrip" class="dvr-filmstrip"></div>
+            </div>
+          </div>
+
+          <div class="dvr-side-panel">
+            <div class="dvr-side-head">
+              <strong id="dvr-side-title">Eventos del tramo</strong>
+              <span id="dvr-tramo-count" class="badge-pill muted-badge">0</span>
+            </div>
+            <div id="dvr-side-events" class="dvr-side-events"></div>
+          </div>
+        </div>
+
+        <div class="dvr-scrubber-panel">
+          <div class="dvr-scrubber-head">
+            <div class="dvr-legend">
+              <span><i class="dvr-dot dvr-dot-green"></i>Con actividad</span>
+              <span><i class="dvr-dot dvr-dot-amber"></i>Inactivo (Conectado)</span>
+              <span><i class="dvr-dot dvr-dot-red"></i>Tiempo muerto (Sin conexión)</span>
+              <span><i class="dvr-dot dvr-dot-blue"></i>Captura visual</span>
+            </div>
+            <div class="dvr-zoom-box">
+              <span>Tramo:</span>
+              <div id="dvr-window-group" class="st-segmented" role="group" aria-label="Tamaño de tramo">
+                <button type="button" class="st-seg-btn" data-win="5">5 min</button>
+                <button type="button" class="st-seg-btn active" data-win="15">15 min</button>
+                <button type="button" class="st-seg-btn" data-win="30">30 min</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="dvr-track-wrap" class="dvr-track-wrap">
+            <div id="dvr-Hover-tip" class="dvr-hover-tip hidden">00:00</div>
+            <div id="dvr-captures-ticks" class="dvr-captures-ticks"></div>
+            <div id="dvr-slots-bar" class="dvr-slots-bar"></div>
+            <div id="dvr-lens" class="dvr-lens"></div>
+          </div>
+
+          <div class="dvr-ruler">
+            <span>00:00</span><span>03:00</span><span>06:00</span><span>09:00</span>
+            <span>12:00</span><span>15:00</span><span>18:00</span><span>21:00</span><span>24:00</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- MODO 2: LISTA CLÁSICA COMPLETA -->
+      <div id="dvr-classic-list-wrap" class="hidden">
+        <div id="logs-tbody" class="logs-timeline-feed">
+          <div class="logs-empty-feed">Sin eventos registrados para este filtro.</div>
+        </div>
       </div>
     </div>
   </section>
@@ -1232,6 +1324,6 @@
 
   <script src="/static/js/audio.js?v=20261111-v9"></script>
   <script src="/static/js/viewer.js?v=20261111-v9"></script>
-  <script src="/static/js/app.js?v=20261111-v13"></script>
+  <script src="/static/js/app.js?v=20261111-v14"></script>
 </body>
 </html>

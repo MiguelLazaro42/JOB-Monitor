@@ -167,6 +167,16 @@ class DatabaseManager:
                     );
                     CREATE INDEX IF NOT EXISTS idx_sth_agent_date ON screen_time_hourly(agent_id, date);
 
+                    CREATE TABLE IF NOT EXISTS dvr_timeline_buckets (
+                        date TEXT NOT NULL,
+                        slot_5m INTEGER NOT NULL,
+                        agent_id TEXT NOT NULL,
+                        active_seconds INTEGER DEFAULT 0,
+                        idle_seconds INTEGER DEFAULT 0,
+                        PRIMARY KEY (date, slot_5m, agent_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_dvr_agent_date ON dvr_timeline_buckets(agent_id, date);
+
                     CREATE TABLE IF NOT EXISTS resource_usage_daily (
                         date TEXT NOT NULL,
                         agent_id TEXT NOT NULL,
@@ -802,6 +812,21 @@ class DatabaseManager:
                     """,
                     (today_str, hour_val, agent_id, act_inc, idl_inc),
                 )
+                try:
+                    min_val = max(0, min(59, int(time_only[3:5])))
+                except Exception:
+                    min_val = now_dt.minute
+                slot_5m = max(0, min(287, hour_val * 12 + (min_val // 5)))
+                conn.execute(
+                    """
+                    INSERT INTO dvr_timeline_buckets (date, slot_5m, agent_id, active_seconds, idle_seconds)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(date, slot_5m, agent_id) DO UPDATE SET
+                        active_seconds = active_seconds + excluded.active_seconds,
+                        idle_seconds = idle_seconds + excluded.idle_seconds
+                    """,
+                    (today_str, slot_5m, agent_id, act_inc, idl_inc),
+                )
                 if resource_slices:
                     for sl in resource_slices[:25]:
                         s_sec = max(0, min(30, int(sl.get("seconds") or 0)))
@@ -1242,6 +1267,143 @@ class DatabaseManager:
                 }
             finally:
                 conn.close()
+
+    def get_dvr_day_data(
+        self,
+        agent_id: Optional[str] = None,
+        target_date: Optional[str] = None,
+        category: Optional[str] = None,
+        search_q: Optional[str] = None,
+        allowed_tenant_id: Optional[str] = None,
+    ) -> dict:
+        now_dt = self._now_dt()
+        today_str = now_dt.strftime("%Y-%m-%d")
+        day_str = (target_date or "").strip()[:10]
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", day_str):
+            day_str = today_str
+        now_min = now_dt.hour * 60 + now_dt.minute
+
+        dev_clause = ""
+        base_params: list = []
+        if allowed_tenant_id:
+            dev_clause += " AND agent_id IN (SELECT agent_id FROM devices WHERE tenant_id = ?)"
+            base_params.append(allowed_tenant_id)
+        if agent_id and agent_id != "ALL":
+            dev_clause += " AND agent_id = ?"
+            base_params.append(agent_id)
+
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                dates_rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT d FROM (
+                        SELECT substr(timestamp, 1, 10) AS d FROM device_logs WHERE length(timestamp) >= 10 {dev_clause}
+                        UNION
+                        SELECT date AS d FROM daily_activity_summary WHERE 1=1 {dev_clause}
+                    ) WHERE d GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+                    ORDER BY d DESC LIMIT 14
+                    """,
+                    base_params + base_params,
+                ).fetchall()
+                avail_dates = [r["d"] for r in dates_rows if r["d"]]
+                if today_str not in avail_dates:
+                    avail_dates.insert(0, today_str)
+                avail_dates = sorted(set(avail_dates), reverse=True)[:14]
+
+                b_rows = conn.execute(
+                    f"SELECT slot_5m, SUM(active_seconds) AS act, SUM(idle_seconds) AS idl FROM dvr_timeline_buckets WHERE date = ? {dev_clause} GROUP BY slot_5m",
+                    [day_str] + base_params,
+                ).fetchall()
+                buckets = {int(r["slot_5m"]): (int(r["act"] or 0), int(r["idl"] or 0)) for r in b_rows}
+
+                h_rows = conn.execute(
+                    f"SELECT hour, SUM(active_seconds) AS act, SUM(idle_seconds) AS idl FROM screen_time_hourly WHERE date = ? {dev_clause} GROUP BY hour",
+                    [day_str] + base_params,
+                ).fetchall()
+                hourly_fb = {int(r["hour"]): (int(r["act"] or 0), int(r["idl"] or 0)) for r in h_rows}
+
+                all_day_logs = conn.execute(
+                    f"SELECT * FROM device_logs WHERE timestamp LIKE ? {dev_clause} ORDER BY id ASC LIMIT 2500",
+                    [f"{day_str}%"] + base_params,
+                ).fetchall()
+            finally:
+                conn.close()
+
+        slot_active_ev = [0] * 288
+        slot_idle_ev = [0] * 288
+        slot_caps = [0] * 288
+        slot_total_ev = [0] * 288
+        filtered_events = []
+        q_low = (search_q or "").strip().lower()
+        cat_f = (category or "ALL").strip().upper()
+
+        for r in all_day_logs:
+            d = dict(r)
+            ts = str(d.get("timestamp") or "")
+            h, m, s = 0, 0, 0
+            if len(ts) >= 19:
+                try:
+                    h = max(0, min(23, int(ts[11:13])))
+                    m = max(0, min(59, int(ts[14:16])))
+                    s = max(0, min(59, int(ts[17:19])))
+                except Exception:
+                    pass
+            sec_day = h * 3600 + m * 60 + s
+            sl = max(0, min(287, sec_day // 300))
+            c = str(d.get("category") or "WINDOW")
+            slot_total_ev[sl] += 1
+            if d.get("evidence_path"):
+                slot_caps[sl] += 1
+            if c in ("WINDOW", "KEYBOARD", "RESUME", "AUDIT"):
+                slot_active_ev[sl] += 1
+            else:
+                slot_idle_ev[sl] += 1
+
+            if cat_f != "ALL" and c != cat_f:
+                continue
+            if q_low:
+                hay = f"{d.get('message','')} {d.get('alias','')} {d.get('hostname','')} {d.get('meta_json','')}".lower()
+                if q_low not in hay:
+                    continue
+            d["sec_of_day"] = sec_day
+            d["slot_5m"] = sl
+            filtered_events.append(d)
+
+        slots = []
+        hours_with_5m = {sl_k // 12 for sl_k in buckets.keys()}
+        for sl in range(288):
+            start_m = sl * 5
+            hr = sl // 12
+            act_s, idl_s = buckets.get(sl, (0, 0))
+            if hr not in hours_with_5m and hr in hourly_fb and slot_total_ev[sl] == 0:
+                h_act, h_idl = hourly_fb[hr]
+                if sum(slot_total_ev[hr * 12:(hr + 1) * 12]) == 0:
+                    act_s, idl_s = h_act, h_idl
+            if day_str > today_str or (day_str == today_str and start_m > now_min):
+                st = "future"
+            elif act_s > 0 or slot_active_ev[sl] > 0:
+                st = "active"
+            elif idl_s > 0 or slot_idle_ev[sl] > 0:
+                st = "idle"
+            else:
+                st = "offline"
+            slots.append({
+                "slot": sl,
+                "start_min": start_m,
+                "state": st,
+                "captures": slot_caps[sl],
+                "events": slot_total_ev[sl],
+            })
+
+        return {
+            "date": day_str,
+            "today": today_str,
+            "now_minute": now_min if day_str == today_str else 1439,
+            "available_dates": avail_dates,
+            "slots": slots,
+            "events": filtered_events[-1500:],
+        }
 
 
 db = DatabaseManager()
