@@ -3291,9 +3291,7 @@
         const isLive = liveSet.has(key);
         const raw = d.raw_target || '';
         const displayDom = (d.resolved_domain && d.resolved_domain !== d.raw_target) ? d.resolved_domain : d.domain;
-        const rawSub = raw && raw !== displayDom
-          ? `<div class="net-kpi-sub">${escapeHtml(d.org_name ? d.org_name + ' · ' + raw : raw)}</div>`
-          : (d.org_name ? `<div class="net-kpi-sub">${escapeHtml(d.org_name)}</div>` : '');
+        const rawSub = raw && raw !== displayDom ? `<div class="net-kpi-sub">${escapeHtml(raw)}</div>` : '';
         const cc = String(d.country_code || '').toUpperCase();
         const flag = /^[A-Z]{2}$/.test(cc)
           ? `<span class="net-intel-chip" title="${escapeHtml(d.country_name || cc)}"><img class="net-flag-img" src="https://flagcdn.com/w20/${cc.toLowerCase()}.png" alt="${cc}" loading="lazy" onerror="this.style.display='none'" /><span class="net-cc-badge">[${cc}]</span></span>`
