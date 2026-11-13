@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=20261111-v6" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261113-v1" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -487,6 +487,13 @@
           </svg>
           <span>Bitácora</span>
         </button>
+        <button id="tab-network" class="nav-tab" type="button">
+          <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/>
+            <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/>
+          </svg>
+          <span>Tráfico de Red</span>
+        </button>
         <button id="tab-settings" class="nav-tab" type="button">
           <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"/>
@@ -915,6 +922,117 @@
   </section>
 
   <!-- ======================================================================= -->
+  <!-- VISTA: TRÁFICO DE RED Y DOMINIOS WEB                                    -->
+  <!-- ======================================================================= -->
+  <section id="view-network" class="main-container hidden">
+    <div class="net-kpi-grid">
+      <div class="net-kpi-card">
+        <span class="net-kpi-label">Descarga Hoy</span>
+        <strong id="net-kpi-rx" class="net-kpi-value">0 B</strong>
+        <span id="net-kpi-rx-sub" class="net-kpi-sub">&nbsp;</span>
+      </div>
+      <div class="net-kpi-card">
+        <span class="net-kpi-label">Subida Hoy</span>
+        <strong id="net-kpi-tx" class="net-kpi-value">0 B</strong>
+        <span id="net-kpi-tx-sub" class="net-kpi-sub">&nbsp;</span>
+      </div>
+      <div class="net-kpi-card">
+        <span class="net-kpi-label">Equipo Mayor Consumo</span>
+        <strong id="net-kpi-top-client" class="net-kpi-value net-kpi-text">---</strong>
+        <span id="net-kpi-top-client-sub" class="net-kpi-sub">&nbsp;</span>
+      </div>
+      <div class="net-kpi-card">
+        <span class="net-kpi-label">Dominio Principal</span>
+        <strong id="net-kpi-top-domain" class="net-kpi-value net-kpi-text">---</strong>
+        <span id="net-kpi-top-domain-sub" class="net-kpi-sub">&nbsp;</span>
+      </div>
+    </div>
+
+    <div class="panel-card">
+      <div class="panel-card-header">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <h2>Tráfico de Red y Dominios</h2>
+          <span id="net-counter-badge" class="badge-pill muted-badge">0 dominios</span>
+        </div>
+        <div class="panel-controls">
+          <input id="net-date-input" type="date" class="toolbar-select" />
+          <div class="control-select-wrap">
+            <select id="net-device-filter" class="toolbar-select">
+              <option value="ALL">Todos los equipos</option>
+            </select>
+          </div>
+          <div class="control-select-wrap">
+            <select id="net-category-filter" class="toolbar-select">
+              <option value="ALL">Todas las categorías</option>
+              <option value="STREAMING">Streaming / Video</option>
+              <option value="SOCIAL">Redes Sociales</option>
+              <option value="MESSAGING">Mensajería</option>
+              <option value="AI">Inteligencia Artificial</option>
+              <option value="CLOUD">Almacenamiento Cloud</option>
+              <option value="REMOTE">Acceso Remoto</option>
+              <option value="WORK">Desarrollo / Trabajo</option>
+              <option value="SYSTEM">Sistema / Actualizaciones</option>
+              <option value="OTHER">Otros</option>
+            </select>
+          </div>
+          <div class="search-box">
+            <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input id="net-search-input" type="text" placeholder="Filtrar dominio, app o equipo..." />
+          </div>
+          <button id="refresh-net-btn" type="button" class="btn btn-secondary btn-sm">
+            <span>Actualizar</span>
+          </button>
+          <button id="export-net-csv-btn" type="button" class="btn btn-secondary btn-sm">
+            <span>CSV</span>
+          </button>
+        </div>
+      </div>
+
+      <h3 class="net-section-title">Consumo por equipo <small>(clic en una fila para filtrar sus dominios)</small></h3>
+      <div class="table-wrap">
+        <table class="data-table net-table">
+          <thead>
+            <tr>
+              <th>Equipo</th>
+              <th>Descarga</th>
+              <th>Subida</th>
+              <th>Total</th>
+              <th>Pico (↓/↑ Kbps)</th>
+              <th>Dominios</th>
+              <th>Dominio principal</th>
+            </tr>
+          </thead>
+          <tbody id="net-clients-tbody">
+            <tr><td colspan="7" class="empty-row">Sin datos de red.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="net-section-title">Dominios y sitios conectados <small>(bytes estimados por frecuencia de conexión)</small></h3>
+      <div class="table-wrap">
+        <table class="data-table net-table">
+          <thead>
+            <tr>
+              <th>Equipo</th>
+              <th>Dominio</th>
+              <th>Aplicación</th>
+              <th>Categoría</th>
+              <th>Conexiones</th>
+              <th>Bytes estimados</th>
+              <th>Última vez</th>
+            </tr>
+          </thead>
+          <tbody id="net-domains-tbody">
+            <tr><td colspan="7" class="empty-row">Sin dominios registrados.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================================================================= -->
   <!-- VISTA 5: AJUSTES MULTI-TENANT, GESTIÓN DE USUARIOS Y EQUIPOS            -->
   <!-- ======================================================================= -->
   <section id="view-settings" class="main-container hidden">
@@ -995,6 +1113,6 @@
 
   <script src="/static/js/audio.js?v=20261111-v9"></script>
   <script src="/static/js/viewer.js?v=20261111-v9"></script>
-  <script src="/static/js/app.js?v=20261111-v9"></script>
+  <script src="/static/js/app.js?v=20261113-v1"></script>
 </body>
 </html>

@@ -2174,3 +2174,82 @@ body {
   border-radius: 4px;
   font-size: 11px;
 }
+
+/* ===== Vista: Tráfico de Red ===== */
+.net-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+.net-kpi-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 18px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  box-shadow: 0 2px 12px rgba(19, 52, 71, 0.025);
+}
+.net-kpi-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.net-kpi-value {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--sitai-navy);
+  line-height: 1.15;
+}
+.net-kpi-value.net-kpi-text {
+  font-size: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.net-kpi-sub {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.net-section-title {
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--sitai-navy);
+}
+.net-section-title small {
+  font-family: var(--font-body);
+  font-weight: 400;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+.net-table tbody tr.net-client-row { cursor: pointer; }
+.net-table tbody tr.net-client-row:hover { background: var(--bg-subtle); }
+.net-table tbody tr.net-client-row.selected {
+  background: var(--bg-elevated);
+  box-shadow: inset 3px 0 0 var(--sitai-orange);
+}
+.net-num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.net-cat-pill {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  background: var(--bg-elevated);
+  color: var(--sitai-navy);
+}
+.net-cat-pill.cat-STREAMING, .net-cat-pill.cat-SOCIAL { background: #fff1e0; color: #b45309; }
+.net-cat-pill.cat-AI, .net-cat-pill.cat-REMOTE { background: #fde8ee; color: var(--rose); }
+.net-cat-pill.cat-WORK { background: #dcf5ec; color: var(--emerald-text); }
+@media (max-width: 900px) {
+  .net-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

@@ -992,6 +992,425 @@ def _init_special_keys_map():
 _init_special_keys_map()
 
 
+# ==============================================================================
+# FASE 1 - TELEMETRÍA DE RED E INSPECCIÓN DE DOMINIOS (ESTILO NTOPNG SILENCIOSO)
+# ==============================================================================
+def get_network_io_counters() -> tuple[int, int]:
+    """
+    Mini-Función NF-1.1: Obtiene los contadores acumulados nativos de bytes recibidos (RX)
+    y transmitidos (TX) de las interfaces físicas de red activas en Windows y macOS,
+    excluyendo interfaces loopback (lo0 / Software Loopback) y túneles virtuales vacíos.
+    """
+    no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if IS_WINDOWS:
+        try:
+            out = subprocess.check_output(
+                ["netstat", "-e"],
+                stderr=subprocess.DEVNULL,
+                timeout=2.0,
+                creationflags=no_win,
+            ).decode("utf-8", errors="ignore")
+            for line in out.splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 3 and parts[1].isdigit() and parts[2].isdigit():
+                    return int(parts[1]), int(parts[2])
+        except Exception:
+            pass
+    elif IS_MAC:
+        try:
+            out = subprocess.check_output(
+                ["/usr/sbin/netstat", "-ibn"],
+                stderr=subprocess.DEVNULL,
+                timeout=2.0,
+            ).decode("utf-8", errors="ignore")
+            rx_total = 0
+            tx_total = 0
+            seen_ifaces = set()
+            for line in out.splitlines()[1:]:
+                parts = line.split()
+                if len(parts) < 10:
+                    continue
+                iface = parts[0]
+                if iface.startswith(("lo", "gif", "stf", "awdl", "llw", "ap")):
+                    continue
+                if "<Link#" not in parts[2]:
+                    continue
+                if iface in seen_ifaces:
+                    continue
+                try:
+                    ibytes = int(parts[6])
+                    obytes = int(parts[9])
+                    rx_total += ibytes
+                    tx_total += obytes
+                    seen_ifaces.add(iface)
+                except Exception:
+                    continue
+            return rx_total, tx_total
+        except Exception:
+            pass
+    return 0, 0
+
+
+def classify_domain_ndpi(raw_domain_or_ip: str, app_name: str = "") -> tuple[str, str]:
+    """
+    Mini-Función NF-1.5: Normaliza subdominios ruidosos de CDNs hacia el dominio principal
+    legible y clasifica el servicio estilo nDPI en categorías ejecutivas.
+    Retorna (clean_domain, category_code).
+    """
+    val = (raw_domain_or_ip or "").strip().lower().rstrip(".")
+    if not val:
+        return "", "OTHER"
+
+    # Limpiar prefijos de CDN y subdominios efímeros comunes
+    cdn_mappings = (
+        (("googlevideo.com", "ytimg.com", "youtubei.googleapis.com", "youtu.be", "youtube.com"), "youtube.com", "STREAMING"),
+        (("nflxvideo.net", "nflxso.net", "nflxext.com", "netflix.com"), "netflix.com", "STREAMING"),
+        (("ttwstatic.com", "tiktokcdn.com", "tiktokv.com", "tiktok.com"), "tiktok.com", "SOCIAL"),
+        (("scdn.co", "spotifycdn.com", "audio-ak-spotify-com.akamaized.net", "spotify.com"), "spotify.com", "STREAMING"),
+        (("twitchcdn.net", "ttvnw.net", "jtvnw.net", "twitch.tv"), "twitch.tv", "STREAMING"),
+        (("fbcdn.net", "facebook.net", "fbsbx.com", "facebook.com"), "facebook.com", "SOCIAL"),
+        (("cdninstagram.com", "instagram.com"), "instagram.com", "SOCIAL"),
+        (("twimg.com", "t.co", "twitter.com", "x.com"), "x.com", "SOCIAL"),
+        (("whatsapp.net", "whatsapp.com"), "web.whatsapp.com", "MESSAGING"),
+        (("telegram.org", "t.me", "tdesktop.com"), "telegram.org", "MESSAGING"),
+        (("discord.gg", "discordapp.com", "discordapp.net", "discord.media", "discord.com"), "discord.com", "MESSAGING"),
+        (("openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com"), "chatgpt.com", "AI"),
+        (("anthropic.com", "claude.ai"), "claude.ai", "AI"),
+        (("gemini.google.com", "bard.google.com"), "gemini.google.com", "AI"),
+        (("copilot.microsoft.com",), "copilot.microsoft.com", "AI"),
+        (("1drv.com", "onedrive.live.com", "sharepoint.com", "svc.ms", "office.com", "office365.com"), "office365.com", "CLOUD"),
+        (("drive.google.com", "docs.google.com", "googleusercontent.com"), "drive.google.com", "CLOUD"),
+        (("dropbox.com", "dropboxstatic.com", "dropboxusercontent.com"), "dropbox.com", "CLOUD"),
+        (("wetransfer.com", "wetransfer.net"), "wetransfer.com", "CLOUD"),
+        (("mega.nz", "mega.co.nz"), "mega.nz", "CLOUD"),
+        (("icloud.com", "icloud-content.com", "mzstatic.com", "apple-dns.net", "ess.apple.com", "push.apple.com"), "icloud.com", "SYSTEM"),
+        (("windowsupdate.com", "update.microsoft.com", "delivery.mp.microsoft.com", "mp.microsoft.com"), "windowsupdate.com", "SYSTEM"),
+        (("anydesk.com", "net.anydesk.com"), "anydesk.com", "REMOTE"),
+        (("teamviewer.com",), "teamviewer.com", "REMOTE"),
+        (("github.com", "githubusercontent.com", "githubassets.com"), "github.com", "WORK"),
+        (("gitlab.com",), "gitlab.com", "WORK"),
+        (("slack.com", "slack-edge.com", "slack-msgs.com"), "slack.com", "WORK"),
+        (("zoom.us", "zoomgov.com"), "zoom.us", "WORK"),
+        (("teams.microsoft.com", "teams.live.com"), "teams.microsoft.com", "WORK"),
+        (("meet.google.com",), "meet.google.com", "WORK"),
+        (("mail.google.com", "gmail.com"), "mail.google.com", "WORK"),
+        (("outlook.office365.com", "outlook.live.com", "outlook.com"), "outlook.com", "WORK"),
+    )
+
+    for suffixes, canonical, cat in cdn_mappings:
+        for sfx in suffixes:
+            if val == sfx or val.endswith("." + sfx):
+                return canonical, cat
+
+    # Descartar ruido técnico puro de infraestructura inversa (PTR de ISP genéricos o ARPA)
+    if val.endswith((".in-addr.arpa", ".ip6.arpa", ".local", ".lan", ".home", ".internal")):
+        return "", "OTHER"
+
+    # Si es un dominio estándar (no IP numérica), reducir subdominios excesivos a dominio base legible
+    is_ipv4 = all(p.isdigit() for p in val.split(".")) and len(val.split(".")) == 4
+    if not is_ipv4 and ":" not in val:
+        parts = [p for p in val.split(".") if p]
+        if len(parts) >= 3:
+            # Si tiene TLD compuesto tipo .com.mx, .com.ar, .co.uk
+            if len(parts[-1]) == 2 and parts[-2] in ("com", "net", "org", "gob", "edu", "co"):
+                val = ".".join(parts[-3:])
+            else:
+                # Conservar subdominio relevante si es mail/web/chat/app/drive, si no dejar raíz
+                if parts[-3] in ("web", "mail", "chat", "drive", "docs", "meet", "teams", "api", "portal"):
+                    val = ".".join(parts[-3:])
+                else:
+                    val = ".".join(parts[-2:])
+
+    app_low = (app_name or "").lower()
+    if any(k in app_low for k in ("anydesk", "teamviewer", "rustdesk", "mstsc")):
+        return val, "REMOTE"
+    if any(k in app_low for k in ("spotify", "vlc", "music")):
+        return val, "STREAMING"
+    if any(k in app_low for k in ("onedrive", "dropbox", "googledrive")):
+        return val, "CLOUD"
+    if any(k in app_low for k in ("code", "cursor", "antigravity", "pycharm", "terminal", "iterm", "git", "ssh")):
+        return val, "WORK"
+
+    if any(k in val for k in ("video", "stream", "media", "cdn")):
+        return val, "STREAMING"
+    if any(k in val for k in ("google.com", "gstatic.com", "googleapis.com", "microsoft.com", "bing.com", "cloudflare.com", "amazonaws.com", "akamai")):
+        return val, "WORK"
+    if any(k in val for k in ("apple.com", "digicert.com", "ocsp", "msn.com", "live.com")):
+        return val, "SYSTEM"
+
+    return val, "OTHER"
+
+
+class NetworkTrafficCollector:
+    """
+    Mini-Funciones NF-1.2, NF-1.3 y NF-1.4:
+    Colector silencioso de ancho de banda (RX/TX bytes y Kbps) e inspector de conexiones
+    TCP/UDP y dominios DNS sin requerir drivers externos (Npcap) ni abrir puertos en el cliente.
+    """
+
+    def __init__(self, server_url: str = ""):
+        self.server_host = ""
+        try:
+            # Extraer IP/host del propio servidor JOB-Monitor para excluirlo del conteo de dominios del usuario
+            clean_u = server_url.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0].strip()
+            self.server_host = clean_u.lower()
+        except Exception:
+            self.server_host = ""
+
+        rx0, tx0 = get_network_io_counters()
+        self.last_rx_bytes: int = rx0
+        self.last_tx_bytes: int = tx0
+        self.last_sample_ts: float = time.monotonic()
+
+        self._dns_ip_to_domain: dict[str, str] = {}
+        self._ptr_cache: dict[str, tuple[str, float]] = {}
+        self._pid_to_name_cache: dict[int, tuple[str, float]] = {}
+        self._last_deep_scan_ts: float = 0.0
+        self._cached_domain_hits: list[dict] = []
+
+    def _is_private_or_ignored_ip(self, ip_str: str) -> bool:
+        ip = (ip_str or "").strip().lower()
+        if not ip or ip in ("*", "0.0.0.0", "127.0.0.1", "::1", "::", "[::]", "[::1]"):
+            return True
+        if self.server_host and ip == self.server_host:
+            return True
+        if ip.startswith(("127.", "10.", "192.168.", "169.254.", "224.", "239.", "255.", "fe80:", "fc00:", "fd00:")):
+            return True
+        if ip.startswith("172."):
+            parts = ip.split(".")
+            if len(parts) == 4 and parts[1].isdigit() and 16 <= int(parts[1]) <= 31:
+                return True
+        return False
+
+    def _refresh_windows_dns_cache(self):
+        """Lee silenciosamente ipconfig /displaydns en Windows para mapear IPs a nombres de dominio exactos."""
+        if not IS_WINDOWS:
+            return
+        no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            out = subprocess.check_output(
+                ["ipconfig", "/displaydns"],
+                stderr=subprocess.DEVNULL,
+                timeout=2.5,
+                creationflags=no_win,
+            ).decode("utf-8", errors="ignore")
+            current_domain = ""
+            for raw_line in out.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if ":" in line:
+                    k, v = [x.strip() for x in line.split(":", 1)]
+                    kl = k.lower()
+                    if ("record name" in kl or "nombre de registro" in kl) and v and "." in v:
+                        current_domain = v.lower().rstrip(".")
+                    elif ("a (host)" in kl or "aaaa" in kl or "dirección" in kl or "address" in kl) and v and current_domain:
+                        ip_candidate = v.strip()
+                        if "." in ip_candidate or ":" in ip_candidate:
+                            self._dns_ip_to_domain[ip_candidate] = current_domain
+                elif "." in line and " " not in line and not line.startswith("-"):
+                    current_domain = line.lower().rstrip(".")
+        except Exception:
+            pass
+
+    def _resolve_ip_to_domain(self, ip_str: str) -> str:
+        if ip_str in self._dns_ip_to_domain:
+            return self._dns_ip_to_domain[ip_str]
+
+        now = time.monotonic()
+        cached = self._ptr_cache.get(ip_str)
+        if cached and (now - cached[1]) < 1800.0:
+            return cached[0]
+
+        resolved = ""
+        try:
+            old_to = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(0.35)
+            try:
+                host, _, _ = socket.gethostbyaddr(ip_str)
+                if host and "." in host:
+                    resolved = host.lower().rstrip(".")
+            finally:
+                socket.setdefaulttimeout(old_to)
+        except Exception:
+            resolved = ""
+
+        self._ptr_cache[ip_str] = (resolved, now)
+        if len(self._ptr_cache) > 600:
+            # Limpiar entradas antiguas de caché PTR
+            cutoff = now - 900.0
+            self._ptr_cache = {k: v for k, v in self._ptr_cache.items() if v[1] >= cutoff}
+        return resolved
+
+    def _refresh_windows_pid_map(self):
+        if not IS_WINDOWS:
+            return
+        now = time.monotonic()
+        no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            out = subprocess.check_output(
+                ["tasklist", "/nh", "/fo", "csv"],
+                stderr=subprocess.DEVNULL,
+                timeout=2.5,
+                creationflags=no_win,
+            ).decode("utf-8", errors="ignore")
+            for line in out.splitlines():
+                parts = [p.strip('"') for p in line.strip().split('","')]
+                if len(parts) >= 2 and parts[1].isdigit():
+                    self._pid_to_name_cache[int(parts[1])] = (parts[0], now)
+        except Exception:
+            pass
+
+    def _scan_active_connections(self, fallback_app: str) -> list[dict]:
+        """
+        Inspecciona las conexiones TCP/UDP remotas activas y las cruza con procesos y dominios.
+        """
+        connections_by_key: dict[tuple[str, str], dict] = {}
+        no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+        if IS_WINDOWS:
+            self._refresh_windows_dns_cache()
+            self._refresh_windows_pid_map()
+            try:
+                out = subprocess.check_output(
+                    ["netstat", "-ano", "-p", "tcp"],
+                    stderr=subprocess.DEVNULL,
+                    timeout=2.5,
+                    creationflags=no_win,
+                ).decode("utf-8", errors="ignore")
+                for line in out.splitlines():
+                    parts = line.split()
+                    if len(parts) < 5 or parts[0].upper() != "TCP":
+                        continue
+                    state_str = parts[3].upper()
+                    if state_str not in ("ESTABLISHED", "SYN_SENT", "TIME_WAIT"):
+                        continue
+                    foreign = parts[2]
+                    if ":" not in foreign:
+                        continue
+                    remote_ip, remote_port = foreign.rsplit(":", 1)
+                    remote_ip = remote_ip.strip("[]")
+                    if self._is_private_or_ignored_ip(remote_ip):
+                        continue
+                    pid = int(parts[4]) if parts[4].isdigit() else 0
+                    proc_name = self._pid_to_name_cache.get(pid, ("", 0.0))[0] or fallback_app or "Sistema"
+                    if proc_name.lower() in ("python.exe", "pythonw.exe") and remote_port == "5080":
+                        continue
+                    raw_dom = self._resolve_ip_to_domain(remote_ip) or remote_ip
+                    clean_dom, cat = classify_domain_ndpi(raw_dom, proc_name)
+                    if not clean_dom:
+                        continue
+                    k = (clean_dom, proc_name[:40])
+                    if k not in connections_by_key:
+                        connections_by_key[k] = {
+                            "domain": clean_dom,
+                            "app_name": proc_name[:40],
+                            "category": cat,
+                            "connections": 1,
+                        }
+                    else:
+                        connections_by_key[k]["connections"] += 1
+            except Exception:
+                pass
+
+        elif IS_MAC:
+            try:
+                out = subprocess.check_output(
+                    ["/usr/sbin/lsof", "-iTCP", "-sTCP:ESTABLISHED", "-n", "-P"],
+                    stderr=subprocess.DEVNULL,
+                    timeout=2.5,
+                ).decode("utf-8", errors="ignore")
+                for line in out.splitlines()[1:]:
+                    parts = line.split()
+                    if len(parts) < 9:
+                        continue
+                    proc_name = parts[0].replace("\\x20", " ").strip()
+                    name_col = parts[8]
+                    if "->" not in name_col:
+                        continue
+                    remote_part = name_col.split("->", 1)[1]
+                    if ":" not in remote_part:
+                        continue
+                    remote_ip, remote_port = remote_part.rsplit(":", 1)
+                    remote_ip = remote_ip.strip("[]")
+                    if self._is_private_or_ignored_ip(remote_ip):
+                        continue
+                    if "JOBMonitorAgent" in proc_name or (proc_name.lower().startswith("python") and remote_port == "5080"):
+                        continue
+                    raw_dom = self._resolve_ip_to_domain(remote_ip) or remote_ip
+                    clean_dom, cat = classify_domain_ndpi(raw_dom, proc_name)
+                    if not clean_dom:
+                        continue
+                    k = (clean_dom, proc_name[:40])
+                    if k not in connections_by_key:
+                        connections_by_key[k] = {
+                            "domain": clean_dom,
+                            "app_name": proc_name[:40],
+                            "category": cat,
+                            "connections": 1,
+                        }
+                    else:
+                        connections_by_key[k]["connections"] += 1
+            except Exception:
+                pass
+
+        results = sorted(connections_by_key.values(), key=lambda x: x["connections"], reverse=True)
+        return results[:15]
+
+    def collect_slice(self, active_app_name: str = "Escritorio") -> dict:
+        """
+        Mini-Función NF-1.6: Calcula el diferencial de bytes (RX/TX), la velocidad en Kbps
+        y las conexiones a dominios activas para inyectarlas en el paquete de telemetría o bóveda .sitai.
+        """
+        now = time.monotonic()
+        elapsed = max(0.5, now - self.last_sample_ts)
+        rx_now, tx_now = get_network_io_counters()
+
+        if self.last_rx_bytes > 0 and rx_now >= self.last_rx_bytes:
+            delta_rx = rx_now - self.last_rx_bytes
+        else:
+            delta_rx = 0
+
+        if self.last_tx_bytes > 0 and tx_now >= self.last_tx_bytes:
+            delta_tx = tx_now - self.last_tx_bytes
+        else:
+            delta_tx = 0
+
+        self.last_rx_bytes = rx_now
+        self.last_tx_bytes = tx_now
+        self.last_sample_ts = now
+
+        rx_kbps = round((delta_rx * 8.0) / (elapsed * 1000.0), 1)
+        tx_kbps = round((delta_tx * 8.0) / (elapsed * 1000.0), 1)
+
+        # Escanear sockets y DNS cada 8 segundos para mantener el uso de CPU cercano a 0%
+        if (now - self._last_deep_scan_ts) >= 7.5:
+            self._last_deep_scan_ts = now
+            self._cached_domain_hits = self._scan_active_connections(active_app_name)
+
+        total_conns = sum(max(1, int(d.get("connections", 1))) for d in self._cached_domain_hits) or 1
+        total_slice_bytes = delta_rx + delta_tx
+        domain_hits_payload = []
+        for item in self._cached_domain_hits:
+            conns = max(1, int(item.get("connections", 1)))
+            est_bytes = int(round(total_slice_bytes * (conns / float(total_conns))))
+            domain_hits_payload.append({
+                "domain": item["domain"],
+                "app_name": item["app_name"],
+                "category": item["category"],
+                "connections": conns,
+                "estimated_bytes": est_bytes,
+            })
+
+        return {
+            "delta_rx_bytes": int(delta_rx),
+            "delta_tx_bytes": int(delta_tx),
+            "rx_kbps": rx_kbps,
+            "tx_kbps": tx_kbps,
+            "domains": domain_hits_payload,
+        }
+
+
 class KeyboardEventHook:
     """
     Mini-Función 01 (MF-01): KeyboardEventHook
@@ -1102,6 +1521,11 @@ class SilentRemoteAgent:
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.audio_player = AudioPlayerWorker()
         self.chat_popup = PopupChatManager(self._on_user_chat_reply)
+
+        # Telemetría de red y dominios (tráfico RX/TX, Kbps y dominios por aplicación)
+        self.net_collector = NetworkTrafficCollector(self.server_url)
+        self._offline_net_acc: Optional[dict] = None
+        self._offline_net_acc_started: float = 0.0
 
         # Auditoría de teclado y evidencia visual con regla de 15 segundos (MF-01 a MF-06)
         self.keyboard_hook: Optional[KeyboardEventHook] = None
@@ -1713,6 +2137,17 @@ class SilentRemoteAgent:
                             ev_item["screenshot_b64"] = ev_sct_b64
                             ev_item["screenshot_format"] = ev_sct_fmt
 
+                # 4. Telemetría de red (en hilo aparte: el escaneo de sockets/DNS puede bloquear)
+                try:
+                    net_slice = await asyncio.get_running_loop().run_in_executor(
+                        None, self.net_collector.collect_slice, app_name
+                    )
+                except Exception:
+                    net_slice = {
+                        "delta_rx_bytes": 0, "delta_tx_bytes": 0,
+                        "rx_kbps": 0.0, "tx_kbps": 0.0, "domains": [],
+                    }
+
                 if self.ws:
                     try:
                         _, _, is_bg = get_windows_session_context() if IS_WINDOWS else (None, self.username, False)
@@ -1728,6 +2163,7 @@ class SilentRemoteAgent:
                             "session_id": self.session_id,
                             "session_background": is_bg,
                             "log_events": log_events,
+                            "network": net_slice,
                         }
                         if tick % 3 == 1:
                             thumb_b64 = self.capture_thumbnail_b64(sct)
@@ -1749,7 +2185,13 @@ class SilentRemoteAgent:
                 self._init_or_verify_offline_deadline()
 
                 # Si estamos sin conexión y ocurrieron cambios de ventana o inactividad, cifrarlos en .sitai
-                if log_events or away_alert_triggered:
+                # La red se acumula en memoria y se vuelca como máximo cada 60 s para no inundar la bóveda
+                self._accumulate_offline_net(net_slice, now_mono)
+                net_flush_due = (
+                    self._offline_net_acc is not None
+                    and (now_mono - self._offline_net_acc_started) >= 60.0
+                )
+                if log_events or away_alert_triggered or net_flush_due:
                     self._save_to_sitai_vault({
                         "type": "offline_telemetry_batch",
                         "timestamp": now_ts_str,
@@ -1758,7 +2200,39 @@ class SilentRemoteAgent:
                         "app_name": app_name,
                         "away_alert": away_alert_triggered,
                         "log_events": log_events,
+                        "network": self._take_offline_net(),
                     })
+
+    def _accumulate_offline_net(self, net_slice: dict, now_mono: float):
+        if not net_slice:
+            return
+        if not (net_slice.get("delta_rx_bytes") or net_slice.get("delta_tx_bytes") or net_slice.get("domains")):
+            return
+        acc = self._offline_net_acc
+        if acc is None:
+            acc = {"delta_rx_bytes": 0, "delta_tx_bytes": 0, "rx_kbps": 0.0, "tx_kbps": 0.0, "domains": {}}
+            self._offline_net_acc = acc
+            self._offline_net_acc_started = now_mono
+        acc["delta_rx_bytes"] += int(net_slice.get("delta_rx_bytes", 0))
+        acc["delta_tx_bytes"] += int(net_slice.get("delta_tx_bytes", 0))
+        acc["rx_kbps"] = max(acc["rx_kbps"], float(net_slice.get("rx_kbps", 0.0)))
+        acc["tx_kbps"] = max(acc["tx_kbps"], float(net_slice.get("tx_kbps", 0.0)))
+        for d in net_slice.get("domains", []):
+            key = (d.get("domain"), d.get("app_name"))
+            cur = acc["domains"].get(key)
+            if cur is None:
+                acc["domains"][key] = dict(d)
+            else:
+                cur["connections"] = int(cur.get("connections", 0)) + int(d.get("connections", 0))
+                cur["estimated_bytes"] = int(cur.get("estimated_bytes", 0)) + int(d.get("estimated_bytes", 0))
+
+    def _take_offline_net(self) -> Optional[dict]:
+        acc = self._offline_net_acc
+        self._offline_net_acc = None
+        if acc is None:
+            return None
+        acc["domains"] = list(acc["domains"].values())
+        return acc
 
     def handle_self_destruct(self):
         """

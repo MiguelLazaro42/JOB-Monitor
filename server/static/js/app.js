@@ -215,6 +215,7 @@
   const tabViewer = document.getElementById('tab-viewer');
   const tabActivity = document.getElementById('tab-activity');
   const tabLogs = document.getElementById('tab-logs');
+  const tabNetwork = document.getElementById('tab-network');
   const tabSettings = document.getElementById('tab-settings');
   const tabViewerLabel = document.getElementById('tab-viewer-label');
 
@@ -222,6 +223,7 @@
   const viewViewer = document.getElementById('view-viewer');
   const viewActivity = document.getElementById('view-activity');
   const viewLogs = document.getElementById('view-logs');
+  const viewNetwork = document.getElementById('view-network');
   const viewSettings = document.getElementById('view-settings');
 
   // Vista 1: Muro
@@ -1599,6 +1601,7 @@
       viewer: viewViewer,
       activity: viewActivity,
       logs: viewLogs,
+      network: viewNetwork,
       settings: viewSettings,
     };
     const tabs = {
@@ -1606,6 +1609,7 @@
       viewer: tabViewer,
       activity: tabActivity,
       logs: tabLogs,
+      network: tabNetwork,
       settings: tabSettings,
     };
 
@@ -1618,6 +1622,8 @@
       loadDailyMetrics();
     } else if (target === 'logs') {
       fetchLogsFromServer();
+    } else if (target === 'network') {
+      loadNetworkView();
     } else if (target === 'settings') {
       loadSettingsView();
     }
@@ -2283,6 +2289,201 @@
     sendWsJson({ type: 'request_all_thumbnails' });
   });
 
+  // ===================== Vista: Tráfico de Red =====================
+  const netDateInput = document.getElementById('net-date-input');
+  const netDeviceFilter = document.getElementById('net-device-filter');
+  const netCategoryFilter = document.getElementById('net-category-filter');
+  const netSearchInput = document.getElementById('net-search-input');
+  const refreshNetBtn = document.getElementById('refresh-net-btn');
+  const exportNetCsvBtn = document.getElementById('export-net-csv-btn');
+  const netClientsTbody = document.getElementById('net-clients-tbody');
+  const netDomainsTbody = document.getElementById('net-domains-tbody');
+  const netCounterBadge = document.getElementById('net-counter-badge');
+
+  const NET_CATEGORY_LABELS = {
+    STREAMING: 'Streaming / Video',
+    SOCIAL: 'Redes Sociales',
+    MESSAGING: 'Mensajería',
+    AI: 'Inteligencia Artificial',
+    CLOUD: 'Almacenamiento Cloud',
+    REMOTE: 'Acceso Remoto',
+    WORK: 'Desarrollo / Trabajo',
+    SYSTEM: 'Sistema / Actualizaciones',
+    OTHER: 'Otros',
+  };
+
+  function formatBytes(bytes) {
+    const n = Math.max(0, Number(bytes) || 0);
+    if (n < 1024) return `${Math.round(n)} B`;
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let v = n / 1024;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i += 1;
+    }
+    return `${v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2)} ${units[i]}`;
+  }
+
+  function netTodayStr() {
+    const d = new Date();
+    const pad = (x) => String(x).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+
+  function netBaseParams() {
+    const params = new URLSearchParams({ date: (netDateInput && netDateInput.value) || netTodayStr() });
+    if (state.tenantFilter && state.tenantFilter !== 'ALL') params.set('tenant_id', state.tenantFilter);
+    return params;
+  }
+
+  function netFilterParams() {
+    const params = netBaseParams();
+    params.set('agent_id', (netDeviceFilter && netDeviceFilter.value) || 'ALL');
+    params.set('category', (netCategoryFilter && netCategoryFilter.value) || 'ALL');
+    params.set('q', netSearchInput ? netSearchInput.value.trim() : '');
+    return params;
+  }
+
+  function setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  }
+
+  function renderNetworkSummary(data) {
+    const isToday = data.date === netTodayStr();
+    setText('net-kpi-rx', formatBytes(data.total_rx_bytes));
+    setText('net-kpi-tx', formatBytes(data.total_tx_bytes));
+    setText('net-kpi-rx-sub', isToday ? 'Acumulado de hoy' : `Fecha ${data.date}`);
+    setText('net-kpi-tx-sub', isToday ? 'Acumulado de hoy' : `Fecha ${data.date}`);
+    const tc = data.top_client;
+    setText('net-kpi-top-client', tc ? tc.alias : '---');
+    setText('net-kpi-top-client-sub', tc ? `${formatBytes(tc.total_bytes)} en total` : 'Sin consumo registrado');
+    const td = data.top_domain;
+    setText('net-kpi-top-domain', td ? td.domain : '---');
+    setText('net-kpi-top-domain-sub', td ? `${td.hits} conexiones · ${formatBytes(td.estimated_bytes)} est.` : 'Sin dominios registrados');
+
+    // Selector de equipos (conserva la selección)
+    if (netDeviceFilter) {
+      const cur = netDeviceFilter.value || 'ALL';
+      let html = '<option value="ALL">Todos los equipos</option>';
+      (data.clients || []).forEach((c) => {
+        const label = c.username && c.username !== '---' ? `${c.alias} (${c.username})` : c.alias;
+        html += `<option value="${escapeHtml(c.agent_id)}">${escapeHtml(label)}</option>`;
+      });
+      netDeviceFilter.innerHTML = html;
+      netDeviceFilter.value = Array.from(netDeviceFilter.options).some((o) => o.value === cur) ? cur : 'ALL';
+    }
+
+    if (!netClientsTbody) return;
+    const selected = netDeviceFilter ? netDeviceFilter.value : 'ALL';
+    const clients = data.clients || [];
+    if (!clients.length) {
+      netClientsTbody.innerHTML = '<tr><td colspan="7" class="empty-row">Sin datos de red.</td></tr>';
+      return;
+    }
+    netClientsTbody.innerHTML = clients
+      .map((c) => {
+        const live = c.is_online ? '<span class="status-dot dot-emerald"></span> ' : '';
+        const liveRate = c.is_online && (c.rx_kbps || c.tx_kbps)
+          ? `<div class="net-kpi-sub">${Math.round(c.rx_kbps)} / ${Math.round(c.tx_kbps)} Kbps ahora</div>`
+          : '';
+        return `<tr class="net-client-row ${c.agent_id === selected ? 'selected' : ''}" data-agent-id="${escapeHtml(c.agent_id)}">
+          <td>${live}<strong>${escapeHtml(c.alias)}</strong><div class="net-kpi-sub">${escapeHtml(c.hostname || '')}${c.username ? ' · ' + escapeHtml(c.username) : ''}</div>${liveRate}</td>
+          <td class="net-num">${formatBytes(c.rx_bytes)}</td>
+          <td class="net-num">${formatBytes(c.tx_bytes)}</td>
+          <td class="net-num"><strong>${formatBytes(c.total_bytes)}</strong></td>
+          <td class="net-num">${Math.round(c.peak_rx_kbps)} / ${Math.round(c.peak_tx_kbps)}</td>
+          <td class="net-num">${c.domains_count}</td>
+          <td>${escapeHtml(c.top_domain || '---')}</td>
+        </tr>`;
+      })
+      .join('');
+  }
+
+  function renderNetworkDomains(domains) {
+    if (netCounterBadge) netCounterBadge.textContent = `${domains.length} dominios`;
+    if (!netDomainsTbody) return;
+    if (!domains.length) {
+      netDomainsTbody.innerHTML = '<tr><td colspan="7" class="empty-row">Sin dominios registrados.</td></tr>';
+      return;
+    }
+    netDomainsTbody.innerHTML = domains
+      .map((d) => {
+        const cat = d.category || 'OTHER';
+        return `<tr>
+          <td>${escapeHtml(d.alias || d.agent_id)}</td>
+          <td><strong>${escapeHtml(d.domain)}</strong></td>
+          <td>${escapeHtml(d.app_name)}</td>
+          <td><span class="net-cat-pill cat-${escapeHtml(cat)}">${escapeHtml(NET_CATEGORY_LABELS[cat] || cat)}</span></td>
+          <td class="net-num">${d.hit_count}</td>
+          <td class="net-num">${formatBytes(d.estimated_bytes)}</td>
+          <td class="net-num">${escapeHtml(d.last_seen_at || '')}</td>
+        </tr>`;
+      })
+      .join('');
+  }
+
+  async function loadNetworkView() {
+    if (netDateInput && !netDateInput.value) netDateInput.value = netTodayStr();
+    try {
+      const [sumRes, domRes] = await Promise.all([
+        authFetch(`/api/network/summary?${netBaseParams().toString()}`),
+        authFetch(`/api/network/domains?${netFilterParams().toString()}&limit=300`),
+      ]);
+      const sumData = await sumRes.json();
+      const domData = await domRes.json();
+      if (sumData.ok) renderNetworkSummary(sumData);
+      if (domData.ok) renderNetworkDomains(domData.domains || []);
+    } catch (err) {
+      console.error('Error al consultar tráfico de red:', err);
+    }
+  }
+
+  async function loadNetworkDomainsOnly() {
+    try {
+      const res = await authFetch(`/api/network/domains?${netFilterParams().toString()}&limit=300`);
+      const data = await res.json();
+      if (data.ok) renderNetworkDomains(data.domains || []);
+      if (netClientsTbody) {
+        const sel = netDeviceFilter ? netDeviceFilter.value : 'ALL';
+        netClientsTbody.querySelectorAll('tr.net-client-row').forEach((tr) => {
+          tr.classList.toggle('selected', tr.dataset.agentId === sel);
+        });
+      }
+    } catch (err) {
+      console.error('Error al consultar dominios:', err);
+    }
+  }
+
+  if (netClientsTbody) {
+    netClientsTbody.addEventListener('click', (ev) => {
+      const tr = ev.target.closest('tr.net-client-row');
+      if (!tr || !netDeviceFilter) return;
+      // Segundo clic sobre el mismo cliente quita el filtro
+      netDeviceFilter.value = netDeviceFilter.value === tr.dataset.agentId ? 'ALL' : tr.dataset.agentId;
+      loadNetworkDomainsOnly();
+    });
+  }
+  if (netDateInput) netDateInput.addEventListener('change', loadNetworkView);
+  if (netDeviceFilter) netDeviceFilter.addEventListener('change', loadNetworkDomainsOnly);
+  if (netCategoryFilter) netCategoryFilter.addEventListener('change', loadNetworkDomainsOnly);
+  let netSearchTimer = null;
+  if (netSearchInput) {
+    netSearchInput.addEventListener('input', () => {
+      clearTimeout(netSearchTimer);
+      netSearchTimer = setTimeout(loadNetworkDomainsOnly, 300);
+    });
+  }
+  if (refreshNetBtn) refreshNetBtn.addEventListener('click', loadNetworkView);
+  if (exportNetCsvBtn) {
+    exportNetCsvBtn.addEventListener('click', () => {
+      const params = netFilterParams();
+      params.set('admin_pass', state.password || '');
+      window.location.href = `/api/network/export-csv?${params.toString()}`;
+    });
+  }
+
   tabWall.addEventListener('click', () => switchView('wall'));
   tabViewer.addEventListener('click', () => {
     if (state.selectedAgentId) {
@@ -2291,6 +2492,7 @@
   });
   tabActivity.addEventListener('click', () => switchView('activity'));
   tabLogs.addEventListener('click', () => switchView('logs'));
+  if (tabNetwork) tabNetwork.addEventListener('click', () => switchView('network'));
   if (tabSettings) {
     tabSettings.addEventListener('click', () => switchView('settings'));
   }
