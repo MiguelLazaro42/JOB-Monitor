@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=20261113-v9" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261113-v12" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -1139,8 +1139,53 @@
   <!-- VISTA: TRÁFICO DE RED Y DOMINIOS WEB                                    -->
   <!-- ======================================================================= -->
   <section id="view-network" class="main-container hidden">
-    <!-- FILA 1: Banner cards estilo ntopng -->
-    <div class="ntop-banners">
+    <!-- SUB-NAVEGACION SUPERIOR: Segmented Control ntopng -->
+    <div class="ntop-subnav-bar">
+      <div class="ntop-subnav-tabs" role="tablist">
+        <button type="button" class="ntop-subtab-btn active" data-subview="overview">
+          <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+          <span>Visión General</span>
+        </button>
+        <button type="button" class="ntop-subtab-btn" data-subview="hosts">
+          <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="13" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          <span>Equipos / Hosts</span>
+        </button>
+        <button type="button" class="ntop-subtab-btn" data-subview="flows">
+          <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z"/></svg>
+          <span>Matriz de Flujos</span>
+        </button>
+      </div>
+
+      <div class="ntop-subnav-meta">
+        <div id="net-active-host-pill" class="net-active-host-pill hidden" title="Filtro de equipo activo">
+          <span>Host: <strong id="net-active-host-name">---</strong></span>
+          <button type="button" id="net-clear-host-btn" class="net-pill-clear-btn" title="Quitar filtro de host">&times;</button>
+        </div>
+        <div class="ntop-live-ind">
+          <span id="net-live-dot" class="ntop-live-dot"></span>
+          <span id="net-live-indicator">En vivo • Auto 4s</span>
+          <span id="net-last-update" class="ntop-last-update"></span>
+          <span id="net-intel-pill" class="net-intel-pill" title="Caché de inteligencia IP/Dominio y límite de API">Intel DB: --</span>
+        </div>
+        <div class="ntop-quick-actions">
+          <input id="net-date-input" type="date" class="toolbar-select net-subnav-date" />
+          <label class="ntop-switch" title="Auto-Refresh 4s">
+            <input id="net-auto-toggle" type="checkbox" checked />
+            <span class="ntop-switch-track"></span>
+            <span class="ntop-switch-label">Auto 4s</span>
+          </label>
+          <button id="refresh-net-btn" type="button" class="btn btn-primary btn-sm ntop-refresh-btn" title="Refrescar">
+            <svg class="icon-sm ntop-refresh-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            <span>Refrescar</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= SUB-VISTA 1: VISION GENERAL ================= -->
+    <div id="net-subview-overview" class="net-subview">
+      <!-- FILA 1: Banner cards estilo ntopng -->
+      <div class="ntop-banners">
       <div class="ntop-banner ntop-red">
         <div class="ntop-banner-text">
           <span class="ntop-banner-label">Total Descargado</span>
@@ -1179,13 +1224,23 @@
     <div class="ntop-row2">
       <div class="panel-card ntop-chart-card">
         <div class="ntop-card-head">
-          <h3>Interfaces Traffic <small>(Sent / Rcvd en tiempo real)</small></h3>
+          <div class="ntop-chart-title-wrap">
+            <h3>Interfaces Traffic <small>(Sent / Rcvd en tiempo real)</small></h3>
+            <div class="ntop-chart-ranges" role="group" aria-label="Rango de tiempo">
+              <button type="button" class="net-range-btn active" data-range="10m">10m Live</button>
+              <button type="button" class="net-range-btn" data-range="1h">1 hora</button>
+              <button type="button" class="net-range-btn" data-range="24h">Hoy (24h)</button>
+            </div>
+          </div>
           <div class="ntop-legend-inline">
             <span><i class="dot" style="background:#16a34a"></i>Rcvd <b id="net-live-rx">0 Kbps</b></span>
             <span><i class="dot" style="background:#f97316"></i>Sent <b id="net-live-tx">0 Kbps</b></span>
           </div>
         </div>
-        <div class="ntop-canvas-wrap"><canvas id="net-traffic-canvas"></canvas></div>
+        <div class="ntop-canvas-wrap">
+          <canvas id="net-traffic-canvas"></canvas>
+          <div id="net-chart-tooltip" class="net-chart-tooltip hidden"></div>
+        </div>
       </div>
       <div class="ntop-donuts">
         <div class="panel-card ntop-donut-card">
@@ -1199,22 +1254,109 @@
       </div>
     </div>
 
-    <!-- FILA 3: Barra de herramientas -->
-    <div class="panel-card ntop-toolbar">
-      <div class="ntop-live-ind">
-        <span id="net-live-dot" class="ntop-live-dot"></span>
-        <span id="net-live-indicator">En vivo • Auto-actualización 4s</span>
-        <span id="net-last-update" class="ntop-last-update"></span>
-        <span id="net-intel-pill" class="net-intel-pill" title="Caché de inteligencia IP/Dominio y límite de API">Intel DB: --</span>
+    <!-- FILA 3: Top Talkers mini-leaderboard en Overview -->
+    <div class="panel-card ntop-top-talkers-card">
+      <div class="ntop-card-head">
+        <h3>Top Talkers <small>(Equipos con mayor volumen acumulado en el día)</small></h3>
+        <button type="button" class="btn btn-secondary btn-sm" id="net-goto-hosts-btn">Ver Todos los Equipos &rarr;</button>
       </div>
-      <div class="panel-controls">
-        <input id="net-date-input" type="date" class="toolbar-select" />
-        <div class="control-select-wrap">
-          <select id="net-device-filter" class="toolbar-select">
-            <option value="ALL">Todos los equipos</option>
-          </select>
+      <div id="net-top-talkers-leaderboard" class="net-talkers-leaderboard">
+        <div class="ntop-empty">Cargando equipos...</div>
+      </div>
+    </div>
+  </div><!-- /#net-subview-overview -->
+
+    <!-- ================= SUB-VISTA 2: EQUIPOS Y CLIENTES ================= -->
+    <div id="net-subview-hosts" class="net-subview hidden">
+      <!-- Toolbar de equipos -->
+      <div class="panel-card net-hosts-toolbar">
+        <div class="search-box">
+          <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input id="net-host-search-input" type="text" placeholder="Filtrar por equipo, hostname o usuario..." />
+        </div>
+        <div class="net-hosts-toolbar-right">
+          <div class="control-select-wrap">
+            <select id="net-host-sort-select" class="toolbar-select">
+              <option value="bytes">Mayor Consumo</option>
+              <option value="speed">Velocidad Actual</option>
+              <option value="name">Nombre</option>
+            </select>
+          </div>
+          <div class="control-select-wrap">
+            <select id="net-device-filter" class="toolbar-select">
+              <option value="ALL">Todos los equipos</option>
+            </select>
+          </div>
+          <div class="net-view-toggle-btns">
+            <button type="button" id="net-host-view-cards" class="btn btn-secondary btn-sm active" title="Vista en tarjetas">Tarjetas</button>
+            <button type="button" id="net-host-view-table" class="btn btn-secondary btn-sm" title="Vista en tabla">Tabla</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Grid de tarjetas de hosts -->
+      <div id="net-hosts-grid" class="net-hosts-grid">
+        <!-- Renderizado dinámico de tarjetas -->
+      </div>
+
+      <!-- Tabla clásica de hosts (toggleable) -->
+      <div id="net-hosts-table-wrap" class="panel-card hidden">
+        <div class="table-wrap">
+          <table class="data-table net-table">
+            <thead>
+              <tr>
+                <th>Equipo</th>
+                <th>Descarga</th>
+                <th>Subida</th>
+                <th style="min-width:180px">Total / Ancho de banda</th>
+                <th>Pico (↓/↑ Kbps)</th>
+                <th>Dominios</th>
+                <th>Sitio principal</th>
+                <th style="text-align:right">Acción</th>
+              </tr>
+            </thead>
+            <tbody id="net-clients-tbody">
+              <tr><td colspan="8" class="empty-row">Sin datos de red.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div><!-- /#net-subview-hosts -->
+
+    <!-- ================= SUB-VISTA 3: MATRIZ DE FLUJOS ================= -->
+    <div id="net-subview-flows" class="net-subview hidden">
+      <!-- Chips rápidos de categoría ntopng -->
+      <div class="net-chips-bar" id="net-category-chips" role="toolbar" aria-label="Categorías de tráfico">
+        <button type="button" class="net-chip-btn active" data-category="ALL">Todos</button>
+        <button type="button" class="net-chip-btn" data-category="STREAMING">Streaming</button>
+        <button type="button" class="net-chip-btn" data-category="AI">IA / Asistentes</button>
+        <button type="button" class="net-chip-btn" data-category="CLOUD">Cloud / Almacenamiento</button>
+        <button type="button" class="net-chip-btn" data-category="MESSAGING">Mensajería / Chat</button>
+        <button type="button" class="net-chip-btn" data-category="WORK">Trabajo / Dev</button>
+        <button type="button" class="net-chip-btn" data-category="GAMING">Gaming</button>
+        <button type="button" class="net-chip-btn" data-category="INBOUND">Inbound (Puertos)</button>
+        <button type="button" class="net-chip-btn" data-category="SYSTEM">Sistema</button>
+      </div>
+
+      <!-- Barra de herramientas de flujos -->
+      <div class="panel-card net-flows-toolbar">
+        <div class="search-box">
+          <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input id="net-search-input" type="text" placeholder="Filtrar dominio, app, host o ASN..." />
         </div>
         <div class="control-select-wrap">
+          <select id="net-direction-filter" class="toolbar-select">
+            <option value="ALL">Todo el Tráfico (↓ RX + ↑ TX)</option>
+            <option value="RX_HEAVY">Mayor Descarga (↓ RX)</option>
+            <option value="TX_HEAVY">Mayor Subida (↑ TX)</option>
+            <option value="INBOUND">Entrantes al Equipo (Puertos)</option>
+          </select>
+        </div>
+        <div class="control-select-wrap" style="display:none">
           <select id="net-category-filter" class="toolbar-select">
             <option value="ALL">Todas las categorías</option>
             <option value="STREAMING">Streaming / Video</option>
@@ -1230,85 +1372,55 @@
             <option value="OTHER">Otros</option>
           </select>
         </div>
-        <div class="control-select-wrap">
-          <select id="net-direction-filter" class="toolbar-select">
-            <option value="ALL">Todo el Tráfico (Entrante ↓ + Saliente ↑)</option>
-            <option value="RX_HEAVY">Mayor Tráfico Entrante (↓ Descarga / RX)</option>
-            <option value="TX_HEAVY">Mayor Tráfico Saliente (↑ Subida / TX)</option>
-            <option value="INBOUND">Conexiones Entrantes al Equipo (Puertos Locales / LAN / Remoto)</option>
-          </select>
-        </div>
-        <div class="search-box">
-          <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-          </svg>
-          <input id="net-search-input" type="text" placeholder="Filtrar dominio, app o equipo..." />
-        </div>
-        <label class="ntop-switch" title="Auto-Refresh 4s">
-          <input id="net-auto-toggle" type="checkbox" checked />
+        <label class="ntop-switch" title="Mostrar tráfico interno del sistema y flujos de 0 B">
+          <input id="net-show-sys-toggle" type="checkbox" />
           <span class="ntop-switch-track"></span>
-          <span class="ntop-switch-label">Auto-Refresh 4s</span>
+          <span class="ntop-switch-label">Ruido de Sistema</span>
         </label>
-        <label class="ntop-switch" title="Mostrar tráfico interno del sistema y flujos de 0 B"><input id="net-show-sys-toggle" type="checkbox" /><span class="ntop-switch-track"></span><span class="ntop-switch-label">Ruido de Sistema</span></label>
-        <button id="refresh-net-btn" type="button" class="btn btn-primary btn-sm ntop-refresh-btn">
-          <svg class="icon-sm ntop-refresh-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-          <span>Refrescar Ahora</span>
-        </button>
-        <button id="export-net-csv-btn" type="button" class="btn btn-secondary btn-sm">
-          <span>Exportar CSV</span>
-        </button>
-      </div>
-    </div>
-
-    <!-- FILA 4: Tablas -->
-    <div class="panel-card">
-      <div class="panel-card-header">
-        <h3 class="net-section-title">Active Hosts / Ranking de Consumo por Cliente <small>(clic en un host para filtrar todo el dashboard)</small></h3>
-      </div>
-      <div class="table-wrap">
-        <table class="data-table net-table">
-          <thead>
-            <tr>
-              <th>Equipo</th>
-              <th>Descarga</th>
-              <th>Subida</th>
-              <th style="min-width:180px">Total / Ancho de banda</th>
-              <th>Pico (↓/↑ Kbps)</th>
-              <th>Dominios</th>
-              <th>Sitio principal</th>
-            </tr>
-          </thead>
-          <tbody id="net-clients-tbody">
-            <tr><td colspan="7" class="empty-row">Sin datos de red.</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="panel-card">
-      <div class="panel-card-header">
-        <div style="display:flex; align-items:center; gap:10px;">
-          <h3 class="net-section-title">Active Flows / Inspector de Dominios y Aplicaciones <small>(bytes estimados por frecuencia de conexión)</small></h3>
+        <div class="net-flows-toolbar-actions">
           <span id="net-counter-badge" class="badge-pill muted-badge">0 dominios</span>
+          <button id="export-net-csv-btn" type="button" class="btn btn-secondary btn-sm" title="Descargar reporte en CSV">
+            <span>Exportar CSV</span>
+          </button>
         </div>
       </div>
-      <div class="table-wrap">
-        <table class="data-table net-table">
-          <thead>
-            <tr>
-              <th>Sitio / Destino</th>
-              <th>Equipo · Aplicación</th>
-              <th>Categoría / Actividad</th>
-              <th style="min-width:210px">Tráfico (↓ Entrante / ↑ Saliente)</th>
-              <th style="width:130px; text-align:right">Última vez</th>
-            </tr>
-          </thead>
-          <tbody id="net-domains-tbody">
-            <tr><td colspan="5" class="empty-row">Sin dominios registrados.</td></tr>
-          </tbody>
-        </table>
+
+      <!-- Tabla de matriz de flujos -->
+      <div class="panel-card">
+        <div class="table-wrap">
+          <table class="data-table net-table net-flows-matrix-table">
+            <thead>
+              <tr>
+                <th>Sitio / Destino</th>
+                <th>Equipo · Aplicación</th>
+                <th>Categoría / Actividad</th>
+                <th style="min-width:210px">Tráfico (↓ Entrante / ↑ Saliente)</th>
+                <th style="width:130px; text-align:right">Última vez</th>
+                <th style="width:110px; text-align:right">Inspector</th>
+              </tr>
+            </thead>
+            <tbody id="net-domains-tbody">
+              <tr><td colspan="6" class="empty-row">Sin dominios registrados.</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
-    </div>
+    </div><!-- /#net-subview-flows -->
+
+    <!-- ================= DRAWER INSPECTOR LATERAL ================= -->
+    <div id="net-drawer-backdrop" class="net-drawer-backdrop hidden"></div>
+    <aside id="net-drawer" class="net-drawer" aria-hidden="true">
+      <div class="net-drawer-header">
+        <div class="net-drawer-title-wrap">
+          <span id="net-drawer-badge" class="badge-pill">Host</span>
+          <h3 id="net-drawer-title">Inspección Detallada</h3>
+        </div>
+        <button type="button" id="net-drawer-close" class="net-drawer-close-btn" title="Cerrar inspector">&times;</button>
+      </div>
+      <div id="net-drawer-body" class="net-drawer-body">
+        <!-- Renderizado dinámico por JS -->
+      </div>
+    </aside>
   </section>
 
   <!-- ======================================================================= -->
@@ -1556,6 +1668,6 @@
 
   <script src="/static/js/audio.js?v=20261111-v9"></script>
   <script src="/static/js/viewer.js?v=20261111-v9"></script>
-  <script src="/static/js/app.js?v=20261113-v11"></script>
+  <script src="/static/js/app.js?v=20261113-v12"></script>
 </body>
 </html>

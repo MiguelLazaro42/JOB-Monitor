@@ -2705,6 +2705,32 @@
   const netLiveInd = document.querySelector('.ntop-live-ind');
   const netCanvas = document.getElementById('net-traffic-canvas');
 
+  // Rediseño ntopng: Subnavegación, hosts grid, drawer y controles avanzados
+  const netSubtabBtns = document.querySelectorAll('.ntop-subtab-btn');
+  const netSubviewOverview = document.getElementById('net-subview-overview');
+  const netSubviewHosts = document.getElementById('net-subview-hosts');
+  const netSubviewFlows = document.getElementById('net-subview-flows');
+  const netActiveHostPill = document.getElementById('net-active-host-pill');
+  const netActiveHostName = document.getElementById('net-active-host-name');
+  const netClearHostBtn = document.getElementById('net-clear-host-btn');
+  const netChartTooltip = document.getElementById('net-chart-tooltip');
+  const netChartRangeBtns = document.querySelectorAll('.net-range-btn');
+  const netTopTalkersLeaderboard = document.getElementById('net-top-talkers-leaderboard');
+  const netGotoHostsBtn = document.getElementById('net-goto-hosts-btn');
+  const netHostSearchInput = document.getElementById('net-host-search-input');
+  const netHostSortSelect = document.getElementById('net-host-sort-select');
+  const netHostViewCardsBtn = document.getElementById('net-host-view-cards');
+  const netHostViewTableBtn = document.getElementById('net-host-view-table');
+  const netHostsGrid = document.getElementById('net-hosts-grid');
+  const netHostsTableWrap = document.getElementById('net-hosts-table-wrap');
+  const netCategoryChipBtns = document.querySelectorAll('.net-chip-btn');
+  const netDrawer = document.getElementById('net-drawer');
+  const netDrawerBackdrop = document.getElementById('net-drawer-backdrop');
+  const netDrawerTitle = document.getElementById('net-drawer-title');
+  const netDrawerBadge = document.getElementById('net-drawer-badge');
+  const netDrawerBody = document.getElementById('net-drawer-body');
+  const netDrawerClose = document.getElementById('net-drawer-close');
+
   const NET_TICK_MS = 4000;
   const NET_HISTORY_MAX = 150; // ~10 min a 4s
   const NET_CATEGORY_LABELS = {
@@ -2737,6 +2763,12 @@
     refreshTimer: null,
     lastRender: 0,
     expandedFlowKeys: new Set(),
+    subview: 'overview',
+    chartRange: '10m',
+    hostSearchQuery: '',
+    hostSortBy: 'bytes',
+    hostViewMode: 'cards',
+    hostHistory: new Map(),
   };
 
   function formatBytes(bytes) {
@@ -2813,8 +2845,74 @@
 
   function netPushSample() {
     const live = netLiveTotals();
-    netState.history.push({ t: Date.now(), rx: live.rx, tx: live.tx });
+    const now = Date.now();
+    netState.history.push({ t: now, rx: live.rx, tx: live.tx });
     if (netState.history.length > NET_HISTORY_MAX) netState.history.shift();
+
+    // Historial para sparklines por equipo (últimas 25 muestras)
+    state.agents.forEach((ag, id) => {
+      if (!netState.hostHistory.has(id)) netState.hostHistory.set(id, []);
+      const hList = netState.hostHistory.get(id);
+      hList.push({ t: now, rx: Number(ag.rx_kbps) || 0, tx: Number(ag.tx_kbps) || 0 });
+      if (hList.length > 25) hList.shift();
+    });
+  }
+
+  function drawSparkline(canvas, samples) {
+    if (!canvas) return;
+    const w = canvas.clientWidth || 280;
+    const h = canvas.clientHeight || 38;
+    const dpr = window.devicePixelRatio || 1;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    if (!samples || samples.length < 2) {
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '10px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Sin muestras recientes', w / 2, h / 2);
+      return;
+    }
+    const max = Math.max(10, ...samples.map((s) => Math.max(s.rx || 0, s.tx || 0)));
+    const step = w / (samples.length - 1);
+
+    // RX fill & line (cyan)
+    ctx.beginPath();
+    ctx.moveTo(0, h);
+    samples.forEach((s, i) => {
+      const y = h - ((s.rx || 0) / max) * (h - 4);
+      ctx.lineTo(i * step, y);
+    });
+    ctx.lineTo(w, h);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(2, 132, 199, 0.12)';
+    ctx.fill();
+
+    ctx.beginPath();
+    samples.forEach((s, i) => {
+      const y = h - ((s.rx || 0) / max) * (h - 4);
+      if (i === 0) ctx.moveTo(0, y);
+      else ctx.lineTo(i * step, y);
+    });
+    ctx.strokeStyle = '#0284c7';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // TX line (orange)
+    ctx.beginPath();
+    samples.forEach((s, i) => {
+      const y = h - ((s.tx || 0) / max) * (h - 4);
+      if (i === 0) ctx.moveTo(0, y);
+      else ctx.lineTo(i * step, y);
+    });
+    ctx.strokeStyle = '#ea580c';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
   }
 
   // ---- Gráfica de área bipolar (Canvas nativo) ----
@@ -3100,11 +3198,15 @@
       netDeviceFilter.value = Array.from(netDeviceFilter.options).some((o) => o.value === cur) ? cur : 'ALL';
     }
 
+    netUpdateActiveHostPill();
+    renderTopTalkersLeaderboard();
+    renderNetworkHosts();
+
     if (!netClientsTbody) return;
     const selected = netSelectedHost();
     let clients = data.clients || [];
     if (!clients.length) {
-      netClientsTbody.innerHTML = '<tr><td colspan="7" class="empty-row">Sin datos de red.</td></tr>';
+      netClientsTbody.innerHTML = '<tr><td colspan="8" class="empty-row">Sin datos de red.</td></tr>';
       return;
     }
     clients = netStableClientOrder(clients, data.date || ((netDateInput && netDateInput.value) || ''));
@@ -3119,7 +3221,7 @@
         const liveRate = online && (rxk || txk)
           ? `<div class="net-kpi-sub">↓ ${formatBitrate(rxk)} · ↑ ${formatBitrate(txk)}</div>`
           : '';
-                const topBadge = c.top_domain ? `${netFaviconHtml(c.top_domain_favicon)}<span class="ntop-badge">${escapeHtml(c.top_domain)}</span>` : '---';
+        const topBadge = c.top_domain ? `${netFaviconHtml(c.top_domain_favicon)}<span class="ntop-badge">${escapeHtml(c.top_domain)}</span>` : '---';
         return `<tr class="net-client-row ${c.agent_id === selected ? 'selected' : ''}" data-agent-id="${escapeHtml(c.agent_id)}">
           <td>${dot}<strong>${escapeHtml(c.alias)}</strong><div class="net-kpi-sub">${escapeHtml(c.hostname || '')}${c.username ? ' · ' + escapeHtml(c.username) : ''}</div>${liveRate}</td>
           <td class="net-num">${formatBytes(c.rx_bytes)}</td>
@@ -3128,6 +3230,7 @@
           <td class="net-num">${Math.round(c.peak_rx_kbps)} / ${Math.round(c.peak_tx_kbps)}</td>
           <td class="net-num">${c.domains_count}</td>
           <td>${topBadge}</td>
+          <td style="text-align:right"><button type="button" class="net-inspect-btn net-host-inspect-btn" data-agent-id="${escapeHtml(c.agent_id)}">Inspeccionar</button></td>
         </tr>`;
       })
       .join('');
@@ -3161,6 +3264,357 @@
     const shown = raw && d.resolved_domain && d.resolved_domain !== raw ? d.resolved_domain : d.domain;
     const rawTag = raw && shown !== raw ? ` <span class="net-raw-ip">(${escapeHtml(raw)})</span>` : '';
     return `${netFaviconHtml(d.favicon_url)}<strong>${escapeHtml(shown)}</strong>${rawTag}`;
+  }
+
+  function netSwitchSubview(viewName) {
+    netState.subview = viewName;
+    netSubtabBtns.forEach((b) => b.classList.toggle('active', b.dataset.subview === viewName));
+    if (netSubviewOverview) netSubviewOverview.classList.toggle('hidden', viewName !== 'overview');
+    if (netSubviewHosts) netSubviewHosts.classList.toggle('hidden', viewName !== 'hosts');
+    if (netSubviewFlows) netSubviewFlows.classList.toggle('hidden', viewName !== 'flows');
+
+    if (viewName === 'overview') {
+      drawTrafficChart();
+    } else if (viewName === 'hosts') {
+      renderNetworkHosts();
+    } else if (viewName === 'flows') {
+      renderNetworkDomains();
+    }
+  }
+
+  function netUpdateActiveHostPill() {
+    const host = netSelectedHost();
+    if (!netActiveHostPill) return;
+    if (host === 'ALL') {
+      netActiveHostPill.classList.add('hidden');
+    } else {
+      const data = netState.summary;
+      const client = (data && data.clients) ? data.clients.find((c) => c.agent_id === host) : null;
+      const liveAg = state.agents.get(host);
+      const name = (client && client.alias) || (liveAg && liveAg.alias) || host;
+      if (netActiveHostName) netActiveHostName.textContent = name;
+      netActiveHostPill.classList.remove('hidden');
+    }
+  }
+
+  function renderTopTalkersLeaderboard() {
+    if (!netTopTalkersLeaderboard) return;
+    const data = netState.summary;
+    const clients = (data && data.clients) ? data.clients.slice() : [];
+    if (!clients.length) {
+      netTopTalkersLeaderboard.innerHTML = '<div class="ntop-empty">Sin datos de equipos para hoy.</div>';
+      return;
+    }
+    clients.sort((a, b) => (b.total_bytes || 0) - (a.total_bytes || 0));
+    const top4 = clients.slice(0, 4);
+    const maxTotal = top4[0].total_bytes || 1;
+
+    netTopTalkersLeaderboard.innerHTML = top4.map((c, i) => {
+      const liveAg = state.agents.get(c.agent_id);
+      const online = !!liveAg || c.is_online;
+      const rxk = liveAg ? liveAg.rx_kbps : c.rx_kbps;
+      const txk = liveAg ? liveAg.tx_kbps : c.tx_kbps;
+      const pct = Math.max(4, Math.round(((c.total_bytes || 0) / maxTotal) * 100));
+      const dot = online ? '<span class="status-dot dot-emerald"></span>' : '<span class="status-dot dot-gray"></span>';
+      return `<div class="net-talker-item" data-agent-id="${escapeHtml(c.agent_id)}">
+        <div class="net-talker-head">
+          <div class="net-talker-identity">
+            <span class="net-talker-rank rank-${i + 1}">#${i + 1}</span>
+            <div style="min-width:0">
+              <div class="net-talker-name">${dot} ${escapeHtml(c.alias)}</div>
+              <div class="net-kpi-sub">${escapeHtml(c.username || c.hostname || '')}</div>
+            </div>
+          </div>
+          <button type="button" class="net-inspect-btn" data-agent-id="${escapeHtml(c.agent_id)}" title="Inspeccionar equipo">Inspeccionar</button>
+        </div>
+        <div class="net-talker-stats">
+          <span>↓ ${formatBytes(c.rx_bytes)} · ↑ ${formatBytes(c.tx_bytes)}</span>
+          <strong>${formatBytes(c.total_bytes)}</strong>
+        </div>
+        <div class="net-talker-progress">
+          <div class="net-talker-fill" style="width:${pct}%"></div>
+        </div>
+        <div class="net-kpi-sub" style="display:flex; justify-content:space-between">
+          <span>Velocidad actual:</span>
+          <span>↓ ${formatBitrate(rxk || 0)} · ↑ ${formatBitrate(txk || 0)}</span>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  function renderNetworkHosts() {
+    if (!netHostsGrid) return;
+    const data = netState.summary;
+    let clients = (data && data.clients) ? data.clients.slice() : [];
+    if (!clients.length) {
+      netHostsGrid.innerHTML = '<div class="ntop-empty">Sin equipos registrados para esta fecha.</div>';
+      return;
+    }
+    const q = netState.hostSearchQuery.toLowerCase();
+    if (q) {
+      clients = clients.filter((c) =>
+        `${c.alias} ${c.hostname || ''} ${c.username || ''} ${c.agent_id}`.toLowerCase().includes(q)
+      );
+    }
+    if (netState.hostSortBy === 'bytes') {
+      clients.sort((a, b) => (b.total_bytes || 0) - (a.total_bytes || 0));
+    } else if (netState.hostSortBy === 'speed') {
+      const speed = (c) => {
+        const live = state.agents.get(c.agent_id);
+        return ((live ? live.rx_kbps : c.rx_kbps) || 0) + ((live ? live.tx_kbps : c.tx_kbps) || 0);
+      };
+      clients.sort((a, b) => speed(b) - speed(a));
+    } else if (netState.hostSortBy === 'name') {
+      clients.sort((a, b) => String(a.alias || '').localeCompare(String(b.alias || '')));
+    }
+
+    const maxTotal = clients.reduce((m, c) => Math.max(m, c.total_bytes || 0), 1);
+    const selected = netSelectedHost();
+
+    netHostsGrid.innerHTML = clients.map((c) => {
+      const liveAg = state.agents.get(c.agent_id);
+      const online = !!liveAg || c.is_online;
+      const rxk = liveAg ? liveAg.rx_kbps : (c.rx_kbps || 0);
+      const txk = liveAg ? liveAg.tx_kbps : (c.tx_kbps || 0);
+      const pct = Math.max(3, Math.round(((c.total_bytes || 0) / maxTotal) * 100));
+      const dot = online ? '<span class="status-dot dot-emerald"></span>' : '<span class="status-dot dot-gray"></span>';
+      const isSel = c.agent_id === selected;
+      const topDom = c.top_domain ? `${netFaviconHtml(c.top_domain_favicon)}<strong>${escapeHtml(c.top_domain)}</strong>` : '---';
+
+      return `<div class="net-host-card ${isSel ? 'selected' : ''}" data-agent-id="${escapeHtml(c.agent_id)}">
+        <div class="net-host-card-head">
+          <div class="net-host-card-identity">
+            <div class="net-host-card-alias">${dot} <span>${escapeHtml(c.alias)}</span></div>
+            <div class="net-host-card-sub">${escapeHtml(c.hostname || '')}${c.username ? ' · ' + escapeHtml(c.username) : ''}</div>
+          </div>
+          <span class="badge-pill ${online ? '' : 'muted-badge'}">${online ? 'En Línea' : 'Offline'}</span>
+        </div>
+
+        <div class="net-host-speed-row">
+          <div class="net-host-speed-box rx">
+            <span class="net-host-speed-lbl">↓ Descarga</span>
+            <span class="net-host-speed-val">${formatBitrate(rxk)}</span>
+          </div>
+          <div class="net-host-speed-box tx">
+            <span class="net-host-speed-lbl">↑ Subida</span>
+            <span class="net-host-speed-val">${formatBitrate(txk)}</span>
+          </div>
+        </div>
+
+        <div class="net-host-sparkline-wrap">
+          <canvas class="net-host-sparkline" data-sparkline-agent="${escapeHtml(c.agent_id)}"></canvas>
+        </div>
+
+        <div class="net-talker-progress" title="Consumo relativo: ${pct}%">
+          <div class="net-talker-fill" style="width:${pct}%"></div>
+        </div>
+
+        <div class="net-talker-stats">
+          <span>Acumulado hoy:</span>
+          <strong>${formatBytes(c.total_bytes)} (↓ ${formatBytes(c.rx_bytes)} / ↑ ${formatBytes(c.tx_bytes)})</strong>
+        </div>
+
+        <div class="net-host-card-focus" title="Dominio principal">
+          <span>Sitio líder:</span> ${topDom}
+        </div>
+
+        <div class="net-host-card-actions">
+          <button type="button" class="btn btn-secondary btn-sm net-host-inspect-btn" data-agent-id="${escapeHtml(c.agent_id)}" style="flex:1">
+            Inspeccionar Host
+          </button>
+          <button type="button" class="btn btn-secondary btn-sm net-host-filter-btn" data-agent-id="${escapeHtml(c.agent_id)}" title="Filtrar matriz de flujos por este host">
+            Flujos &rarr;
+          </button>
+        </div>
+      </div>`;
+    }).join('');
+
+    requestAnimationFrame(() => {
+      document.querySelectorAll('canvas.net-host-sparkline').forEach((cv) => {
+        const id = cv.dataset.sparklineAgent;
+        const samples = netState.hostHistory.get(id) || [];
+        drawSparkline(cv, samples);
+      });
+    });
+  }
+
+  function closeNetDrawer() {
+    if (netDrawer) netDrawer.classList.remove('open');
+    if (netDrawerBackdrop) netDrawerBackdrop.classList.add('hidden');
+  }
+
+  function openNetDrawer(mode, targetId) {
+    if (!netDrawer || !netDrawerBody) return;
+    if (mode === 'host') {
+      const data = netState.summary;
+      const client = (data && data.clients) ? data.clients.find((c) => c.agent_id === targetId) : null;
+      const liveAg = state.agents.get(targetId);
+      const alias = (client && client.alias) || (liveAg && liveAg.alias) || targetId;
+      const hostname = (client && client.hostname) || (liveAg && liveAg.hostname) || '---';
+      const username = (client && client.username) || (liveAg && liveAg.username) || '---';
+      const online = !!liveAg || (client && client.is_online);
+      const rxk = liveAg ? liveAg.rx_kbps : ((client && client.rx_kbps) || 0);
+      const txk = liveAg ? liveAg.tx_kbps : ((client && client.tx_kbps) || 0);
+
+      setText('net-drawer-title', `Host: ${alias}`);
+      if (netDrawerBadge) {
+        netDrawerBadge.textContent = 'Equipo / Host';
+        netDrawerBadge.className = 'badge-pill';
+      }
+
+      const hostDoms = netState.domains.filter((d) => d.agent_id === targetId);
+      const { groups: topDoms } = netWeightedGroups(hostDoms, (d) => d.domain);
+      const top5Html = topDoms.slice(0, 5).map((g) => {
+        const item = hostDoms.find((d) => d.domain === g.key);
+        const fav = item ? netFaviconHtml(item.favicon_url) : '';
+        return `<li class="drawer-domain-item">
+          <span>${fav}<strong>${escapeHtml(g.key)}</strong></span>
+          <b class="net-num">${formatBytes(g.value)}</b>
+        </li>`;
+      }).join('') || '<li class="drawer-domain-item"><span class="ntop-empty">Sin dominios registrados</span></li>';
+
+      let workBytes = 0;
+      let leisureBytes = 0;
+      let otherBytes = 0;
+      hostDoms.forEach((d) => {
+        const cat = d.category || 'OTHER';
+        const b = d.estimated_bytes || 0;
+        if (cat === 'WORK') workBytes += b;
+        else if (['STREAMING', 'SOCIAL', 'GAMING', 'SHOPPING'].includes(cat)) leisureBytes += b;
+        else otherBytes += b;
+      });
+      const totCat = workBytes + leisureBytes + otherBytes || 1;
+      const pctWork = Math.round((workBytes / totCat) * 100);
+      const pctLeisure = Math.round((leisureBytes / totCat) * 100);
+      const pctOther = Math.max(0, 100 - pctWork - pctLeisure);
+
+      netDrawerBody.innerHTML = `
+        <div class="drawer-card">
+          <div class="drawer-card-title">Identidad del Sistema</div>
+          <div class="drawer-kv-grid">
+            <div class="drawer-kv"><span class="drawer-k">Alias / Nombre</span><span class="drawer-v">${escapeHtml(alias)}</span></div>
+            <div class="drawer-kv"><span class="drawer-k">Estado</span><span class="drawer-v">${online ? '<span class="status-dot dot-emerald"></span> En línea' : '<span class="status-dot dot-gray"></span> Fuera de línea'}</span></div>
+            <div class="drawer-kv"><span class="drawer-k">Hostname</span><span class="drawer-v">${escapeHtml(hostname)}</span></div>
+            <div class="drawer-kv"><span class="drawer-k">Usuario de Sistema</span><span class="drawer-v">${escapeHtml(username)}</span></div>
+            <div class="drawer-kv" style="grid-column:span 2"><span class="drawer-k">ID de Agente</span><span class="drawer-v net-num" style="font-size:11px">${escapeHtml(targetId)}</span></div>
+          </div>
+        </div>
+
+        <div class="drawer-card">
+          <div class="drawer-card-title">Rendimiento de Red en Tiempo Real</div>
+          <div class="net-host-speed-row">
+            <div class="net-host-speed-box rx">
+              <span class="net-host-speed-lbl">↓ Velocidad RX</span>
+              <span class="net-host-speed-val">${formatBitrate(rxk)}</span>
+            </div>
+            <div class="net-host-speed-box tx">
+              <span class="net-host-speed-lbl">↑ Velocidad TX</span>
+              <span class="net-host-speed-val">${formatBitrate(txk)}</span>
+            </div>
+          </div>
+          <div class="drawer-kv-grid" style="margin-top:6px">
+            <div class="drawer-kv"><span class="drawer-k">Total Descargado</span><span class="drawer-v">${formatBytes(client ? client.rx_bytes : 0)}</span></div>
+            <div class="drawer-kv"><span class="drawer-k">Total Subido</span><span class="drawer-v">${formatBytes(client ? client.tx_bytes : 0)}</span></div>
+          </div>
+        </div>
+
+        <div class="drawer-card">
+          <div class="drawer-card-title">Clasificación de Perfil (Trabajo vs. Ocio)</div>
+          <div class="drawer-ratio-track" title="Trabajo: ${pctWork}%, Ocio: ${pctLeisure}%, Otros: ${pctOther}%">
+            <div class="drawer-ratio-work" style="width:${pctWork}%"></div>
+            <div class="drawer-ratio-leisure" style="width:${pctLeisure}%"></div>
+            <div class="drawer-ratio-other" style="width:${pctOther}%"></div>
+          </div>
+          <div class="net-talker-stats" style="margin-top:4px">
+            <span><i class="dot" style="background:var(--emerald)"></i>Trabajo: <b>${pctWork}%</b></span>
+            <span><i class="dot" style="background:var(--rose)"></i>Ocio / Social: <b>${pctLeisure}%</b></span>
+            <span><i class="dot" style="background:#94a3b8"></i>Otros: <b>${pctOther}%</b></span>
+          </div>
+        </div>
+
+        <div class="drawer-card">
+          <div class="drawer-card-title">Top 5 Destinos más Visitados</div>
+          <ul class="drawer-top-domains">
+            ${top5Html}
+          </ul>
+        </div>
+
+        <div class="drawer-card">
+          <div class="drawer-card-title">Acciones Directas en el Sistema</div>
+          <div class="drawer-actions-row">
+            <button type="button" class="btn btn-secondary btn-sm drawer-act-dvr" data-agent-id="${escapeHtml(targetId)}">
+              Ver Pantalla / DVR
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm drawer-act-files" data-agent-id="${escapeHtml(targetId)}">
+              Explorador de Archivos
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm drawer-act-terminal" data-agent-id="${escapeHtml(targetId)}">
+              Terminal SSH
+            </button>
+          </div>
+        </div>
+      `;
+    } else if (mode === 'flow') {
+      const flow = netState.domains.find((d) => netFlowKey(d) === targetId);
+      if (!flow) return;
+      const inbound = flow.direction === 'INBOUND';
+      const flag = netFlagHtml(flow.country_code, '');
+      const countryTxt = flow.country_name || flow.country_code || 'Global / Anycast';
+      const keys = Number(flow.keystrokes_count || 0);
+      const apps = flow.apps_list && flow.apps_list !== flow.app_name ? flow.apps_list : '';
+      const focus = flow.focus_app || flow.app_name || '---';
+
+      setText('net-drawer-title', flow.domain);
+      if (netDrawerBadge) {
+        netDrawerBadge.textContent = 'Flujo de Red';
+        netDrawerBadge.className = 'badge-pill';
+      }
+
+      netDrawerBody.innerHTML = `
+        <div class="drawer-card">
+          <div class="drawer-card-title">Identidad del Flujo y Destino</div>
+          <div class="drawer-kv-grid">
+            <div class="drawer-kv"><span class="drawer-k">Dominio / Host</span><span class="drawer-v">${netFaviconHtml(flow.favicon_url)}<strong>${escapeHtml(flow.domain)}</strong></span></div>
+            <div class="drawer-kv"><span class="drawer-k">Destino Original / IP</span><span class="drawer-v">${escapeHtml(flow.raw_target || flow.domain)}</span></div>
+            <div class="drawer-kv"><span class="drawer-k">Puerto</span><span class="drawer-v">:${escapeHtml(String(flow.port || 443))} (${inbound ? 'Entrante al equipo' : 'Saliente'})</span></div>
+            <div class="drawer-kv"><span class="drawer-k">Categoría nDPI</span><span class="drawer-v"><span class="net-cat-pill cat-${escapeHtml(flow.category || 'OTHER')}">${escapeHtml(NET_CATEGORY_LABELS[flow.category] || flow.category || 'OTHER')}</span></span></div>
+          </div>
+        </div>
+
+        <div class="drawer-card">
+          <div class="drawer-card-title">Geolocalización e Inteligencia ASN / WHOIS</div>
+          <div class="drawer-kv-grid">
+            <div class="drawer-kv"><span class="drawer-k">País Destino</span><span class="drawer-v">${flag} ${escapeHtml(countryTxt)}</span></div>
+            <div class="drawer-kv"><span class="drawer-k">ASN</span><span class="drawer-v">${escapeHtml(flow.asn || 'Local / Catálogo Directo')}</span></div>
+            <div class="drawer-kv" style="grid-column:span 2"><span class="drawer-k">Organización WHOIS / ISP</span><span class="drawer-v">${escapeHtml(flow.whois_org || flow.org_name || 'Servicio verificado en catálogo')}</span></div>
+          </div>
+        </div>
+
+        <div class="drawer-card">
+          <div class="drawer-card-title">Correlación Cruzada (Teclado + Foco + Red)</div>
+          <div class="drawer-kv-grid">
+            <div class="drawer-kv"><span class="drawer-k">Tipo de Paquete Inferido</span><span class="drawer-v">${flow.last_packet_type ? pktBadgeHtml(flow.last_packet_type) : '<span class="pkt-pill">Lectura / Navegación Pasiva</span>'}</span></div>
+            <div class="drawer-kv"><span class="drawer-k">Teclado Registrado</span><span class="drawer-v">${keys > 0 ? `${keys} teclas pulsadas` : '0 teclas (Consumo pasivo)'}</span></div>
+            <div class="drawer-kv" style="grid-column:span 2"><span class="drawer-k">App en Foco</span><span class="drawer-v">${escapeHtml(focus)} ${apps ? `<small class="net-kpi-sub">(${escapeHtml(apps)})</small>` : ''}</span></div>
+            <div class="drawer-kv" style="grid-column:span 2"><span class="drawer-k">Certeza Algorítmica</span><span class="drawer-v">${Number(flow.confidence || 80)}% match de correlación</span></div>
+          </div>
+        </div>
+
+        <div class="drawer-card">
+          <div class="drawer-card-title">Consumo y Ventana Temporal</div>
+          <div class="drawer-kv-grid">
+            <div class="drawer-kv"><span class="drawer-k">Descarga (↓ RX)</span><span class="drawer-v">${formatBytes(flow.rx_bytes)}</span></div>
+            <div class="drawer-kv"><span class="drawer-k">Subida (↑ TX)</span><span class="drawer-v">${formatBytes(flow.tx_bytes)}</span></div>
+            <div class="drawer-kv"><span class="drawer-k">Total Acumulado</span><span class="drawer-v">${formatBytes(flow.estimated_bytes)} (${flow.hit_count || 1} hits)</span></div>
+            <div class="drawer-kv"><span class="drawer-k">Equipo</span><span class="drawer-v"><strong>${escapeHtml(flow.alias || flow.agent_id)}</strong></span></div>
+            <div class="drawer-kv" style="grid-column:span 2"><span class="drawer-k">Ventana de Actividad</span><span class="drawer-v">${escapeHtml(flow.first_seen_at || '---')} &rarr; ${escapeHtml(flow.last_seen_at || '---')}</span></div>
+          </div>
+        </div>
+      `;
+    }
+
+    if (netDrawerBackdrop) netDrawerBackdrop.classList.remove('hidden');
+    netDrawer.classList.add('open');
   }
 
   async function loadNetworkIntelStatus() {
@@ -3271,7 +3725,7 @@
     if (netCounterBadge) netCounterBadge.textContent = `${domains.length} dominios`;
     if (!netDomainsTbody) return;
     if (!domains.length) {
-      netDomainsTbody.innerHTML = '<tr><td colspan="5" class="empty-row">Sin dominios registrados.</td></tr>';
+      netDomainsTbody.innerHTML = '<tr><td colspan="6" class="empty-row">Sin dominios registrados.</td></tr>';
       return;
     }
     const isToday = ((netDateInput && netDateInput.value) || netTodayStr()) === netTodayStr();
@@ -3287,7 +3741,6 @@
       .map((d) => {
         const cat = d.category || 'OTHER';
         const key = netFlowKey(d);
-        const open = netState.expandedFlowKeys.has(key);
         const isLive = liveSet.has(key);
         const raw = d.raw_target || '';
         const displayDom = (d.resolved_domain && d.resolved_domain !== d.raw_target) ? d.resolved_domain : d.domain;
@@ -3297,14 +3750,14 @@
           ? `<span class="net-intel-chip" title="${escapeHtml(d.country_name || cc)}"><img class="net-flag-img" src="https://flagcdn.com/w20/${cc.toLowerCase()}.png" alt="${cc}" loading="lazy" onerror="this.style.display='none'" /><span class="net-cc-badge">[${cc}]</span></span>`
           : '';
         const est = d.estimated_bytes || 0;
-        const row = `<tr class="net-flow-row ${isLive ? 'net-live-row' : ''} ${open ? 'expanded' : ''}" data-flow-key="${escapeHtml(key)}">
+        return `<tr class="net-flow-row ${isLive ? 'net-live-row' : ''}" data-flow-key="${escapeHtml(key)}">
           <td>${netFaviconHtml(d.favicon_url)}<strong>${escapeHtml(displayDom)}</strong> ${flag}${isLive ? ' <span class="ntop-badge ntop-badge-live">EN VIVO</span>' : ''}${d.direction === 'INBOUND' ? ' <span class="net-dir-badge net-dir-in">↓ ENTRANTE</span>' : ''}${rawSub}</td>
           <td><strong>${escapeHtml(d.alias || d.agent_id)}</strong><div class="net-kpi-sub">${escapeHtml(d.app_name || '---')}</div></td>
           <td><span class="net-cat-pill cat-${escapeHtml(cat)}">${escapeHtml(NET_CATEGORY_LABELS[cat] || cat)}</span><div class="net-kpi-sub">${netActivityTag(d)}</div></td>
           <td>${netBar(est, maxBytes, formatBytes(est))}<div class="net-kpi-sub">↓ ${formatBytes(d.rx_bytes || 0)} entrante · ↑ ${formatBytes(d.tx_bytes || 0)} saliente</div></td>
-          <td class="net-num" style="text-align:right">${escapeHtml(netShortTime(d.last_seen_at))}<div><span class="net-expand-btn">${open ? 'Detalle ▴' : 'Detalle ▾'}</span></div></td>
+          <td class="net-num" style="text-align:right">${escapeHtml(netShortTime(d.last_seen_at))}</td>
+          <td style="text-align:right"><button type="button" class="net-inspect-btn net-inspect-flow-btn" data-flow-key="${escapeHtml(key)}">Detalle &rarr;</button></td>
         </tr>`;
-        return open ? row + netDetailRowHtml(d) : row;
       })
       .join('');
   }
@@ -3312,8 +3765,11 @@
   function renderNetworkAll() {
     renderNetworkBanners();
     renderNetworkDonuts();
+    renderTopTalkersLeaderboard();
+    renderNetworkHosts();
     renderNetworkDomains();
     drawTrafficChart();
+    netUpdateActiveHostPill();
   }
 
   function netMarkUpdated(ok) {
@@ -3397,23 +3853,159 @@
   }, NET_TICK_MS);
   window.addEventListener('resize', () => { if (state.currentView === 'network') drawTrafficChart(); });
 
-  if (netClientsTbody) {
-    netClientsTbody.addEventListener('click', (ev) => {
-      const tr = ev.target.closest('tr.net-client-row');
-      if (!tr || !netDeviceFilter) return;
-      // Segundo clic sobre el mismo cliente quita el filtro
-      netDeviceFilter.value = netDeviceFilter.value === tr.dataset.agentId ? 'ALL' : tr.dataset.agentId;
+  // Canvas hover scrubbing para tooltip interactivo
+  if (netCanvas) {
+    netCanvas.addEventListener('mousemove', (ev) => {
+      const rect = netCanvas.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const w = netCanvas.clientWidth;
+      const padL = 64;
+      const padR = 12;
+      const cw = w - padL - padR;
+      const hist = netState.history;
+      if (!hist.length || x < padL || x > w - padR) {
+        if (netChartTooltip) netChartTooltip.classList.add('hidden');
+        return;
+      }
+      const tMax = hist[hist.length - 1].t;
+      const tMin = Math.min(hist[0].t, tMax - NET_TICK_MS * 30);
+      const ratio = Math.max(0, Math.min(1, (x - padL) / cw));
+      const targetT = tMin + ratio * (tMax - tMin);
+      let closest = hist[0];
+      let minDiff = Infinity;
+      hist.forEach((p) => {
+        const diff = Math.abs(p.t - targetT);
+        if (diff < minDiff) {
+          minDiff = diff;
+          closest = p;
+        }
+      });
+      if (netChartTooltip && closest) {
+        const timeStr = new Date(closest.t).toLocaleTimeString('es-MX', { hour12: false });
+        netChartTooltip.innerHTML = `
+          <div class="net-chart-tooltip-time">${timeStr}</div>
+          <div class="net-chart-tooltip-val">
+            <span class="net-chart-tooltip-rx">↓ Descarga: ${formatBitrate(closest.rx)}</span>
+            <span class="net-chart-tooltip-tx">↑ Subida: ${formatBitrate(closest.tx)}</span>
+          </div>
+        `;
+        netChartTooltip.style.left = `${x}px`;
+        netChartTooltip.style.top = `${ev.clientY - rect.top}px`;
+        netChartTooltip.classList.remove('hidden');
+      }
+    });
+    netCanvas.addEventListener('mouseleave', () => {
+      if (netChartTooltip) netChartTooltip.classList.add('hidden');
+    });
+  }
+
+  // Subnavegación segmentada
+  netSubtabBtns.forEach((btn) => {
+    btn.addEventListener('click', () => netSwitchSubview(btn.dataset.subview));
+  });
+
+  if (netClearHostBtn) {
+    netClearHostBtn.addEventListener('click', () => {
+      if (netDeviceFilter) netDeviceFilter.value = 'ALL';
+      netUpdateActiveHostPill();
       loadNetworkDashboard({ silent: true });
     });
   }
+
+  netChartRangeBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      netChartRangeBtns.forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      netState.chartRange = btn.dataset.range;
+      drawTrafficChart();
+    });
+  });
+
+  if (netGotoHostsBtn) {
+    netGotoHostsBtn.addEventListener('click', () => netSwitchSubview('hosts'));
+  }
+
+  if (netClientsTbody) {
+    netClientsTbody.addEventListener('click', (ev) => {
+      const inspectBtn = ev.target.closest('.net-host-inspect-btn');
+      if (inspectBtn) {
+        openNetDrawer('host', inspectBtn.dataset.agentId);
+        return;
+      }
+      const tr = ev.target.closest('tr.net-client-row');
+      if (!tr || !netDeviceFilter) return;
+      netDeviceFilter.value = netDeviceFilter.value === tr.dataset.agentId ? 'ALL' : tr.dataset.agentId;
+      netUpdateActiveHostPill();
+      loadNetworkDashboard({ silent: true });
+    });
+  }
+
+  if (netTopTalkersLeaderboard) {
+    netTopTalkersLeaderboard.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('.net-inspect-btn');
+      const item = ev.target.closest('.net-talker-item');
+      const agentId = (btn && btn.dataset.agentId) || (item && item.dataset.agentId);
+      if (agentId) openNetDrawer('host', agentId);
+    });
+  }
+
+  if (netHostsGrid) {
+    netHostsGrid.addEventListener('click', (ev) => {
+      const inspectBtn = ev.target.closest('.net-host-inspect-btn');
+      if (inspectBtn) {
+        openNetDrawer('host', inspectBtn.dataset.agentId);
+        return;
+      }
+      const filterBtn = ev.target.closest('.net-host-filter-btn');
+      if (filterBtn) {
+        if (netDeviceFilter) netDeviceFilter.value = filterBtn.dataset.agentId;
+        netUpdateActiveHostPill();
+        netSwitchSubview('flows');
+        loadNetworkDashboard({ silent: true });
+        return;
+      }
+      const card = ev.target.closest('.net-host-card');
+      if (card && card.dataset.agentId) {
+        openNetDrawer('host', card.dataset.agentId);
+      }
+    });
+  }
+
+  if (netHostSearchInput) {
+    netHostSearchInput.addEventListener('input', () => {
+      netState.hostSearchQuery = netHostSearchInput.value.trim();
+      renderNetworkHosts();
+    });
+  }
+
+  if (netHostSortSelect) {
+    netHostSortSelect.addEventListener('change', () => {
+      netState.hostSortBy = netHostSortSelect.value;
+      renderNetworkHosts();
+    });
+  }
+
+  if (netHostViewCardsBtn && netHostViewTableBtn) {
+    netHostViewCardsBtn.addEventListener('click', () => {
+      netHostViewCardsBtn.classList.add('active');
+      netHostViewTableBtn.classList.remove('active');
+      if (netHostsGrid) netHostsGrid.classList.remove('hidden');
+      if (netHostsTableWrap) netHostsTableWrap.classList.add('hidden');
+    });
+    netHostViewTableBtn.addEventListener('click', () => {
+      netHostViewTableBtn.classList.add('active');
+      netHostViewCardsBtn.classList.remove('active');
+      if (netHostsGrid) netHostsGrid.classList.add('hidden');
+      if (netHostsTableWrap) netHostsTableWrap.classList.remove('hidden');
+    });
+  }
+
   if (netDomainsTbody) {
     netDomainsTbody.addEventListener('click', (ev) => {
       const tr = ev.target.closest('tr.net-flow-row');
       if (!tr) return;
       const key = tr.dataset.flowKey;
-      if (netState.expandedFlowKeys.has(key)) netState.expandedFlowKeys.delete(key);
-      else netState.expandedFlowKeys.add(key);
-      renderNetworkDomains();
+      if (key) openNetDrawer('flow', key);
     });
   }
   if (netShowSysToggle) netShowSysToggle.addEventListener('change', renderNetworkDomains);
@@ -3444,6 +4036,48 @@
     });
   }
   netApplyAutoUi();
+
+  // Chips rápidos de categoría
+  netCategoryChipBtns.forEach((chip) => {
+    chip.addEventListener('click', () => {
+      netCategoryChipBtns.forEach((c) => c.classList.remove('active'));
+      chip.classList.add('active');
+      if (netCategoryFilter) netCategoryFilter.value = chip.dataset.category;
+      renderNetworkDomains();
+    });
+  });
+
+  // Eventos del Inspector Drawer lateral
+  if (netDrawerClose) netDrawerClose.addEventListener('click', closeNetDrawer);
+  if (netDrawerBackdrop) netDrawerBackdrop.addEventListener('click', closeNetDrawer);
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && netDrawer && netDrawer.classList.contains('open')) {
+      closeNetDrawer();
+    }
+  });
+
+  if (netDrawerBody) {
+    netDrawerBody.addEventListener('click', (ev) => {
+      const dvrBtn = ev.target.closest('.drawer-act-dvr');
+      if (dvrBtn) {
+        closeNetDrawer();
+        openViewerForAgent(dvrBtn.dataset.agentId);
+        return;
+      }
+      const filesBtn = ev.target.closest('.drawer-act-files');
+      if (filesBtn) {
+        closeNetDrawer();
+        if (typeof openFinderExplorer === 'function') openFinderExplorer(filesBtn.dataset.agentId);
+        return;
+      }
+      const termBtn = ev.target.closest('.drawer-act-terminal');
+      if (termBtn) {
+        closeNetDrawer();
+        if (typeof openReverseTerminal === 'function') openReverseTerminal(termBtn.dataset.agentId);
+        return;
+      }
+    });
+  }
 
   tabWall.addEventListener('click', () => switchView('wall'));
   tabViewer.addEventListener('click', () => {
