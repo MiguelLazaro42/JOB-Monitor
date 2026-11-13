@@ -1685,8 +1685,10 @@ _SERVICE_RULES = {
         'cloudflarepreview.com cloudflareresolve.com cloudflaressl.com cloudflarestatus.com '
         'cloudflarestorage.com cloudflarestream.com cloudflaretest.com cloudflarewarp.com every1dns.net '
         'pacloudflare.com pages.dev trycloudflare.com videodelivery.net warp.plus workers.dev'),
-    'aws.amazon.com': ('CLOUD',
+    'amazonaws.com': ('CLOUD',
         'amazonaws.com aws.amazon.com awsapps.com awsstatic.com'),
+    'cloudfront.net': ('CLOUD',
+        'cloudfront.net'),
     'azure.com': ('CLOUD',
         'azure.com azure.net azureedge.net azurewebsites.net core.windows.net'),
     'cloud.google.com': ('CLOUD',
@@ -1696,9 +1698,9 @@ _SERVICE_RULES = {
         'mercadolibre.com.co mercadolibre.com.do mercadolibre.com.ec mercadolibre.com.gt '
         'mercadolibre.com.hn mercadolibre.com.mx mercadolibre.com.ni mercadolibre.com.pa '
         'mercadolibre.com.pe mercadolibre.com.py mercadolibre.com.sv mercadolibre.com.uy '
-        'mercadolibre.com.ve mercadolivre.com.br mercadopago.com mercadopago.com.mx mlstatic.com'),
+        'mercadolibre.com.ve mercadolivre.com.br mercadopago.com mercadopago.com.mx meli.com mlstatic.com'),
     'amazon.com': ('SHOPPING',
-        'a2z.com a2z.org.cn aboutamazon.cn aboutamazon.co.uk aboutamazon.com aboutamazon.com.au '
+        'amazon.es assoc-amazon.com a2z.com ssl-images-amazon.com a2z.org.cn aboutamazon.cn aboutamazon.co.uk aboutamazon.com aboutamazon.com.au '
         'aboutamazon.de aboutamazon.es aboutamazon.eu aboutamazon.fr aboutamazon.in aboutamazon.it '
         'aboutamazon.jp aboutamazon.pl acmvalidations.com acmvalidationsaws.com aesworkshops.com '
         'alexa.com alexafund.cn alexafund.com.cn amaaozn.com amazon-adsystem.com amazon-fashions.com '
@@ -2543,6 +2545,26 @@ class NetworkTrafficCollector:
     _GOOGLE_DOMAIN_KEYS = ("1e100.net", "google.com", "gstatic.com", "googlevideo.com", "gvt1.com", "gvt2.com", "googleapis.com",
                            "googleusercontent.com", "ggpht.com", "ytimg.com", "youtu.be")
     _GOOGLE_IP_PREFIXES = ("142.250.", "142.251.", "172.217.", "216.58.", "74.125.", "172.253.", "209.85.", "108.177.")
+    _SHARED_CDN_INFRA_DOMAINS = (
+        "aws.amazon.com", "amazonaws.com", "cloudfront.net",
+        "fastly.com", "fastly.net", "fastlylb.net",
+        "cloudflare.com", "cloudflare.net", "cloudflare-dns.com",
+        "akamai.com", "akamaitechnologies.com", "akamaiedge.net", "akam.net", "akaquill.net",
+        "1e100.net", "gstatic.com", "googleapis.com", "gvt1.com", "gvt2.com", "googleusercontent.com",
+        "azureedge.net", "trafficmanager.net", "msedge.net", "azure.com",
+        "edgecastcdn.net", "llnwd.net", "footprint.net", "cdn77.org",
+    )
+    _SHARED_CDN_IP_PREFIXES = _GOOGLE_IP_PREFIXES + (
+        "52.", "54.", "18.", "3.", "13.32.", "13.33.", "13.35.", "13.224.", "13.225.", "13.226.", "13.227.",
+        "99.84.", "99.86.", "108.138.", "108.156.", "143.204.", "205.251.", "199.232.", "151.101.",
+        "104.16.", "104.17.", "104.18.", "104.19.", "104.20.", "104.21.", "104.22.", "104.24.", "104.25.",
+        "104.26.", "104.27.", "172.64.", "172.67.", "23.",
+    )
+    _TITLE_GENERIC_WORDS = frozenset((
+        "para", "como", "todo", "home", "page", "login", "personal", "microsoft", "edge", "chrome", "firefox",
+        "safari", "brave", "opera", "ventana", "pestaña", "nueva",
+    ))
+    _TITLE_WORD_RE = re.compile(r"[a-z0-9áéíóúñ]{4,}")
     _EXPLICIT_DOMAIN_RE = re.compile(
         r"\b((?:[a-z0-9-]+\.)+(?:com|net|org|io|tv|co|app|dev|ai|edu|gob|gov|mx|ar|es|info|me|us|tech|cloud|xyz))\b",
         re.IGNORECASE,
@@ -2568,7 +2590,27 @@ class NetworkTrafficCollector:
             clean, cat = classify_domain_ndpi(m.group(1), app_name)
             if clean:
                 return clean, cat
+        # Fallback: cualquier palabra del título que sea un servicio del catálogo AdGuard
+        for word in cls._TITLE_WORD_RE.findall(title):
+            if word in cls._TITLE_GENERIC_WORDS:
+                continue
+            for tld in (".com", ".com.mx", ".org", ".tv", ".ai"):
+                hit = ADGUARD_DOMAIN_CATALOG.get(word + tld)
+                if hit and hit[0] == word + tld:
+                    return hit
         return None
+
+    def _is_shared_cdn_or_cloud(self, ip_str: str, raw_dom: str, clean_dom: str,
+                                site_hint: Optional[tuple[str, str]] = None) -> bool:
+        raw = (raw_dom or "").lower().rstrip(".")
+        clean = (clean_dom or "").lower()
+        doms = self._SHARED_CDN_INFRA_DOMAINS
+        for d in (raw, clean):
+            if d and any(d == k or d.endswith("." + k) for k in doms):
+                return True
+        if clean == "google.com" and not (site_hint and site_hint[0] == "google.com"):
+            return True
+        return raw == (ip_str or "") and (ip_str or "").startswith(self._SHARED_CDN_IP_PREFIXES)
 
     def _is_google_remote(self, ip_str: str, raw_dom: str) -> bool:
         dom = (raw_dom or "").lower()
@@ -2581,11 +2623,12 @@ class NetworkTrafficCollector:
         raw_dom = self._resolve_ip_to_domain(remote_ip) or remote_ip
         clean_dom, cat = classify_domain_ndpi(raw_dom, proc_name)
         # Anycast de Google: atribuir el flujo al sitio exacto que indica la ventana activa
+        # CDN/cloud compartida (CloudFront, Fastly, Akamai, Cloudflare, Azure...): atribuir al sitio en foco
         if (
             site_hint
-            and site_hint[0] in self._GOOGLE_FAMILY_SITES
             and (self._is_browser_name(proc_name) or not (proc_name or "").strip())
-            and self._is_google_remote(remote_ip, raw_dom)
+            and (self._is_google_remote(remote_ip, raw_dom)
+                 or self._is_shared_cdn_or_cloud(remote_ip, raw_dom, clean_dom, site_hint))
         ):
             clean_dom, cat = site_hint
         if not clean_dom:

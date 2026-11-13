@@ -280,8 +280,10 @@ _SERVICE_RULES = {
         'cloudflarepreview.com cloudflareresolve.com cloudflaressl.com cloudflarestatus.com '
         'cloudflarestorage.com cloudflarestream.com cloudflaretest.com cloudflarewarp.com every1dns.net '
         'pacloudflare.com pages.dev trycloudflare.com videodelivery.net warp.plus workers.dev'),
-    'aws.amazon.com': ('CLOUD',
+    'amazonaws.com': ('CLOUD',
         'amazonaws.com aws.amazon.com awsapps.com awsstatic.com'),
+    'cloudfront.net': ('CLOUD',
+        'cloudfront.net'),
     'azure.com': ('CLOUD',
         'azure.com azure.net azureedge.net azurewebsites.net core.windows.net'),
     'cloud.google.com': ('CLOUD',
@@ -291,9 +293,9 @@ _SERVICE_RULES = {
         'mercadolibre.com.co mercadolibre.com.do mercadolibre.com.ec mercadolibre.com.gt '
         'mercadolibre.com.hn mercadolibre.com.mx mercadolibre.com.ni mercadolibre.com.pa '
         'mercadolibre.com.pe mercadolibre.com.py mercadolibre.com.sv mercadolibre.com.uy '
-        'mercadolibre.com.ve mercadolivre.com.br mercadopago.com mercadopago.com.mx mlstatic.com'),
+        'mercadolibre.com.ve mercadolivre.com.br mercadopago.com mercadopago.com.mx meli.com mlstatic.com'),
     'amazon.com': ('SHOPPING',
-        'a2z.com a2z.org.cn aboutamazon.cn aboutamazon.co.uk aboutamazon.com aboutamazon.com.au '
+        'amazon.es assoc-amazon.com a2z.com ssl-images-amazon.com a2z.org.cn aboutamazon.cn aboutamazon.co.uk aboutamazon.com aboutamazon.com.au '
         'aboutamazon.de aboutamazon.es aboutamazon.eu aboutamazon.fr aboutamazon.in aboutamazon.it '
         'aboutamazon.jp aboutamazon.pl acmvalidations.com acmvalidationsaws.com aesworkshops.com '
         'alexa.com alexafund.cn alexafund.com.cn amaaozn.com amazon-adsystem.com amazon-fashions.com '

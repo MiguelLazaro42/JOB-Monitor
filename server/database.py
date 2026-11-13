@@ -40,6 +40,46 @@ def _normalize_domain(domain: str, app_name: str = "", agent_cat: str = "OTHER")
     return clean[:253], cat
 
 
+_SHARED_CDN_DOMAINS = (
+    "aws.amazon.com", "amazonaws.com", "cloudfront.net", "fastly.com", "fastly.net", "fastlylb.net",
+    "akamai.com", "akamaitechnologies.com", "akamaiedge.net", "akam.net", "cloudflare.com", "cloudflare.net",
+    "1e100.net", "gstatic.com", "googleapis.com", "azureedge.net", "trafficmanager.net", "msedge.net",
+    "edgecastcdn.net", "llnwd.net", "footprint.net", "cdn77.org",
+)
+_USER_SITE_CATEGORIES = ("SHOPPING", "STREAMING", "SOCIAL", "MESSAGING", "AI", "GAMING")
+_BROWSER_APP_KEYS = ("chrome", "safari", "edge", "firefox", "brave", "opera", "vivaldi", "arc", "webkit", "chromium")
+
+
+def _merge_shared_cdn_rows(rows: list) -> list:
+    """Dentro de un mismo slice y navegador, atribuye CDN/cloud genérica al sitio de usuario más activo.
+    Filas: (day, agent, domain, app, cat, hits, est, first, last, keys, ptype, focus, conf, rx, tx, dir, port)."""
+    def is_cdn(dom):
+        return any(dom == k or dom.endswith("." + k) for k in _SHARED_CDN_DOMAINS)
+
+    def is_browser(app):
+        low = (app or "").lower()
+        return any(k in low for k in _BROWSER_APP_KEYS)
+
+    best = {}  # app -> índice del sitio de usuario más activo
+    for i, r in enumerate(rows):
+        if r[4] in _USER_SITE_CATEGORIES and not is_cdn(r[2]) and is_browser(r[3]):
+            if r[3] not in best or (r[6], r[5]) > (rows[best[r[3]]][6], rows[best[r[3]]][5]):
+                best[r[3]] = i
+    if not best:
+        return rows
+    out = list(rows)
+    drop = set()
+    for i, r in enumerate(rows):
+        t = best.get(r[3])
+        if t is None or i == t or r[4] in _USER_SITE_CATEGORIES or not is_cdn(r[2]):
+            continue
+        tr = list(out[t])
+        tr[5] += r[5]; tr[6] += r[6]; tr[13] += r[13]; tr[14] += r[14]; tr[9] += r[9]
+        out[t] = tuple(tr)
+        drop.add(i)
+    return [r for i, r in enumerate(out) if i not in drop]
+
+
 def hash_password(plain: str) -> str:
     salt = secrets.token_hex(16)
     dk = hashlib.pbkdf2_hmac("sha256", plain.encode("utf-8"), salt.encode("utf-8"), 120_000)
@@ -1189,6 +1229,7 @@ class DatabaseManager:
                          rx_b, tx_b, direction, port))
         if not rows:
             return
+        rows = _merge_shared_cdn_rows(rows)
         with self._lock:
             conn = self._get_conn()
             try:
