@@ -886,18 +886,38 @@
 
   const stDeviceSelect = document.getElementById('st-device-select');
   const stPeriodDayBtn = document.getElementById('st-period-day');
+  const stPeriodYesterdayBtn = document.getElementById('st-period-yesterday');
   const stPeriod7dBtn = document.getElementById('st-period-7d');
+  const stPeriodBtns = [stPeriodDayBtn, stPeriodYesterdayBtn, stPeriod7dBtn].filter(Boolean);
+  const stDatePicker = document.getElementById('st-date-picker');
+  const stRefreshBtn = document.getElementById('st-refresh-btn');
   const stKpiActive = document.getElementById('st-kpi-active');
   const stKpiDelta = document.getElementById('st-kpi-delta');
   const stKpiIdle = document.getElementById('st-kpi-idle');
   const stKpiSwitches = document.getElementById('st-kpi-switches');
+  const stKpiScore = document.getElementById('st-kpi-score');
+  const stKpiScoreBadge = document.getElementById('st-kpi-score-badge');
+  const stKpiScoreFill = document.getElementById('st-kpi-score-fill');
   const stSubtitleLabel = document.getElementById('st-subtitle-label');
   const stHourlyChart = document.getElementById('st-hourly-chart');
+  const stHourTooltip = document.getElementById('st-hour-tooltip');
+  const stPeakHour = document.getElementById('st-peak-hour');
   const stCategoryBar = document.getElementById('st-category-bar');
   const stCategoryLegend = document.getElementById('st-category-legend');
+  const stTopWork = document.getElementById('st-top-work');
+  const stTopDistractions = document.getElementById('st-top-distractions');
+  const stAppSearch = document.getElementById('st-app-search');
+  const stCatFilterChips = document.getElementById('st-cat-filter-chips');
+  const stAppsCount = document.getElementById('st-apps-count');
   const stAppsList = document.getElementById('st-apps-list');
+  // Periodo enviado al backend: 'day' | '7d'. 'Ayer' se resuelve en cliente como day + fecha anterior.
   let stCurrentPeriod = 'day';
   let stSelectedAgentId = 'ALL';
+  let stLoadSeq = 0;
+  let stLastApps = [];
+  let stLastHourly = [];
+  let stSearchQuery = '';
+  let stCatFilter = 'ALL';
 
   const ST_CAT_COLORS = {
     'Productividad y Gestion': '#007aff',
@@ -907,21 +927,63 @@
     'Navegacion General': '#0ea5e9',
     'Entretenimiento y Redes': '#e11d48',
   };
+  const ST_PRODUCTIVE_CATS = new Set(['Productividad y Gestion', 'Desarrollo y Sistemas', 'Comunicacion', 'Diseno y Creatividad']);
+  const ST_DISTRACTOR_CATS = new Set(['Entretenimiento y Redes']);
+  const ST_WORKDAY_START = 8;
+  const ST_WORKDAY_END = 18; // exclusivo: columnas 08h..17h
 
   function getCategoryColor(cat) {
     return ST_CAT_COLORS[cat] || '#64748b';
   }
 
+  function stShiftIsoDate(iso, days) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+    if (!m) return iso;
+    const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
+  }
+
+  function stGetSelectedDate() {
+    return (metricsDateInput && metricsDateInput.value) || (stDatePicker && stDatePicker.value) || getTodayInTimezone(state.timezone);
+  }
+
+  // Sincroniza ambos selectores de fecha (#st-date-picker <-> #metrics-date-input).
+  function stSetSelectedDate(iso) {
+    if (!iso) return;
+    if (metricsDateInput && metricsDateInput.value !== iso) metricsDateInput.value = iso;
+    if (stDatePicker && stDatePicker.value !== iso) stDatePicker.value = iso;
+  }
+
+  function stSyncPeriodButtons() {
+    const today = getTodayInTimezone(state.timezone);
+    const sel = stGetSelectedDate();
+    let activeKey = null;
+    if (stCurrentPeriod === '7d') activeKey = '7d';
+    else if (sel === today) activeKey = 'day';
+    else if (sel === stShiftIsoDate(today, -1)) activeKey = 'yesterday';
+    stPeriodBtns.forEach((b) => {
+      const on = b.dataset.period === activeKey;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  }
+
   async function loadScreenTimeAnalytics() {
     if (!stAppsList) return;
-    const dateVal = (metricsDateInput && metricsDateInput.value) || todayIso;
+    const dateVal = stGetSelectedDate();
+    stSetSelectedDate(dateVal);
+    stSyncPeriodButtons();
     const agId = (stDeviceSelect && stDeviceSelect.value) || stSelectedAgentId || 'ALL';
     stSelectedAgentId = agId;
     const tParam = state.tenantFilter && state.tenantFilter !== 'ALL' ? `&tenant_id=${encodeURIComponent(state.tenantFilter)}` : '';
+    const seq = ++stLoadSeq;
+    if (stRefreshBtn) stRefreshBtn.classList.add('is-loading');
     try {
       const url = `/api/screen-time?agent_id=${encodeURIComponent(agId)}&date=${encodeURIComponent(dateVal)}&period=${encodeURIComponent(stCurrentPeriod)}${tParam}`;
       const res = await authFetch(url);
       const data = await res.json();
+      if (seq !== stLoadSeq) return; // respuesta obsoleta
       if (!data || !data.ok) return;
 
       if (stDeviceSelect && Array.isArray(data.devices)) {
@@ -936,6 +998,253 @@
       renderScreenTimePanel(data);
     } catch (err) {
       console.error('Error al cargar Tiempo en Pantalla:', err);
+    } finally {
+      if (seq === stLoadSeq && stRefreshBtn) stRefreshBtn.classList.remove('is-loading');
+    }
+  }
+
+  function stComputeFocusScore(cats) {
+    let prod = 0;
+    let dist = 0;
+    (cats || []).forEach((c) => {
+      const sec = Number(c.seconds) || 0;
+      if (ST_PRODUCTIVE_CATS.has(c.category)) prod += sec;
+      else if (ST_DISTRACTOR_CATS.has(c.category)) dist += sec;
+    });
+    const total = prod + dist;
+    return { prod, dist, score: total > 0 ? Math.round((prod * 100) / total) : null };
+  }
+
+  function stRenderFocusScore(cats) {
+    const { prod, dist, score } = stComputeFocusScore(cats);
+    if (stKpiScore) {
+      stKpiScore.textContent = score === null ? '---' : `${score}%`;
+      stKpiScore.className = 'st-kpi-value ' + (score === null ? 'st-kpi-muted' : score >= 80 ? 'st-score-high' : score >= 60 ? 'st-score-mid' : 'st-score-low');
+    }
+    if (stKpiScoreBadge) {
+      let cls = 'st-score-none';
+      let lbl = 'Sin datos';
+      if (score !== null) {
+        if (score >= 80) { cls = 'st-score-high'; lbl = 'Alto Enfoque'; }
+        else if (score >= 60) { cls = 'st-score-mid'; lbl = 'Moderado'; }
+        else { cls = 'st-score-low'; lbl = 'Disperso'; }
+      }
+      stKpiScoreBadge.className = `st-score-badge ${cls}`;
+      stKpiScoreBadge.textContent = lbl;
+      stKpiScoreBadge.title = `Productivo: ${formatAccumulatedTime(prod)} | Distractores: ${formatAccumulatedTime(dist)}`;
+    }
+    if (stKpiScoreFill) {
+      stKpiScoreFill.style.width = `${score === null ? 0 : score}%`;
+      stKpiScoreFill.className = 'st-score-meter-fill ' + (score === null ? '' : score >= 80 ? 'st-score-high' : score >= 60 ? 'st-score-mid' : 'st-score-low');
+    }
+  }
+
+  function stRenderHourly(hourly) {
+    if (!stHourlyChart) return;
+    stLastHourly = hourly;
+    const maxTot = Math.max(60, ...hourly.map((h) => (h.active_seconds || 0) + (h.idle_seconds || 0)));
+    let peak = null;
+    hourly.forEach((h) => {
+      if ((h.active_seconds || 0) > 0 && (!peak || h.active_seconds > peak.active_seconds)) peak = h;
+    });
+    stHourlyChart.innerHTML = hourly
+      .map((h, idx) => {
+        const actPct = Math.min(100, Math.round(((h.active_seconds || 0) * 100) / maxTot));
+        const idlPct = Math.min(100 - actPct, Math.round(((h.idle_seconds || 0) * 100) / maxTot));
+        const hh = String(h.hour).padStart(2, '0');
+        const ariaTip = `${hh}:00 - Activo: ${formatAccumulatedTime(h.active_seconds || 0)}, Inactivo: ${formatAccumulatedTime(h.idle_seconds || 0)}, Cambios: ${h.switches_count || 0}`;
+        const showLbl = h.hour % 3 === 0 ? hh : '';
+        const cls = ['st-hour-col'];
+        if (h.hour >= ST_WORKDAY_START && h.hour < ST_WORKDAY_END) cls.push('st-hour-workday');
+        if (peak && peak.hour === h.hour) cls.push('st-hour-peak');
+        return `<div class="${cls.join(' ')}" data-idx="${idx}" tabindex="0" aria-label="${escapeHtml(ariaTip)}">
+            <div class="st-hour-stack">
+              <div class="st-bar-idle" style="height:${idlPct}%"></div>
+              <div class="st-bar-active" style="height:${actPct}%"></div>
+            </div>
+            <span class="st-hour-lbl">${showLbl}</span>
+          </div>`;
+      })
+      .join('');
+
+    if (stPeakHour) {
+      const txt = stPeakHour.querySelector('.st-peak-text');
+      if (peak) {
+        const hh = String(peak.hour).padStart(2, '0');
+        if (txt) txt.textContent = `Hora pico: ${hh}:00 (${formatAccumulatedTime(peak.active_seconds)} activo)`;
+        stPeakHour.classList.remove('st-peak-empty');
+      } else {
+        if (txt) txt.textContent = 'Hora pico: sin actividad registrada';
+        stPeakHour.classList.add('st-peak-empty');
+      }
+    }
+  }
+
+  function stShowHourTooltip(col) {
+    if (!stHourTooltip || !col) return;
+    const h = stLastHourly[Number(col.dataset.idx)];
+    if (!h) return;
+    const hh = String(h.hour).padStart(2, '0');
+    const act = h.active_seconds || 0;
+    const idl = h.idle_seconds || 0;
+    const tot = act + idl;
+    const actPct = tot > 0 ? Math.round((act * 100) / tot) : 0;
+    const workday = h.hour >= ST_WORKDAY_START && h.hour < ST_WORKDAY_END;
+    stHourTooltip.innerHTML = `
+      <div class="st-tt-head"><strong>${hh}:00 - ${hh}:59</strong>${workday ? '<span class="st-tt-tag">Jornada</span>' : ''}</div>
+      <div class="st-tt-row"><span><i class="st-dot st-dot-active"></i>Activo</span><strong>${escapeHtml(formatAccumulatedTime(act))}</strong></div>
+      <div class="st-tt-row"><span><i class="st-dot st-dot-idle"></i>Inactivo</span><strong>${escapeHtml(formatAccumulatedTime(idl))}</strong></div>
+      <div class="st-tt-row"><span>Cambios de app</span><strong>${h.switches_count || 0}</strong></div>
+      ${tot > 0 ? `<div class="st-tt-foot">${actPct}% del tiempo registrado fue activo</div>` : ''}`;
+    stHourTooltip.classList.remove('hidden');
+    const host = stHourTooltip.offsetParent || stHourlyChart.parentElement;
+    const hostRect = host.getBoundingClientRect();
+    const colRect = col.getBoundingClientRect();
+    const ttW = stHourTooltip.offsetWidth;
+    const ttH = stHourTooltip.offsetHeight;
+    let left = colRect.left - hostRect.left + colRect.width / 2 - ttW / 2;
+    left = Math.max(6, Math.min(left, hostRect.width - ttW - 6));
+    const top = Math.max(4, colRect.top - hostRect.top - ttH - 8);
+    stHourTooltip.style.left = `${left}px`;
+    stHourTooltip.style.top = `${top}px`;
+  }
+
+  function stHideHourTooltip() {
+    if (stHourTooltip) stHourTooltip.classList.add('hidden');
+  }
+
+  function stRenderTopList(container, apps, emptyMsg) {
+    if (!container) return;
+    if (apps.length === 0) {
+      container.innerHTML = `<p class="muted-text st-top-empty">${escapeHtml(emptyMsg)}</p>`;
+      return;
+    }
+    const maxSec = Math.max(1, ...apps.map((a) => a.total_seconds || 0));
+    container.innerHTML = apps
+      .map((ap, i) => {
+        const pct = Math.max(3, Math.round(((ap.total_seconds || 0) * 100) / maxSec));
+        const col = getCategoryColor(ap.category);
+        return `<button type="button" class="st-top-row js-st-top-item" data-app="${escapeHtml(ap.app_name)}" title="Filtrar explorador por ${escapeHtml(ap.app_name)}">
+          <span class="st-top-rank">${i + 1}</span>
+          <span class="st-top-info">
+            <span class="st-top-line">
+              <span class="st-top-name">${escapeHtml(ap.app_name)}</span>
+              <span class="st-top-time">${escapeHtml(formatAccumulatedTime(ap.total_seconds || 0))}</span>
+            </span>
+            <span class="st-top-cat"><i class="st-dot" style="background:${col}"></i>${escapeHtml(ap.category || 'Sin categoria')}</span>
+            <span class="st-top-bar"><span class="st-top-bar-fill" style="width:${pct}%; background:${col}"></span></span>
+          </span>
+        </button>`;
+      })
+      .join('');
+  }
+
+  function stRenderTopCompare(apps) {
+    const sorted = [...apps].sort((a, b) => (b.total_seconds || 0) - (a.total_seconds || 0));
+    stRenderTopList(stTopWork, sorted.filter((a) => ST_PRODUCTIVE_CATS.has(a.category)).slice(0, 5), 'Sin herramientas productivas registradas');
+    stRenderTopList(stTopDistractions, sorted.filter((a) => ST_DISTRACTOR_CATS.has(a.category)).slice(0, 5), 'Sin distractores registrados');
+  }
+
+  function stNormalize(str) {
+    return String(str || '')
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .toLowerCase();
+  }
+
+  // Resalta coincidencias escapando cada fragmento por separado (seguro frente a XSS).
+  function stHighlight(text, q) {
+    const raw = String(text || '');
+    if (!q) return escapeHtml(raw);
+    const norm = stNormalize(raw);
+    // NFD + quitar diacriticos conserva la longitud para caracteres latinos precompuestos.
+    if (norm.length !== raw.length) return escapeHtml(raw);
+    let out = '';
+    let pos = 0;
+    let hit = norm.indexOf(q, pos);
+    while (hit !== -1) {
+      out += escapeHtml(raw.slice(pos, hit)) + `<mark class="st-hl">${escapeHtml(raw.slice(hit, hit + q.length))}</mark>`;
+      pos = hit + q.length;
+      hit = norm.indexOf(q, pos);
+    }
+    return out + escapeHtml(raw.slice(pos));
+  }
+
+  function stRenderAppsExplorer() {
+    if (!stAppsList) return;
+    const apps = stLastApps;
+    if (apps.length === 0) {
+      stAppsList.innerHTML = '<p class="muted-text">Aun no hay aplicaciones o pestanas registradas en este rango.</p>';
+      if (stAppsCount) stAppsCount.textContent = '';
+      return;
+    }
+    const q = stNormalize(stSearchQuery.trim());
+    const filtering = Boolean(q) || stCatFilter !== 'ALL';
+    const visible = [];
+    apps.forEach((ap) => {
+      if (stCatFilter !== 'ALL' && ap.category !== stCatFilter) return;
+      const resources = ap.resources || [];
+      if (!q) {
+        visible.push({ ap, resources, forceOpen: false });
+        return;
+      }
+      const appHit = stNormalize(ap.app_name).includes(q);
+      const resHits = resources.filter((r) => stNormalize(r.resource_title).includes(q));
+      if (appHit) visible.push({ ap, resources, forceOpen: resHits.length > 0 });
+      else if (resHits.length > 0) visible.push({ ap, resources: resHits, forceOpen: true });
+    });
+
+    if (stAppsCount) {
+      stAppsCount.textContent = filtering ? `${visible.length} de ${apps.length} apps` : `${apps.length} apps`;
+    }
+    if (visible.length === 0) {
+      stAppsList.innerHTML = `<div class="st-apps-empty">
+        <p class="muted-text">Sin coincidencias para el filtro actual.</p>
+        <button type="button" class="st-res-link-btn js-st-clear-filters">Limpiar filtros</button>
+      </div>`;
+      return;
+    }
+
+    stAppsList.innerHTML = visible
+      .map(({ ap, resources, forceOpen }, idx) => {
+        const col = getCategoryColor(ap.category);
+        const resRows = resources
+          .map(
+            (r) => `<div class="st-res-row">
+                  <span class="st-res-title" title="${escapeHtml(r.resource_title)}">${stHighlight(r.resource_title, q)}</span>
+                  <span class="st-res-meta">${r.switches_count || 0} apertura${r.switches_count === 1 ? '' : 's'} · <strong>${escapeHtml(formatAccumulatedTime(r.seconds || 0))}</strong></span>
+                  <button type="button" class="st-res-link-btn js-st-open-captures" data-app="${escapeHtml(ap.app_name)}" data-res="${escapeHtml(r.resource_title)}">Ver capturas</button>
+                </div>`
+          )
+          .join('');
+        const isOpen = forceOpen || (!filtering && idx === 0);
+        return `<details class="st-app-details" ${isOpen ? 'open' : ''}>
+              <summary class="st-app-summary">
+                <div class="st-app-left">
+                  <svg class="st-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"/></svg>
+                  <span class="st-app-title" title="${escapeHtml(ap.app_name)}">${stHighlight(ap.app_name, q)}</span>
+                  <span class="st-app-cat-pill" style="--st-cat-color:${col}">${escapeHtml(ap.category)}</span>
+                </div>
+                <div class="st-app-bar-wrap"><div class="st-app-bar-fill" style="width:${ap.percent}%; background:${col}"></div></div>
+                <div class="st-app-right">
+                  <span class="st-switches-pill">${ap.switches_count || 0} cambios</span>
+                  <span class="st-app-dur">${escapeHtml(formatAccumulatedTime(ap.total_seconds || 0))}</span>
+                </div>
+              </summary>
+              <div class="st-res-list">${resRows || '<span class="muted-text st-res-empty">Sin pestanas o documentos detallados.</span>'}</div>
+            </details>`;
+      })
+      .join('');
+  }
+
+  function stSetCatFilter(cat) {
+    stCatFilter = cat || 'ALL';
+    if (stCatFilterChips) {
+      stCatFilterChips.querySelectorAll('.st-chip').forEach((c) => {
+        const on = c.dataset.cat === stCatFilter;
+        c.classList.toggle('active', on);
+        c.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
     }
   }
 
@@ -945,10 +1254,13 @@
     if (stKpiIdle) stKpiIdle.textContent = formatAccumulatedTime(sum.idle_seconds || 0);
     if (stKpiSwitches) stKpiSwitches.textContent = String(sum.switches_count || 0);
     if (stSubtitleLabel) {
+      const today = getTodayInTimezone(state.timezone);
+      const d = data.date || stGetSelectedDate();
+      const rel = d === today ? ' (hoy)' : d === stShiftIsoDate(today, -1) ? ' (ayer)' : '';
       stSubtitleLabel.textContent =
         data.period === '7d'
           ? `Acumulado de 7 dias (${data.start_date || ''} a ${data.end_date || data.date || ''})`
-          : `Analisis detallado del ${data.date || todayIso}`;
+          : `Analisis detallado del ${d}${rel}`;
     }
     if (stKpiDelta) {
       const dp = Number(sum.delta_pct || 0);
@@ -957,28 +1269,10 @@
       stKpiDelta.textContent = sum.prev_active_seconds > 0 ? `${dp > 0 ? '+' : ''}${dp}% ${cmpLbl}` : 'Sin periodo previo';
     }
 
-    if (stHourlyChart) {
-      const hourly = Array.isArray(data.hourly) ? data.hourly : [];
-      const maxTot = Math.max(60, ...hourly.map((h) => (h.active_seconds || 0) + (h.idle_seconds || 0)));
-      stHourlyChart.innerHTML = hourly
-        .map((h) => {
-          const actPct = Math.min(100, Math.round(((h.active_seconds || 0) * 100) / maxTot));
-          const idlPct = Math.min(100 - actPct, Math.round(((h.idle_seconds || 0) * 100) / maxTot));
-          const hh = String(h.hour).padStart(2, '0');
-          const tip = `${hh}:00 - Activo: ${formatAccumulatedTime(h.active_seconds || 0)} | Inactivo: ${formatAccumulatedTime(h.idle_seconds || 0)} | Cambios: ${h.switches_count || 0}`;
-          const showLbl = h.hour % 3 === 0 ? hh : '';
-          return `<div class="st-hour-col" title="${escapeHtml(tip)}">
-            <div class="st-hour-stack">
-              <div class="st-bar-idle" style="height:${idlPct}%"></div>
-              <div class="st-bar-active" style="height:${actPct}%"></div>
-            </div>
-            <span class="st-hour-lbl">${showLbl}</span>
-          </div>`;
-        })
-        .join('');
-    }
+    stRenderHourly(Array.isArray(data.hourly) ? data.hourly : []);
 
     const cats = Array.isArray(data.categories) ? data.categories : [];
+    stRenderFocusScore(cats);
     if (stCategoryBar && stCategoryLegend) {
       if (cats.length === 0) {
         stCategoryBar.innerHTML = '';
@@ -998,42 +1292,9 @@
       }
     }
 
-    if (stAppsList) {
-      const apps = Array.isArray(data.apps) ? data.apps : [];
-      if (apps.length === 0) {
-        stAppsList.innerHTML = '<p class="muted-text">Aun no hay aplicaciones o pestanas registradas en este rango.</p>';
-      } else {
-        stAppsList.innerHTML = apps
-          .map((ap, idx) => {
-            const col = getCategoryColor(ap.category);
-            const resRows = (ap.resources || [])
-              .map(
-                (r) => `<div class="st-res-row">
-                  <span class="st-res-title" title="${escapeHtml(r.resource_title)}">${escapeHtml(r.resource_title)}</span>
-                  <span class="st-res-meta">${r.switches_count || 0} apertura${r.switches_count === 1 ? '' : 's'} · <strong>${escapeHtml(formatAccumulatedTime(r.seconds || 0))}</strong></span>
-                  <button type="button" class="st-res-link-btn js-st-open-captures" data-app="${escapeHtml(ap.app_name)}" data-res="${escapeHtml(r.resource_title)}">Ver capturas</button>
-                </div>`
-              )
-              .join('');
-            return `<details class="st-app-details" ${idx === 0 ? 'open' : ''}>
-              <summary class="st-app-summary">
-                <div class="st-app-left">
-                  <svg class="st-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"/></svg>
-                  <span class="st-app-title" title="${escapeHtml(ap.app_name)}">${escapeHtml(ap.app_name)}</span>
-                  <span class="st-app-cat-pill">${escapeHtml(ap.category)}</span>
-                </div>
-                <div class="st-app-bar-wrap"><div class="st-app-bar-fill" style="width:${ap.percent}%; background:${col}"></div></div>
-                <div class="st-app-right">
-                  <span class="st-switches-pill">${ap.switches_count || 0} cambios</span>
-                  <span class="st-app-dur">${escapeHtml(formatAccumulatedTime(ap.total_seconds || 0))}</span>
-                </div>
-              </summary>
-              <div class="st-res-list">${resRows}</div>
-            </details>`;
-          })
-          .join('');
-      }
-    }
+    stLastApps = Array.isArray(data.apps) ? data.apps : [];
+    stRenderTopCompare(stLastApps);
+    stRenderAppsExplorer();
   }
 
   async function loadDailyMetrics() {
@@ -2312,6 +2573,7 @@
         state.timezone = msg.timezone;
         if (timezoneSelect) timezoneSelect.value = state.timezone;
         if (metricsDateInput) metricsDateInput.value = getTodayInTimezone(state.timezone);
+        if (stDatePicker) stDatePicker.value = metricsDateInput ? metricsDateInput.value : getTodayInTimezone(state.timezone);
         updateLiveClock();
         return;
       }
@@ -2645,17 +2907,89 @@
       loadDailyMetrics();
     });
   }
-  [stPeriodDayBtn, stPeriod7dBtn].forEach((btn) => {
-    if (!btn) return;
+  stPeriodBtns.forEach((btn) => {
     btn.addEventListener('click', () => {
-      stCurrentPeriod = btn.dataset.period || 'day';
-      if (stPeriodDayBtn) stPeriodDayBtn.classList.toggle('active', stCurrentPeriod === 'day');
-      if (stPeriod7dBtn) stPeriod7dBtn.classList.toggle('active', stCurrentPeriod === '7d');
-      loadScreenTimeAnalytics();
+      const key = btn.dataset.period || 'day';
+      const today = getTodayInTimezone(state.timezone);
+      if (key === '7d') {
+        stCurrentPeriod = '7d';
+        loadScreenTimeAnalytics();
+        return;
+      }
+      stCurrentPeriod = 'day';
+      const target = key === 'yesterday' ? stShiftIsoDate(today, -1) : today;
+      const changed = stGetSelectedDate() !== target;
+      stSetSelectedDate(target);
+      // Si cambia la fecha se recarga tambien la tabla de Metricas Diarias (fecha compartida).
+      if (changed) loadDailyMetrics();
+      else loadScreenTimeAnalytics();
+    });
+  });
+  if (stDatePicker) {
+    stDatePicker.value = stGetSelectedDate();
+    stDatePicker.addEventListener('change', () => {
+      if (!stDatePicker.value) return;
+      stSetSelectedDate(stDatePicker.value);
+      loadDailyMetrics();
+    });
+  }
+  if (stRefreshBtn) {
+    stRefreshBtn.addEventListener('click', () => loadDailyMetrics());
+  }
+  if (stHourlyChart) {
+    stHourlyChart.addEventListener('mouseover', (e) => {
+      const col = e.target.closest('.st-hour-col');
+      if (col) stShowHourTooltip(col);
+    });
+    stHourlyChart.addEventListener('mouseleave', stHideHourTooltip);
+    stHourlyChart.addEventListener('focusin', (e) => {
+      const col = e.target.closest('.st-hour-col');
+      if (col) stShowHourTooltip(col);
+    });
+    stHourlyChart.addEventListener('focusout', stHideHourTooltip);
+  }
+  if (stAppSearch) {
+    stAppSearch.addEventListener('input', () => {
+      stSearchQuery = stAppSearch.value || '';
+      stRenderAppsExplorer();
+    });
+    stAppSearch.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && stAppSearch.value) {
+        stAppSearch.value = '';
+        stSearchQuery = '';
+        stRenderAppsExplorer();
+      }
+    });
+  }
+  if (stCatFilterChips) {
+    stCatFilterChips.addEventListener('click', (e) => {
+      const chip = e.target.closest('.st-chip');
+      if (!chip) return;
+      stSetCatFilter(chip.dataset.cat);
+      stRenderAppsExplorer();
+    });
+  }
+  [stTopWork, stTopDistractions].forEach((box) => {
+    if (!box) return;
+    box.addEventListener('click', (e) => {
+      const item = e.target.closest('.js-st-top-item');
+      if (!item || !stAppSearch) return;
+      stAppSearch.value = item.dataset.app || '';
+      stSearchQuery = stAppSearch.value;
+      stSetCatFilter('ALL');
+      stRenderAppsExplorer();
+      stAppSearch.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
   });
   if (stAppsList) {
     stAppsList.addEventListener('click', (e) => {
+      if (e.target.closest('.js-st-clear-filters')) {
+        if (stAppSearch) stAppSearch.value = '';
+        stSearchQuery = '';
+        stSetCatFilter('ALL');
+        stRenderAppsExplorer();
+        return;
+      }
       const capBtn = e.target.closest('.js-st-open-captures');
       if (!capBtn) return;
       e.preventDefault();
@@ -5162,6 +5496,7 @@
       if (metricsDateInput) {
         metricsDateInput.value = getTodayInTimezone(nextTz);
       }
+      if (stDatePicker && metricsDateInput) stDatePicker.value = metricsDateInput.value;
       try {
         await authFetch('/api/settings/timezone', {
           method: 'POST',

@@ -841,21 +841,38 @@
             <p id="st-subtitle-label" class="muted-text st-subtitle">Desglose horario, categorias y pestanas activas</p>
           </div>
         </div>
-        <div class="panel-controls">
-          <div class="control-select-wrap">
+        <div class="panel-controls st-controls-bar">
+          <div class="control-select-wrap st-ctrl-device">
+            <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="4" width="20" height="13" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+            </svg>
             <select id="st-device-select" class="toolbar-select" aria-label="Filtrar equipo">
               <option value="ALL">Todos los equipos</option>
             </select>
           </div>
           <div class="st-segmented" role="group" aria-label="Periodo de analisis">
-            <button type="button" id="st-period-day" class="st-seg-btn active" data-period="day">Dia</button>
+            <button type="button" id="st-period-day" class="st-seg-btn active" data-period="day">Hoy</button>
+            <button type="button" id="st-period-yesterday" class="st-seg-btn" data-period="yesterday">Ayer</button>
             <button type="button" id="st-period-7d" class="st-seg-btn" data-period="7d">7 dias</button>
           </div>
+          <div class="control-select-wrap st-ctrl-date">
+            <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect width="18" height="18" x="3" y="4" rx="2" ry="2"/>
+              <line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/>
+            </svg>
+            <input id="st-date-picker" type="date" class="toolbar-select" aria-label="Fecha de analisis" />
+          </div>
+          <button type="button" id="st-refresh-btn" class="st-icon-btn" title="Actualizar ahora" aria-label="Actualizar ahora">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+            </svg>
+          </button>
         </div>
       </div>
 
       <div class="st-body">
-        <div class="st-kpi-grid">
+        <div id="st-kpi-grid" class="st-kpi-grid">
           <div class="st-kpi-box">
             <span class="st-kpi-label">TIEMPO ACTIVO EN PANTALLA</span>
             <div class="st-kpi-main-row">
@@ -871,6 +888,14 @@
             <span class="st-kpi-label">CAMBIOS DE APP / PESTANA</span>
             <strong id="st-kpi-switches" class="st-kpi-value st-kpi-accent">0</strong>
           </div>
+          <div class="st-kpi-box st-kpi-score-box" title="Tiempo productivo / (productivo + distractores). La navegacion general se considera neutral.">
+            <span class="st-kpi-label">INDICE DE ENFOQUE</span>
+            <div class="st-kpi-main-row">
+              <strong id="st-kpi-score" class="st-kpi-value">---</strong>
+              <span id="st-kpi-score-badge" class="st-score-badge st-score-none">Sin datos</span>
+            </div>
+            <div class="st-score-meter" aria-hidden="true"><div id="st-kpi-score-fill" class="st-score-meter-fill"></div></div>
+          </div>
         </div>
 
         <div class="st-charts-grid">
@@ -880,9 +905,17 @@
               <div class="st-mini-legend">
                 <span><i class="st-dot st-dot-active"></i>Activo</span>
                 <span><i class="st-dot st-dot-idle"></i>Inactivo</span>
+                <span><i class="st-dot st-dot-workday"></i>Jornada 08-18h</span>
               </div>
             </div>
+            <div class="st-peak-row">
+              <span id="st-peak-hour" class="st-peak-badge st-peak-empty">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+                <span class="st-peak-text">Hora pico: ---</span>
+              </span>
+            </div>
             <div id="st-hourly-chart" class="st-hourly-bars"></div>
+            <div id="st-hour-tooltip" class="st-hour-tooltip hidden" role="tooltip"></div>
           </div>
 
           <div class="st-chart-card">
@@ -894,9 +927,50 @@
           </div>
         </div>
 
+        <div class="st-top-compare-grid">
+          <div class="st-top-card st-top-card-work">
+            <div class="st-top-card-head">
+              <span class="st-top-icon st-top-icon-work">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+              </span>
+              <div>
+                <h3>Top Trabajo</h3>
+                <p class="muted-text">Herramientas productivas con mas tiempo</p>
+              </div>
+            </div>
+            <div id="st-top-work" class="st-top-list"><p class="muted-text st-top-empty">Cargando...</p></div>
+          </div>
+          <div class="st-top-card st-top-card-dist">
+            <div class="st-top-card-head">
+              <span class="st-top-icon st-top-icon-dist">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+              </span>
+              <div>
+                <h3>Top Distractores</h3>
+                <p class="muted-text">Ocio, redes y entretenimiento</p>
+              </div>
+            </div>
+            <div id="st-top-distractions" class="st-top-list"><p class="muted-text st-top-empty">Cargando...</p></div>
+          </div>
+        </div>
+
         <div class="st-apps-section">
           <div class="st-section-head">
             <span>Aplicaciones, Pestanas y Documentos (clic para desglosar)</span>
+            <span id="st-apps-count" class="st-apps-count"></span>
+          </div>
+          <div class="st-apps-toolbar">
+            <div class="st-app-search-wrap">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input id="st-app-search" type="search" placeholder="Buscar aplicacion, pestana o documento..." autocomplete="off" aria-label="Buscar aplicacion o pestana" />
+            </div>
+            <div id="st-cat-filter-chips" class="st-cat-chips" role="group" aria-label="Filtrar por categoria">
+              <button type="button" class="st-chip active" data-cat="ALL">Todas</button>
+              <button type="button" class="st-chip" data-cat="Productividad y Gestion">Productividad</button>
+              <button type="button" class="st-chip" data-cat="Desarrollo y Sistemas">Desarrollo</button>
+              <button type="button" class="st-chip" data-cat="Comunicacion">Comunicacion</button>
+              <button type="button" class="st-chip" data-cat="Entretenimiento y Redes">Entretenimiento</button>
+            </div>
           </div>
           <div id="st-apps-list" class="st-apps-list">
             <p class="muted-text">Cargando estadisticas de tiempo en pantalla...</p>
