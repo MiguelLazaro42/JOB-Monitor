@@ -25,7 +25,7 @@ from fastapi.templating import Jinja2Templates
 
 import config
 from database import AVAILABLE_TIMEZONES, MASTER_TENANT_ID, db, intel_get_status, intel_start
-from service_catalog import classify_packet_profile
+from service_catalog import classify_packet_profile, infer_site_from_window_title, is_browser_name
 from models import (
     AgentConnection,
     AliasUpdateRequest,
@@ -1674,7 +1674,7 @@ def _save_capture_bytes(agent_id: str, sct_b64: str, prefix: str = "ev") -> Opti
         return None
 
 
-NETWORK_ALERT_CATEGORIES = {"STREAMING", "SOCIAL", "AI", "CLOUD", "REMOTE", "MESSAGING"}
+NETWORK_ALERT_CATEGORIES = {"STREAMING", "SOCIAL", "AI", "CLOUD", "REMOTE", "MESSAGING", "SHOPPING", "GAMING"}
 NETWORK_ALERT_THROTTLE_SECONDS = 15 * 60
 NETWORK_CATEGORY_LABELS = {
     "STREAMING": "Streaming / Video",
@@ -1683,8 +1683,64 @@ NETWORK_CATEGORY_LABELS = {
     "CLOUD": "Almacenamiento Cloud",
     "REMOTE": "Acceso Remoto",
     "MESSAGING": "Mensajería",
+    "SHOPPING": "Compras / E-commerce",
+    "GAMING": "Videojuegos",
 }
 _network_alert_last: Dict[tuple, float] = {}
+
+
+_GENERIC_BROWSER_INFRA = (
+    "google.com", "cloudfront.net", "aws.amazon.com", "amazonaws.com", "akamaitechnologies.com",
+    "akamai.com", "akamaiedge.net", "fastly.com", "fastly.net", "cloudflare.com", "cloudflare.net",
+    "uninet.net.mx", "gstatic.com", "googleapis.com", "1e100.net",
+)
+
+
+def _is_generic_infra_entry(d: dict) -> bool:
+    dom = str(d.get("domain") or "").strip().lower().rstrip(".")
+    if not dom:
+        return False
+    if any(dom == k or dom.endswith("." + k) for k in _GENERIC_BROWSER_INFRA):
+        return True
+    parts = dom.split(".")
+    return len(parts) == 4 and all(p.isdigit() for p in parts)  # IP cruda
+
+
+def _inject_site_hint(domains: list, d_rx: int, d_tx: int, active_window: str, app_name: str, resource_title: str):
+    """Inyecta/desambigua en `domains` el sitio inferido del título de ventana (modifica la lista in situ)."""
+    combined_title = f"{active_window or ''} {resource_title or ''}".strip()
+    site_hint = infer_site_from_window_title(combined_title, app_name)
+    if not site_hint:
+        return
+    entries = [d for d in domains if isinstance(d, dict)]
+    if not (is_browser_name(app_name) or is_browser_name(combined_title)
+            or any(is_browser_name(str(d.get("app_name") or "")) for d in entries)):
+        return
+    site, cat = site_hint
+    if any(str(d.get("domain") or "").strip().lower() == site for d in entries):
+        return
+    browser_app = next(
+        (str(d.get("app_name")) for d in entries if is_browser_name(str(d.get("app_name") or ""))),
+        (app_name if is_browser_name(app_name) else "") or "Google Chrome",
+    )[:40]
+    relabel = [d for d in entries
+               if is_browser_name(str(d.get("app_name") or "")) and _is_generic_infra_entry(d)]
+    if relabel:
+        for d in relabel:
+            d["domain"] = site
+            d["category"] = cat
+            d["app_name"] = str(d.get("app_name") or browser_app)[:40]
+            d["confidence"] = max(int(d.get("confidence") or 0), 90)
+        return
+    conns = sum(int(d.get("connections", 1) or 1) for d in entries)
+    rx_b = int(d_rx * 0.7) if d_rx > 0 else 4096
+    tx_b = int(d_tx * 0.7) if d_tx > 0 else 1024
+    domains.append({
+        "domain": site, "app_name": browser_app, "category": cat,
+        "connections": max(2, conns // 2 or 2),
+        "rx_bytes": rx_b, "tx_bytes": tx_b, "estimated_bytes": rx_b + tx_b,
+        "focus_app": browser_app, "confidence": 90,
+    })
 
 
 async def _ingest_network_telemetry_slice(
@@ -1692,6 +1748,9 @@ async def _ingest_network_telemetry_slice(
     agent: AgentConnection,
     net_data: dict,
     custom_date: Optional[str] = None,
+    active_window: str = "",
+    app_name: str = "",
+    resource_title: str = "",
 ):
     if not isinstance(net_data, dict):
         return
@@ -1706,6 +1765,10 @@ async def _ingest_network_telemetry_slice(
     if not isinstance(domains, list):
         domains = []
     domains = domains[:100]
+
+    # Agentes sin actualizar: deducir el sitio desde el título de ventana y atribuirlo aquí
+    _inject_site_hint(domains, d_rx, d_tx, active_window or ("" if custom_date else getattr(agent, "active_window", "")),
+                      app_name, resource_title)
 
     # Perfil de paquete: usar el del agente o calcularlo aquí (agentes sin actualizar)
     packet_profile = net_data.get("packet_profile")
@@ -1937,6 +2000,19 @@ async def _ingest_focus_switch_payload(
         custom_timestamp=custom_ts or None,
     )
     await hub.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)
+
+    # Registrar el sitio de la pestaña de inmediato (sin esperar el siguiente tick de red)
+    site_hint = infer_site_from_window_title(f"{active_win} {res_title}", app_name)
+    if site_hint and (is_browser_name(app_name) or is_browser_name(active_win)):
+        try:
+            db.record_domain_activity_batch(agent_id, [{
+                "domain": site_hint[0], "app_name": app_name, "category": site_hint[1],
+                "connections": 3, "rx_bytes": 24576, "tx_bytes": 4096, "estimated_bytes": 28672,
+                "focus_app": app_name, "confidence": 95,
+            }], custom_date=custom_ts)
+        except Exception as e:
+            print(f"[Network] Error al registrar sitio desde cambio de foco: {e}")
+
     if not is_offline_replay:
         await hub.broadcast_telemetry_update(agent)
 
@@ -2065,7 +2141,11 @@ async def ws_agent_endpoint(websocket: WebSocket):
                             await hub.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)
 
                     if data.get("network"):
-                        await _ingest_network_telemetry_slice(agent_id, agent, data["network"])
+                        await _ingest_network_telemetry_slice(
+                            agent_id, agent, data["network"],
+                            active_window=str(raw_win or ""), app_name=str(app_name or ""),
+                            resource_title=str(data.get("resource_title") or ""),
+                        )
 
                     await hub.broadcast_telemetry_update(agent)
 

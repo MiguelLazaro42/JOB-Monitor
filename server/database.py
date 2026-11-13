@@ -2,10 +2,12 @@ import csv
 import hashlib
 import hmac
 import io
+import json
 import re
 import secrets
 import sqlite3
 import threading
+import time
 from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -15,9 +17,9 @@ from zoneinfo import ZoneInfo
 import config
 
 try:
-    from server.service_catalog import match_service_domain_or_ip
+    from server.service_catalog import match_service_domain_or_ip, infer_site_from_window_title, is_browser_name
 except ImportError:  # el servidor se ejecuta con server/ como directorio raíz
-    from service_catalog import match_service_domain_or_ip
+    from service_catalog import match_service_domain_or_ip, infer_site_from_window_title, is_browser_name
 
 try:
     from server.intel_resolver import get_or_enqueue_intel, get_status as intel_get_status, public_view as intel_public_view, start as intel_start, seed_existing_unknowns as intel_seed
@@ -1264,12 +1266,77 @@ class DatabaseManager:
             finally:
                 conn.close()
 
+    _site_backfill_last = 0.0
+
+    def backfill_window_sites_today(self, force: bool = False) -> int:
+        """Enriquece network_domains_daily de hoy con sitios deducidos de los logs WINDOW (máx. 1 vez/60 s).
+        Solo inserta pares (agent_id, dominio) aún ausentes, con la hora del log de ventana."""
+        mono = time.monotonic()
+        if not force and mono - self._site_backfill_last < 60:
+            return 0
+        self._site_backfill_last = mono
+        day = self._now_dt().strftime("%Y-%m-%d")
+        inserted = 0
+        try:
+            with self._lock:
+                conn = self._get_conn()
+                try:
+                    logs = conn.execute(
+                        "SELECT timestamp, agent_id, message, meta_json FROM device_logs "
+                        "WHERE category = 'WINDOW' AND timestamp >= ? ORDER BY id ASC",
+                        (day + " 00:00:00",),
+                    ).fetchall()
+                    known = {
+                        (r["agent_id"], r["domain"])
+                        for r in conn.execute("SELECT agent_id, domain FROM network_domains_daily WHERE date = ?", (day,))
+                    }
+                    rows = []
+                    for lg in logs:
+                        app, text = "", ""
+                        try:
+                            meta = json.loads(lg["meta_json"]) if lg["meta_json"] else {}
+                        except (TypeError, ValueError):
+                            meta = {}
+                        if isinstance(meta, dict) and (meta.get("app_name") or meta.get("active_window")):
+                            app = str(meta.get("app_name") or "")
+                            text = f"{meta.get('active_window') or ''} {meta.get('resource_title') or ''}"
+                        else:
+                            # "Cambio a 'App — título' (permanencia previa en '...')": ignorar la ventana previa
+                            text = (lg["message"] or "").split(" (permanencia previa", 1)[0]
+                        if not (is_browser_name(app) or is_browser_name(text)):
+                            continue
+                        hint = infer_site_from_window_title(text, app)
+                        if not hint or (lg["agent_id"], hint[0]) in known:
+                            continue
+                        known.add((lg["agent_id"], hint[0]))
+                        browser = (app or "Google Chrome").strip()[:80] or "Google Chrome"
+                        ts = lg["timestamp"]
+                        rows.append((day, lg["agent_id"], hint[0], browser, hint[1], 3, 28672, ts, ts,
+                                     0, "", browser[:40], 95, 24576, 4096, "OUTBOUND", 443))
+                    if rows:
+                        conn.executemany(
+                            """INSERT OR IGNORE INTO network_domains_daily
+                               (date, agent_id, domain, app_name, category, hit_count, estimated_bytes, first_seen_at,
+                                last_seen_at, keystrokes_count, last_packet_type, focus_app, confidence,
+                                rx_bytes, tx_bytes, direction, port)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            rows,
+                        )
+                        conn.commit()
+                        inserted = len(rows)
+                finally:
+                    conn.close()
+        except Exception as e:
+            print(f"[Network] Backfill de sitios desde logs WINDOW falló: {e}")
+        return inserted
+
     def get_network_dashboard_summary(
         self,
         date_str: Optional[str] = None,
         allowed_tenant_id: Optional[str] = None,
     ) -> dict:
         day = self._clean_date(date_str) or self._now_dt().strftime("%Y-%m-%d")
+        self.backfill_window_sites_today()
         intel_seed()  # backfill throttled de IPs/dominios sin resolver
         tenant_names = self.get_tenant_name_map()
         with self._lock:
@@ -1467,6 +1534,7 @@ class DatabaseManager:
         allowed_tenant_id: Optional[str] = None,
     ) -> List[dict]:
         day = self._clean_date(date_str) or self._now_dt().strftime("%Y-%m-%d")
+        self.backfill_window_sites_today()
         intel_seed()
         clauses = ["n.date = ?"]
         params: list = [day]

@@ -895,3 +895,141 @@ def classify_packet_profile(rx_kbps: float, tx_kbps: float, keystrokes_slice: in
         "confidence": confidence,
         "keystrokes_slice": ks,
     }
+
+
+# ---- Inferencia de sitio por título de ventana (servidor; espejo de agent/agent.py) ----
+import re as _re
+from typing import Optional
+
+_ZERO_WIDTH_RE = _re.compile("[\u200b\u200c\u200d\ufeff]")
+
+
+def strip_zero_width(text: str) -> str:
+    return _ZERO_WIDTH_RE.sub("", text or "")
+
+
+_BROWSER_KEYS = (
+    "chrome", "msedge", "edge", "brave", "safari", "firefox", "opera", "vivaldi",
+    "arc", "webkit.networking", "webkit", "chromium", "google",
+)
+_TITLE_SITE_RULES = (
+    # Streaming (específicos primero)
+    (('prime video', 'primevideo'), 'primevideo.com', 'STREAMING'),
+    (('youtube',), 'youtube.com', 'STREAMING'),
+    (('netflix',), 'netflix.com', 'STREAMING'),
+    (('twitch',), 'twitch.tv', 'STREAMING'),
+    (('kick',), 'kick.com', 'STREAMING'),
+    (('spotify',), 'spotify.com', 'STREAMING'),
+    (('disney+', 'disney plus', 'disneyplus'), 'disneyplus.com', 'STREAMING'),
+    (('hbo max', 'max |'), 'max.com', 'STREAMING'),
+    (('crunchyroll',), 'crunchyroll.com', 'STREAMING'),
+    (('vix',), 'vix.com', 'STREAMING'),
+    (('paramount+', 'paramount plus'), 'paramountplus.com', 'STREAMING'),
+    (('apple tv',), 'tv.apple.com', 'STREAMING'),
+    (('soundcloud',), 'soundcloud.com', 'STREAMING'),
+    (('deezer',), 'deezer.com', 'STREAMING'),
+    # Shopping
+    (('mercado libre', 'mercadolibre', 'meli'), 'mercadolibre.com', 'SHOPPING'),
+    (('mercado pago', 'mercadopago'), 'mercadopago.com', 'SHOPPING'),
+    (('amazon',), 'amazon.com', 'SHOPPING'),
+    (('aliexpress', 'ali express'), 'aliexpress.com', 'SHOPPING'),
+    (('temu',), 'temu.com', 'SHOPPING'),
+    (('shein',), 'shein.com', 'SHOPPING'),
+    (('shopee',), 'shopee.com', 'SHOPPING'),
+    (('ebay',), 'ebay.com', 'SHOPPING'),
+    (('liverpool',), 'liverpool.com.mx', 'SHOPPING'),
+    (('walmart',), 'walmart.com.mx', 'SHOPPING'),
+    (('coppel',), 'coppel.com', 'SHOPPING'),
+    (("sam's club", 'sams club'), 'sams.com.mx', 'SHOPPING'),
+    (('costco',), 'costco.com.mx', 'SHOPPING'),
+    (('home depot',), 'homedepot.com.mx', 'SHOPPING'),
+    # Social
+    (('tiktok', 'tik tok'), 'tiktok.com', 'SOCIAL'),
+    (('facebook',), 'facebook.com', 'SOCIAL'),
+    (('instagram',), 'instagram.com', 'SOCIAL'),
+    (('threads',), 'threads.net', 'SOCIAL'),
+    (('linkedin',), 'linkedin.com', 'SOCIAL'),
+    (('pinterest',), 'pinterest.com', 'SOCIAL'),
+    (('reddit',), 'reddit.com', 'SOCIAL'),
+    ((' / x', 'twitter', 'x.com'), 'x.com', 'SOCIAL'),
+    # Messaging
+    (('whatsapp',), 'whatsapp.com', 'MESSAGING'),
+    (('telegram',), 'telegram.org', 'MESSAGING'),
+    (('discord',), 'discord.com', 'MESSAGING'),
+    (('messenger',), 'messenger.com', 'MESSAGING'),
+    (('signal',), 'signal.org', 'MESSAGING'),
+    # AI
+    (('chatgpt', 'openai'), 'chatgpt.com', 'AI'),
+    (('claude', 'anthropic'), 'claude.ai', 'AI'),
+    (('gemini', 'google ai'), 'gemini.google.com', 'AI'),
+    (('copilot',), 'copilot.microsoft.com', 'AI'),
+    (('perplexity',), 'perplexity.ai', 'AI'),
+    (('deepseek',), 'deepseek.com', 'AI'),
+    (('grok',), 'grok.com', 'AI'),
+    # Work / Cloud
+    (('canva',), 'canva.com', 'WORK'),
+    (('figma',), 'figma.com', 'WORK'),
+    (('notion',), 'notion.so', 'WORK'),
+    (('trello',), 'trello.com', 'WORK'),
+    (('asana',), 'asana.com', 'WORK'),
+    (('jira', 'confluence', 'atlassian'), 'atlassian.com', 'WORK'),
+    (('monday.com',), 'monday.com', 'WORK'),
+    (('clickup',), 'clickup.com', 'WORK'),
+    (('slack',), 'slack.com', 'WORK'),
+    (('microsoft teams', 'teams'), 'teams.microsoft.com', 'WORK'),
+    (('zoom',), 'zoom.us', 'WORK'),
+    (('github',), 'github.com', 'WORK'),
+    (('gitlab',), 'gitlab.com', 'WORK'),
+    (('stack overflow', 'stackoverflow'), 'stackoverflow.com', 'WORK'),
+    (('gmail', 'correo de google'), 'mail.google.com', 'WORK'),
+    (('outlook', 'office 365', 'microsoft 365'), 'office365.com', 'WORK'),
+    (('google meet', 'meet.google', 'meet -'), 'meet.google.com', 'WORK'),
+    (('google docs', 'documentos de google', 'hojas de cálculo de google', 'presentaciones de google'), 'docs.google.com', 'CLOUD'),
+    (('google drive', 'mi unidad - google drive'), 'drive.google.com', 'CLOUD'),
+    (('onedrive',), 'onedrive.live.com', 'CLOUD'),
+    (('dropbox',), 'dropbox.com', 'CLOUD'),
+    (('wetransfer',), 'wetransfer.com', 'CLOUD'),
+    (('mega.nz', 'mega -'), 'mega.nz', 'CLOUD'),
+    # Gaming
+    (('roblox',), 'roblox.com', 'GAMING'),
+    (('steam',), 'steampowered.com', 'GAMING'),
+    (('epic games',), 'epicgames.com', 'GAMING'),
+)
+_TITLE_GENERIC_WORDS = frozenset((
+    "para", "como", "todo", "home", "page", "login", "personal", "microsoft", "edge", "chrome", "firefox",
+    "safari", "brave", "opera", "ventana", "pestaña", "nueva",
+))
+_TITLE_WORD_RE = _re.compile(r"[a-z0-9áéíóúñ]{4,}")
+_EXPLICIT_DOMAIN_RE = _re.compile(
+    r"\b((?:[a-z0-9-]+\.)+(?:com|net|org|io|tv|co|app|dev|ai|edu|gob|gov|mx|ar|es|info|me|us|tech|cloud|xyz))\b",
+    _re.IGNORECASE,
+)
+
+
+def is_browser_name(name: str) -> bool:
+    low = strip_zero_width(name).lower()
+    return bool(low) and any(k in low for k in _BROWSER_KEYS)
+
+
+def infer_site_from_window_title(window_title: str, app_name: str = "") -> Optional[tuple]:
+    """Devuelve (dominio, categoría) deducido del título de ventana, o None."""
+    title = strip_zero_width(window_title).strip().lower()
+    app_name = strip_zero_width(app_name)
+    if not title:
+        return None
+    for keys, domain, cat in _TITLE_SITE_RULES:
+        if any(k in title for k in keys):
+            return domain, cat
+    m = _EXPLICIT_DOMAIN_RE.search(title)
+    if m:
+        clean, cat = match_service_domain_or_ip(m.group(1), app_name)
+        if clean:
+            return clean, cat
+    for word in _TITLE_WORD_RE.findall(title):
+        if word in _TITLE_GENERIC_WORDS:
+            continue
+        for tld in (".com", ".com.mx", ".org", ".tv", ".ai"):
+            hit = ADGUARD_DOMAIN_CATALOG.get(word + tld)
+            if hit and hit[0] == word + tld:
+                return hit
+    return None
