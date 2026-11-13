@@ -1728,8 +1728,75 @@ class DatabaseManager:
                 for ar in apps_rows:
                     apps_by_agent.setdefault(ar["agent_id"], []).append({
                         "app_name": ar["app_name"],
-                        "seconds": ar["total_seconds"],
+                        "seconds": ar["total_seconds"] or 0,
                     })
+
+                # MF-BE01: agregacion horaria y switches por agente
+                hourly_rows = conn.execute(
+                    """
+                    SELECT agent_id, hour, SUM(active_seconds) AS act, SUM(idle_seconds) AS idl, SUM(switches_count) AS sw
+                    FROM screen_time_hourly
+                    WHERE date = ?
+                    GROUP BY agent_id, hour
+                    """,
+                    (target_date,),
+                ).fetchall()
+                hourly_by_agent: Dict[str, dict] = {}
+                for hr in hourly_rows:
+                    h = hr["hour"]
+                    if h is None or not (0 <= int(h) <= 23):
+                        continue
+                    slot = hourly_by_agent.setdefault(hr["agent_id"], {
+                        "active": [0] * 24,
+                        "idle": [0] * 24,
+                        "switches": 0,
+                    })
+                    slot["active"][int(h)] += int(hr["act"] or 0)
+                    slot["idle"][int(h)] += int(hr["idl"] or 0)
+                    slot["switches"] += int(hr["sw"] or 0)
+
+                # MF-BE02: categorias y top apps categorizadas
+                res_rows = conn.execute(
+                    """
+                    SELECT agent_id, app_name, COALESCE(MAX(category_tag), 'Productividad y Gestion') AS cat,
+                           SUM(total_seconds) AS secs, SUM(switches_count) AS sw
+                    FROM resource_usage_daily
+                    WHERE date = ?
+                    GROUP BY agent_id, app_name
+                    ORDER BY secs DESC
+                    """,
+                    (target_date,),
+                ).fetchall()
+                res_by_agent: Dict[str, List[dict]] = {}
+                for rr in res_rows:
+                    res_by_agent.setdefault(rr["agent_id"], []).append({
+                        "app_name": rr["app_name"],
+                        "category": rr["cat"] or "Productividad y Gestion",
+                        "seconds": int(rr["secs"] or 0),
+                        "switches_count": int(rr["sw"] or 0),
+                    })
+
+                # MF-BE03: consumo de red diario
+                net_rows = conn.execute(
+                    """
+                    SELECT agent_id, COALESCE(SUM(tx_bytes), 0) AS tx, COALESCE(SUM(rx_bytes), 0) AS rx
+                    FROM network_usage_daily
+                    WHERE date = ?
+                    GROUP BY agent_id
+                    """,
+                    (target_date,),
+                ).fetchall()
+                net_by_agent = {
+                    nr["agent_id"]: (int(nr["rx"] or 0), int(nr["tx"] or 0)) for nr in net_rows
+                }
+
+                productive_cats = {
+                    "Productividad y Gestion",
+                    "Desarrollo y Sistemas",
+                    "Comunicacion",
+                    "Diseno y Creatividad",
+                }
+                distractor_cats = {"Entretenimiento y Redes"}
 
                 result = []
                 for dev in devices_rows:
@@ -1741,16 +1808,67 @@ class DatabaseManager:
                         "idle_seconds": 0,
                         "away_alerts_count": 0,
                     })
-                    agent_apps = apps_by_agent.get(aid, [])
-                    total_app_secs = sum(x["seconds"] for x in agent_apps) or 1
+
+                    # Horario
+                    hslot = hourly_by_agent.get(aid)
+                    hourly_active = list(hslot["active"]) if hslot else [0] * 24
+                    hourly_idle = list(hslot["idle"]) if hslot else [0] * 24
+                    switches_total = hslot["switches"] if hslot else 0
+                    agent_res = res_by_agent.get(aid, [])
+                    if switches_total == 0 and agent_res:
+                        switches_total = sum(x["switches_count"] for x in agent_res)
+                    peak_hour = None
+                    peak_val = 0
+                    for h_idx, val in enumerate(hourly_active):
+                        if val > peak_val:
+                            peak_val = val
+                            peak_hour = h_idx
+
+                    # Apps categorizadas (fallback a window_usage_daily)
+                    if agent_res:
+                        app_items = agent_res
+                    else:
+                        app_items = [
+                            {
+                                "app_name": x["app_name"],
+                                "category": "Productividad y Gestion",
+                                "seconds": x["seconds"],
+                                "switches_count": 0,
+                            }
+                            for x in apps_by_agent.get(aid, [])
+                        ]
+                    total_app_secs = sum(x["seconds"] for x in app_items)
+                    denom = total_app_secs or 1
+
+                    cat_totals: Dict[str, int] = {}
+                    for x in app_items:
+                        cat_totals[x["category"]] = cat_totals.get(x["category"], 0) + x["seconds"]
+                    categories = [
+                        {
+                            "category": c,
+                            "seconds": secs,
+                            "percent": round((secs * 100.0) / denom) if total_app_secs else 0,
+                        }
+                        for c, secs in sorted(cat_totals.items(), key=lambda kv: kv[1], reverse=True)
+                    ]
+                    productive_seconds = sum(v for c, v in cat_totals.items() if c in productive_cats)
+                    distractor_seconds = sum(v for c, v in cat_totals.items() if c in distractor_cats)
+                    neutral_seconds = max(0, total_app_secs - productive_seconds - distractor_seconds)
+                    pd_sum = productive_seconds + distractor_seconds
+                    focus_score = round(productive_seconds * 100.0 / pd_sum) if pd_sum > 0 else None
+
                     top_apps = []
-                    for item in agent_apps[:4]:
-                        pct = round((item["seconds"] * 100.0) / total_app_secs)
+                    for item in app_items[:6]:
+                        pct = round((item["seconds"] * 100.0) / denom)
                         top_apps.append({
                             "app_name": item["app_name"],
                             "seconds": item["seconds"],
                             "percent": max(1, pct),
+                            "category": item["category"],
+                            "switches_count": item["switches_count"],
                         })
+
+                    net_rx, net_tx = net_by_agent.get(aid, (0, 0))
 
                     result.append({
                         "agent_id": aid,
@@ -1767,6 +1885,18 @@ class DatabaseManager:
                         "idle_seconds": s["idle_seconds"],
                         "away_alerts_count": s["away_alerts_count"],
                         "top_apps": top_apps,
+                        "hourly_active": hourly_active,
+                        "hourly_idle": hourly_idle,
+                        "switches_count": switches_total,
+                        "peak_hour": peak_hour,
+                        "categories": categories,
+                        "productive_seconds": productive_seconds,
+                        "distractor_seconds": distractor_seconds,
+                        "neutral_seconds": neutral_seconds,
+                        "focus_score": focus_score,
+                        "net_rx_bytes": net_rx,
+                        "net_tx_bytes": net_tx,
+                        "net_total_bytes": net_rx + net_tx,
                     })
                 return result
             finally:

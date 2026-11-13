@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=20261113-v15" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261113-v16" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -828,6 +828,39 @@
   <!-- VISTA 3: MÉTRICAS DE ACTIVIDAD E INACTIVIDAD DEL DÍA                    -->
   <!-- ======================================================================= -->
   <section id="view-activity" class="main-container hidden">
+    <!-- SUB-NAVEGACION DE PRODUCTIVIDAD -->
+    <div class="act-subnav-bar">
+      <div class="act-subnav-tabs" role="tablist" aria-label="Vistas de productividad">
+        <button type="button" class="act-subtab-btn active" data-act-subview="screentime" role="tab" aria-selected="true">
+          <svg class="icon-xs" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          <span>Tiempo en Pantalla</span>
+        </button>
+        <button type="button" class="act-subtab-btn" data-act-subview="dailymetrics" role="tab" aria-selected="false">
+          <svg class="icon-xs" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          <span>Métricas Diarias y Jornada</span>
+        </button>
+        <button type="button" class="act-subtab-btn" data-act-subview="worktopology" role="tab" aria-selected="false">
+          <svg class="icon-xs" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2.5"/><circle cx="5" cy="18" r="2.5"/><circle cx="19" cy="12" r="2.5"/><path d="M7.5 6c5 0 5 6 9 6M7.5 18c5 0 5-6 9-6"/></svg>
+          <span>Topología de Productividad</span>
+        </button>
+      </div>
+      <div class="act-subnav-meta">
+        <div class="control-select-wrap act-date-wrap">
+          <svg class="icon-sm muted-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect width="18" height="18" x="3" y="4" rx="2" ry="2"/>
+            <line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/>
+          </svg>
+          <input id="metrics-date-input" type="date" class="toolbar-select" aria-label="Fecha de métricas" />
+        </div>
+        <button id="refresh-metrics-btn" type="button" class="btn btn-secondary btn-sm act-refresh-btn">
+          <svg class="icon-sm" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><polyline points="21 3 21 8 16 8"/></svg>
+          <span>Actualizar</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- SUB-VISTA 1: TIEMPO EN PANTALLA -->
+    <div id="act-subview-screentime" class="act-subview">
     <div id="screen-time-card" class="panel-card st-panel-card">
       <div class="panel-card-header">
         <div class="st-title-group">
@@ -971,44 +1004,171 @@
       </div>
     </div>
 
-    <div class="panel-card">
-      <div class="panel-card-header">
-        <h2>Métricas Diarias</h2>
-        <div class="panel-controls">
-          <div class="control-select-wrap">
-            <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect width="18" height="18" x="3" y="4" rx="2" ry="2"/>
-              <line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/>
-            </svg>
-            <input id="metrics-date-input" type="date" class="toolbar-select" />
+    </div><!-- /#act-subview-screentime -->
+
+    <!-- SUB-VISTA 2: METRICAS DIARIAS Y JORNADA -->
+    <div id="act-subview-dailymetrics" class="act-subview hidden">
+      <div id="dm-kpi-grid" class="dm-kpi-grid">
+        <div class="dm-kpi-box">
+          <span class="dm-kpi-icon dm-kpi-icon-online">
+            <svg class="icon-sm" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          </span>
+          <div class="dm-kpi-text">
+            <span class="dm-kpi-label">EQUIPOS CON ACTIVIDAD</span>
+            <strong id="dm-kpi-online" class="dm-kpi-value">0</strong>
+            <span id="dm-kpi-online-sub" class="dm-kpi-sub">0 conectados ahora</span>
           </div>
-          <button id="refresh-metrics-btn" type="button" class="btn btn-secondary btn-sm">
-            <span>Actualizar</span>
-          </button>
+        </div>
+        <div class="dm-kpi-box">
+          <span class="dm-kpi-icon dm-kpi-icon-active">
+            <svg class="icon-sm" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          </span>
+          <div class="dm-kpi-text">
+            <span class="dm-kpi-label">TIEMPO ACTIVO DE PLANTILLA</span>
+            <strong id="dm-kpi-active-total" class="dm-kpi-value">0m</strong>
+            <span id="dm-kpi-active-avg" class="dm-kpi-sub">Promedio 0m por colaborador</span>
+          </div>
+        </div>
+        <div class="dm-kpi-box dm-kpi-focus-box">
+          <span class="dm-kpi-icon dm-kpi-icon-focus">
+            <svg class="icon-sm" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+          </span>
+          <div class="dm-kpi-text">
+            <span class="dm-kpi-label">ÍNDICE DE ENFOQUE GLOBAL</span>
+            <div class="dm-kpi-main-row">
+              <strong id="dm-kpi-focus-avg" class="dm-kpi-value">---</strong>
+              <span id="dm-kpi-focus-badge" class="st-score-badge st-score-none">Sin datos</span>
+            </div>
+            <div class="st-score-meter" aria-hidden="true"><div id="dm-kpi-focus-fill" class="st-score-meter-fill"></div></div>
+          </div>
+        </div>
+        <div class="dm-kpi-box">
+          <span class="dm-kpi-icon dm-kpi-icon-switch">
+            <svg class="icon-sm" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+          </span>
+          <div class="dm-kpi-text">
+            <span class="dm-kpi-label">CAMBIOS DE VENTANA</span>
+            <strong id="dm-kpi-switches-total" class="dm-kpi-value">0</strong>
+            <span id="dm-kpi-alerts-sub" class="dm-kpi-sub">0 alertas · Red 0 B</span>
+          </div>
         </div>
       </div>
 
-      <div class="table-wrap">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Equipo</th>
-              <th>Estado</th>
-              <th>Inicio</th>
-              <th>Activo</th>
-              <th>Inactivo</th>
-              <th>Aplicaciones</th>
-              <th>Acciones</th>
-            </tr>
-          </thead>
-          <tbody id="metrics-tbody">
-            <tr>
-              <td colspan="7" class="empty-row">Sin registros hoy.</td>
-            </tr>
-          </tbody>
-        </table>
+      <div id="dm-swimlanes-card" class="panel-card dm-swimlanes-card">
+        <div class="dm-card-head">
+          <h3>Mapa Horario de Jornada por Colaborador (00h - 23h)</h3>
+          <div class="dm-heat-legend">
+            <span><i class="dm-heat-dot dm-heat-0"></i>Inactivo</span>
+            <span><i class="dm-heat-dot dm-heat-1"></i>Baja &lt;15m</span>
+            <span><i class="dm-heat-dot dm-heat-2"></i>Media 15-35m</span>
+            <span><i class="dm-heat-dot dm-heat-3"></i>Intensa &gt;35m</span>
+            <span><i class="dm-heat-dot dm-heat-idle"></i>Pausa/Idle</span>
+          </div>
+        </div>
+        <div id="dm-swimlanes-wrap" class="dm-swimlanes-wrap">
+          <p class="muted-text">Cargando jornada...</p>
+        </div>
+        <div id="dm-swimlane-tooltip" class="dm-swimlane-tooltip hidden" role="tooltip"></div>
       </div>
-    </div>
+
+      <div id="dm-charts-grid" class="dm-charts-grid">
+        <div class="panel-card dm-comp-card">
+          <div class="dm-card-head">
+            <h3>Balance de Eficiencia por Colaborador</h3>
+            <div class="dm-comp-legend">
+              <span><i class="dm-comp-dot dm-seg-prod"></i>Productivo</span>
+              <span><i class="dm-comp-dot dm-seg-neutral"></i>Neutro</span>
+              <span><i class="dm-comp-dot dm-seg-dist"></i>Distracción</span>
+              <span><i class="dm-comp-dot dm-seg-idle"></i>Inactivo</span>
+            </div>
+          </div>
+          <div id="dm-Efficiency-bars" class="dm-comp-bars"><p class="muted-text">Sin datos.</p></div>
+        </div>
+        <div class="panel-card dm-comp-card">
+          <div class="dm-card-head">
+            <h3>Distribución Global por Categorías</h3>
+          </div>
+          <div id="dm-org-donut" class="dm-org-donut"><p class="muted-text">Sin datos.</p></div>
+        </div>
+      </div>
+
+      <div id="dm-table-card" class="panel-card dm-table-card">
+        <div class="dm-card-head dm-table-head">
+          <h3>Tabla Ejecutiva de Colaboradores</h3>
+          <div class="dm-table-tools">
+            <div class="dm-search-wrap">
+              <svg class="icon-xs muted-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input id="dm-table-search" type="search" placeholder="Filtrar por colaborador, host o aplicación..." autocomplete="off" aria-label="Filtrar tabla de métricas" />
+            </div>
+            <select id="dm-table-sort" class="toolbar-select" aria-label="Ordenar tabla">
+              <option value="active">Mayor Actividad</option>
+              <option value="focus">Mayor Focus Score</option>
+              <option value="switches">Más Cambios</option>
+              <option value="net">Mayor Red</option>
+              <option value="name">Nombre</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table dm-exec-table">
+            <thead>
+              <tr>
+                <th>Colaborador</th>
+                <th>Estado</th>
+                <th>Jornada</th>
+                <th>Activo / Inactivo</th>
+                <th>Enfoque</th>
+                <th>Red</th>
+                <th>Aplicaciones</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="metrics-tbody">
+              <tr>
+                <td colspan="8" class="empty-row">Sin registros hoy.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div><!-- /#act-subview-dailymetrics -->
+
+    <!-- SUB-VISTA 3: TOPOLOGIA DE PRODUCTIVIDAD -->
+    <div id="act-subview-worktopology" class="act-subview hidden">
+      <div class="panel-card wt-card">
+        <div class="dm-card-head wt-head">
+          <div class="wt-title-group">
+            <svg class="icon-md st-accent-icon" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2.5"/><circle cx="5" cy="18" r="2.5"/><circle cx="19" cy="12" r="2.5"/><path d="M7.5 6c5 0 5 6 9 6M7.5 18c5 0 5-6 9-6"/></svg>
+            <div>
+              <h3>Topología de Productividad</h3>
+              <p class="muted-text">Colaboradores, categorías y aplicaciones principales del día</p>
+            </div>
+          </div>
+          <div class="wt-controls">
+            <select id="wt-agent-select" class="toolbar-select" aria-label="Filtrar colaborador">
+              <option value="ALL">Todos los colaboradores</option>
+            </select>
+            <select id="wt-metric-select" class="toolbar-select" aria-label="Métrica de peso">
+              <option value="time">Por Tiempo Invertido</option>
+              <option value="switches">Por Cambios de Foco</option>
+            </select>
+            <button id="wt-reset-btn" type="button" class="btn btn-secondary btn-sm">
+              <svg class="icon-sm" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+              <span>Restablecer vista</span>
+            </button>
+          </div>
+        </div>
+        <div class="wt-col-labels">
+          <span>Colaboradores</span><span>Categorías</span><span>Aplicaciones Top</span>
+        </div>
+        <div class="wt-canvas-box">
+          <svg id="wt-topology-svg" class="wt-topology-svg" viewBox="0 0 1140 560" width="100%" height="560" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Grafo de productividad"></svg>
+        </div>
+        <div id="wt-inspector-bar" class="wt-inspector-bar">
+          <span class="muted-text">Haz clic en un colaborador, categoría o aplicación para ver sus conexiones.</span>
+        </div>
+      </div>
+    </div><!-- /#act-subview-worktopology -->
   </section>
 
   <!-- ======================================================================= -->
@@ -1209,16 +1369,20 @@
     <div class="ntop-subnav-bar">
       <div class="ntop-subnav-tabs" role="tablist">
         <button type="button" class="ntop-subtab-btn active" data-subview="overview">
-          <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+          <svg class="icon-xs" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
           <span>Visión General</span>
         </button>
         <button type="button" class="ntop-subtab-btn" data-subview="hosts">
-          <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="13" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          <svg class="icon-xs" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="13" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           <span>Equipos / Hosts</span>
         </button>
         <button type="button" class="ntop-subtab-btn" data-subview="flows">
-          <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z"/></svg>
+          <svg class="icon-xs" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z"/></svg>
           <span>Matriz de Flujos</span>
+        </button>
+        <button type="button" class="ntop-subtab-btn" data-subview="topology">
+          <svg class="icon-xs" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="5" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M7.5 12c5 0 6-7 9-7M7.5 12c5 0 6 7 9 7"/></svg>
+          <span>Topología de Red</span>
         </button>
       </div>
 
@@ -1498,6 +1662,36 @@
       </div>
     </div><!-- /#net-subview-flows -->
 
+    <!-- ================= SUB-VISTA 4: TOPOLOGIA DE RED ================= -->
+    <div id="net-subview-topology" class="net-subview hidden">
+      <div class="panel-card net-topo-card">
+        <div class="net-topo-head">
+          <div class="net-topo-title">
+            <svg class="icon-md" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="5" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M7.5 12c5 0 6-7 9-7M7.5 12c5 0 6 7 9 7"/></svg>
+            <div>
+              <h3>Topología de Red en Vivo</h3>
+              <p class="muted-text">Equipos, agrupación por categoría o proveedor y destinos principales</p>
+            </div>
+          </div>
+          <div class="net-topo-controls">
+            <select id="net-topo-group-mode" class="toolbar-select" aria-label="Modo de agrupación">
+              <option value="category">Agrupar por Categoría nDPI</option>
+              <option value="asn">Agrupar por Proveedor / ASN</option>
+            </select>
+            <select id="net-topo-limit-select" class="toolbar-select" aria-label="Límite de destinos">
+              <option value="12">Top 12 destinos</option>
+              <option value="20">Top 20 destinos</option>
+              <option value="30">Top 30 destinos</option>
+            </select>
+          </div>
+        </div>
+        <div class="net-topo-stage">
+          <svg id="net-topology-svg" class="net-topology-svg" viewBox="0 0 1140 580" width="100%" height="580" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Grafo de topología de red"></svg>
+        </div>
+        <div id="net-topo-legend" class="net-topo-legend"></div>
+      </div>
+    </div><!-- /#net-subview-topology -->
+
     <!-- ================= DRAWER INSPECTOR LATERAL ================= -->
     <div id="net-drawer-backdrop" class="net-drawer-backdrop hidden"></div>
     <aside id="net-drawer" class="net-drawer" aria-hidden="true">
@@ -1759,6 +1953,6 @@
 
   <script src="/static/js/audio.js?v=20261111-v9"></script>
   <script src="/static/js/viewer.js?v=20261111-v9"></script>
-  <script src="/static/js/app.js?v=20261113-v15"></script>
+  <script src="/static/js/app.js?v=20261113-v16"></script>
 </body>
 </html>

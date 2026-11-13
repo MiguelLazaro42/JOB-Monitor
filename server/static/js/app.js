@@ -1297,69 +1297,639 @@
     stRenderAppsExplorer();
   }
 
+  // =====================================================================
+  // PRODUCTIVIDAD: SUB-VISTAS (Tiempo en Pantalla | Metricas Diarias | Topologia)
+  // =====================================================================
+  state.activitySubview = 'screentime';
+  state.dailyMetricsCache = [];
+
+  const actSubtabBtns = document.querySelectorAll('.act-subtab-btn');
+  const actSubviews = {
+    screentime: document.getElementById('act-subview-screentime'),
+    dailymetrics: document.getElementById('act-subview-dailymetrics'),
+    worktopology: document.getElementById('act-subview-worktopology'),
+  };
+  const dmKpiOnline = document.getElementById('dm-kpi-online');
+  const dmKpiOnlineSub = document.getElementById('dm-kpi-online-sub');
+  const dmKpiActiveTotal = document.getElementById('dm-kpi-active-total');
+  const dmKpiActiveAvg = document.getElementById('dm-kpi-active-avg');
+  const dmKpiFocusAvg = document.getElementById('dm-kpi-focus-avg');
+  const dmKpiFocusBadge = document.getElementById('dm-kpi-focus-badge');
+  const dmKpiFocusFill = document.getElementById('dm-kpi-focus-fill');
+  const dmKpiSwitchesTotal = document.getElementById('dm-kpi-switches-total');
+  const dmKpiAlertsSub = document.getElementById('dm-kpi-alerts-sub');
+  const dmSwimlanesCard = document.getElementById('dm-swimlanes-card');
+  const dmSwimlanesWrap = document.getElementById('dm-swimlanes-wrap');
+  const dmSwimlaneTooltip = document.getElementById('dm-swimlane-tooltip');
+  const dmEfficiencyBars = document.getElementById('dm-Efficiency-bars');
+  const dmOrgDonut = document.getElementById('dm-org-donut');
+  const dmTableSearch = document.getElementById('dm-table-search');
+  const dmTableSort = document.getElementById('dm-table-sort');
+  const wtAgentSelect = document.getElementById('wt-agent-select');
+  const wtMetricSelect = document.getElementById('wt-metric-select');
+  const wtResetBtn = document.getElementById('wt-reset-btn');
+  const wtTopologySvg = document.getElementById('wt-topology-svg');
+  const wtInspectorBar = document.getElementById('wt-inspector-bar');
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  let dmLoadSeq = 0;
+  let wtSelection = null;
+  let wtGraph = null;
+
+  // ---- MF-JS01: controlador de sub-pestanas ----
+  function actSwitchSubview(name) {
+    const view = actSubviews[name] ? name : 'screentime';
+    state.activitySubview = view;
+    actSubtabBtns.forEach((b) => {
+      const on = b.dataset.actSubview === view;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    Object.keys(actSubviews).forEach((k) => {
+      if (actSubviews[k]) actSubviews[k].classList.toggle('hidden', k !== view);
+    });
+    if (view === 'dailymetrics') renderDailyMetricsAll();
+    else if (view === 'worktopology') renderWorkTopology();
+  }
+
+  function dmFocusClass(score) {
+    if (score === null || score === undefined) return 'st-score-none';
+    if (score >= 80) return 'st-score-high';
+    if (score >= 60) return 'st-score-mid';
+    return 'st-score-low';
+  }
+
+  function dmFocusLabel(score) {
+    if (score === null || score === undefined) return 'Sin datos';
+    if (score >= 80) return 'Alto Enfoque';
+    if (score >= 60) return 'Moderado';
+    return 'Disperso';
+  }
+
+  function dmHasActivity(m) {
+    return (Number(m.active_seconds) || 0) + (Number(m.idle_seconds) || 0) > 0
+      || (m.first_seen_at && m.first_seen_at !== '---');
+  }
+
+  function dmFmtHour(h) {
+    return h === null || h === undefined ? '---' : `${String(h).padStart(2, '0')}:00`;
+  }
+
+  function dmShortTime(ts) {
+    const m = /(\d{2}):(\d{2})/.exec(String(ts || ''));
+    return m ? `${m[1]}:${m[2]}` : '---';
+  }
+
+  // ---- MF-JS02: KPIs de plantilla ----
+  function renderDailyMetricsKPIs(rows) {
+    const withAct = rows.filter(dmHasActivity);
+    const onlineNow = rows.filter((m) => m.is_online).length;
+    const activeTotal = rows.reduce((s, m) => s + (Number(m.active_seconds) || 0), 0);
+    const prod = rows.reduce((s, m) => s + (Number(m.productive_seconds) || 0), 0);
+    const dist = rows.reduce((s, m) => s + (Number(m.distractor_seconds) || 0), 0);
+    const switches = rows.reduce((s, m) => s + (Number(m.switches_count) || 0), 0);
+    const alerts = rows.reduce((s, m) => s + (Number(m.away_alerts_count) || 0), 0);
+    const netTotal = rows.reduce((s, m) => s + (Number(m.net_total_bytes) || 0), 0);
+    const focus = prod + dist > 0 ? Math.round((prod * 100) / (prod + dist)) : null;
+
+    if (dmKpiOnline) dmKpiOnline.textContent = `${withAct.length} / ${rows.length}`;
+    if (dmKpiOnlineSub) dmKpiOnlineSub.textContent = `${onlineNow} conectado${onlineNow === 1 ? '' : 's'} ahora`;
+    if (dmKpiActiveTotal) dmKpiActiveTotal.textContent = formatAccumulatedTime(activeTotal);
+    if (dmKpiActiveAvg) {
+      const avg = withAct.length ? activeTotal / withAct.length : 0;
+      dmKpiActiveAvg.textContent = `Promedio ${formatAccumulatedTime(avg)} por colaborador`;
+    }
+    const cls = dmFocusClass(focus);
+    if (dmKpiFocusAvg) {
+      dmKpiFocusAvg.textContent = focus === null ? '---' : `${focus}%`;
+      dmKpiFocusAvg.className = `dm-kpi-value ${focus === null ? 'st-kpi-muted' : cls}`;
+    }
+    if (dmKpiFocusBadge) {
+      dmKpiFocusBadge.className = `st-score-badge ${cls}`;
+      dmKpiFocusBadge.textContent = dmFocusLabel(focus);
+      dmKpiFocusBadge.title = `Productivo: ${formatAccumulatedTime(prod)} | Distractores: ${formatAccumulatedTime(dist)}`;
+    }
+    if (dmKpiFocusFill) {
+      dmKpiFocusFill.style.width = `${focus === null ? 0 : focus}%`;
+      dmKpiFocusFill.className = `st-score-meter-fill ${focus === null ? '' : cls}`;
+    }
+    if (dmKpiSwitchesTotal) dmKpiSwitchesTotal.textContent = switches.toLocaleString('es-MX');
+    if (dmKpiAlertsSub) dmKpiAlertsSub.textContent = `${alerts} alerta${alerts === 1 ? '' : 's'} · Red ${formatBytes(netTotal)}`;
+  }
+
+  // ---- MF-JS02: swimlanes horarias ----
+  function dmHeatClass(act, idl) {
+    if (act <= 0) return idl > 0 ? 'dm-heat-idle' : 'dm-heat-0';
+    if (act < 900) return 'dm-heat-1';
+    if (act < 2100) return 'dm-heat-2';
+    return 'dm-heat-3';
+  }
+
+  function renderDailySwimlanes(rows) {
+    if (!dmSwimlanesWrap) return;
+    if (!rows.length) {
+      dmSwimlanesWrap.innerHTML = '<p class="muted-text">No hay colaboradores registrados.</p>';
+      return;
+    }
+    const sorted = rows.slice().sort((a, b) => (Number(b.active_seconds) || 0) - (Number(a.active_seconds) || 0));
+    let head = '<div class="dm-sl-row dm-sl-head"><div class="dm-sl-label"></div><div class="dm-sl-cells">';
+    for (let h = 0; h < 24; h += 1) {
+      const work = h >= ST_WORKDAY_START && h < ST_WORKDAY_END;
+      head += `<span class="dm-sl-hlabel ${work ? 'dm-sl-work' : ''}">${String(h).padStart(2, '0')}</span>`;
+    }
+    head += '</div><div class="dm-sl-total">Activo</div></div>';
+
+    const body = sorted.map((m) => {
+      const act = Array.isArray(m.hourly_active) ? m.hourly_active : [];
+      const idl = Array.isArray(m.hourly_idle) ? m.hourly_idle : [];
+      let cells = '';
+      for (let h = 0; h < 24; h += 1) {
+        const a = Number(act[h]) || 0;
+        const i = Number(idl[h]) || 0;
+        const tot = a + i;
+        const idlePct = tot > 0 ? Math.round((i * 100) / tot) : 0;
+        const work = h >= ST_WORKDAY_START && h < ST_WORKDAY_END;
+        const peak = m.peak_hour === h ? ' dm-sl-peak' : '';
+        cells += `<span class="dm-sl-cell ${dmHeatClass(a, i)}${work ? ' dm-sl-work' : ''}${peak}" data-agent-id="${escapeHtml(m.agent_id)}" data-hour="${h}" tabindex="-1">`
+          + (a > 0 && idlePct > 0 ? `<i class="dm-sl-idle-part" style="height:${idlePct}%"></i>` : '')
+          + '</span>';
+      }
+      const dot = m.is_online ? '<span class="status-dot dot-emerald"></span>' : '<span class="status-dot dot-slate"></span>';
+      return `<div class="dm-sl-row ${dmHasActivity(m) ? '' : 'dm-sl-row-empty'}">
+        <div class="dm-sl-label" title="${escapeHtml(m.hostname || '')}">
+          ${dot}
+          <div class="dm-sl-name"><strong>${escapeHtml(m.alias || m.hostname || m.agent_id)}</strong>
+          <span class="muted-text">Inicio ${escapeHtml(dmShortTime(m.first_seen_at))}</span></div>
+        </div>
+        <div class="dm-sl-cells">${cells}</div>
+        <div class="dm-sl-total">${escapeHtml(formatAccumulatedTime(m.active_seconds))}</div>
+      </div>`;
+    }).join('');
+    dmSwimlanesWrap.innerHTML = head + body;
+  }
+
+  function dmShowSwimlaneTooltip(cell) {
+    if (!dmSwimlaneTooltip || !cell || !dmSwimlanesCard) return;
+    const m = state.dailyMetricsCache.find((x) => x.agent_id === cell.dataset.agentId);
+    if (!m) return;
+    const h = Number(cell.dataset.hour);
+    const a = Number((m.hourly_active || [])[h]) || 0;
+    const i = Number((m.hourly_idle || [])[h]) || 0;
+    const tot = a + i;
+    const hh = String(h).padStart(2, '0');
+    const work = h >= ST_WORKDAY_START && h < ST_WORKDAY_END;
+    dmSwimlaneTooltip.innerHTML = `
+      <div class="st-tt-head"><strong>${escapeHtml(m.alias || m.hostname || '')} · ${hh}:00 - ${hh}:59</strong>${work ? '<span class="st-tt-tag">Jornada</span>' : ''}</div>
+      <div class="st-tt-row"><span><i class="st-dot st-dot-active"></i>Activo</span><strong>${escapeHtml(formatAccumulatedTime(a))}</strong></div>
+      <div class="st-tt-row"><span><i class="st-dot st-dot-idle"></i>Inactivo</span><strong>${escapeHtml(formatAccumulatedTime(i))}</strong></div>
+      ${m.peak_hour === h ? '<div class="st-tt-foot">Hora pico del colaborador</div>' : ''}
+      ${tot > 0 ? `<div class="st-tt-foot">${Math.round((a * 100) / tot)}% del tiempo registrado fue activo</div>` : ''}`;
+    dmSwimlaneTooltip.classList.remove('hidden');
+    const hostRect = dmSwimlanesCard.getBoundingClientRect();
+    const cRect = cell.getBoundingClientRect();
+    const ttW = dmSwimlaneTooltip.offsetWidth;
+    const ttH = dmSwimlaneTooltip.offsetHeight;
+    let left = cRect.left - hostRect.left + cRect.width / 2 - ttW / 2;
+    left = Math.max(6, Math.min(left, hostRect.width - ttW - 6));
+    let top = cRect.top - hostRect.top - ttH - 8;
+    if (top < 4) top = cRect.bottom - hostRect.top + 8;
+    dmSwimlaneTooltip.style.left = `${left}px`;
+    dmSwimlaneTooltip.style.top = `${top}px`;
+  }
+
+  function dmHideSwimlaneTooltip() {
+    if (dmSwimlaneTooltip) dmSwimlaneTooltip.classList.add('hidden');
+  }
+
+  // ---- MF-JS03: graficos comparativos ----
+  function renderDailyComparisonCharts(rows) {
+    if (dmEfficiencyBars) {
+      const list = rows
+        .map((m) => {
+          const prod = Number(m.productive_seconds) || 0;
+          const neu = Number(m.neutral_seconds) || 0;
+          const dist = Number(m.distractor_seconds) || 0;
+          const idle = Number(m.idle_seconds) || 0;
+          return { m, prod, neu, dist, idle, total: prod + neu + dist + idle };
+        })
+        .filter((x) => x.total > 0)
+        .sort((a, b) => b.total - a.total);
+      if (!list.length) {
+        dmEfficiencyBars.innerHTML = '<p class="muted-text">Sin actividad registrada para la fecha.</p>';
+      } else {
+        const maxTotal = list[0].total || 1;
+        dmEfficiencyBars.innerHTML = list.map((x) => {
+          const seg = (v, cls, lbl) => (v > 0
+            ? `<span class="dm-seg ${cls}" style="width:${((v * 100) / x.total).toFixed(2)}%" title="${lbl}: ${escapeHtml(formatAccumulatedTime(v))} (${Math.round((v * 100) / x.total)}%)"></span>`
+            : '');
+          const score = x.m.focus_score;
+          return `<div class="dm-comp-row">
+            <div class="dm-comp-name"><strong>${escapeHtml(x.m.alias || x.m.hostname || x.m.agent_id)}</strong>
+              <span class="st-score-badge ${dmFocusClass(score)}">${score === null || score === undefined ? '---' : `${score}%`}</span></div>
+            <div class="dm-comp-track-wrap"><div class="dm-comp-track" style="width:${Math.max(8, (x.total * 100) / maxTotal).toFixed(2)}%">
+              ${seg(x.prod, 'dm-seg-prod', 'Productivo')}${seg(x.neu, 'dm-seg-neutral', 'Neutro')}${seg(x.dist, 'dm-seg-dist', 'Distraccion')}${seg(x.idle, 'dm-seg-idle', 'Inactivo')}
+            </div></div>
+            <span class="dm-comp-total">${escapeHtml(formatAccumulatedTime(x.total))}</span>
+          </div>`;
+        }).join('');
+      }
+    }
+
+    if (dmOrgDonut) {
+      const catMap = new Map();
+      rows.forEach((m) => (m.categories || []).forEach((c) => {
+        catMap.set(c.category, (catMap.get(c.category) || 0) + (Number(c.seconds) || 0));
+      }));
+      const cats = [...catMap.entries()].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+      const total = cats.reduce((s, [, v]) => s + v, 0);
+      if (!total) {
+        dmOrgDonut.innerHTML = '<p class="muted-text">Sin categorías registradas para la fecha.</p>';
+        return;
+      }
+      const r = 64;
+      const circ = 2 * Math.PI * r;
+      let offset = 0;
+      const arcs = cats.map(([cat, v]) => {
+        const len = (v / total) * circ;
+        const gap = cats.length > 1 ? Math.min(2, len * 0.2) : 0;
+        const arc = `<circle class="dm-donut-seg" data-cat="${escapeHtml(cat)}" cx="90" cy="90" r="${r}" fill="none" stroke="${getCategoryColor(cat)}" stroke-width="22" stroke-dasharray="${Math.max(0, len - gap).toFixed(2)} ${(circ - Math.max(0, len - gap)).toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}"><title>${escapeHtml(cat)}: ${escapeHtml(formatAccumulatedTime(v))}</title></circle>`;
+        offset += len;
+        return arc;
+      }).join('');
+      const hours = (total / 3600).toFixed(total >= 36000 ? 0 : 1);
+      const legend = cats.map(([cat, v]) => `
+        <button type="button" class="dm-donut-legend-item" data-cat="${escapeHtml(cat)}">
+          <i class="dm-comp-dot" style="background:${getCategoryColor(cat)}"></i>
+          <span class="dm-dl-name">${escapeHtml(cat)}</span>
+          <span class="dm-dl-time">${escapeHtml(formatAccumulatedTime(v))}</span>
+          <strong class="dm-dl-pct">${Math.round((v * 100) / total)}%</strong>
+        </button>`).join('');
+      dmOrgDonut.innerHTML = `
+        <div class="dm-donut-figure">
+          <svg class="dm-donut-svg" width="180" height="180" viewBox="0 0 180 180" role="img" aria-label="Distribucion por categorias">
+            <circle cx="90" cy="90" r="${r}" fill="none" stroke="var(--bg-elevated)" stroke-width="22"></circle>
+            <g transform="rotate(-90 90 90)">${arcs}</g>
+            <text x="90" y="88" text-anchor="middle" class="dm-donut-center-val">${hours}h</text>
+            <text x="90" y="106" text-anchor="middle" class="dm-donut-center-lbl">registradas</text>
+          </svg>
+        </div>
+        <div class="dm-donut-legend">${legend}</div>`;
+    }
+  }
+
+  // ---- MF-JS04: tabla ejecutiva ----
+  function dmSparklineHtml(m) {
+    const act = Array.isArray(m.hourly_active) ? m.hourly_active : [];
+    const max = Math.max(1, ...act.map((v) => Number(v) || 0));
+    let bars = '';
+    for (let h = 0; h < 24; h += 1) {
+      const v = Number(act[h]) || 0;
+      const pct = v > 0 ? Math.max(8, Math.round((v * 100) / max)) : 0;
+      const work = h >= ST_WORKDAY_START && h < ST_WORKDAY_END;
+      bars += `<i class="dm-spark-bar${work ? ' dm-sl-work' : ''}${m.peak_hour === h ? ' dm-spark-peak' : ''}" style="height:${pct}%"></i>`;
+    }
+    return `<div class="dm-spark" aria-hidden="true">${bars}</div>`;
+  }
+
+  function dmFilteredSortedRows() {
+    const q = stNormalize((dmTableSearch && dmTableSearch.value) || '').trim();
+    const sortBy = (dmTableSort && dmTableSort.value) || 'active';
+    let rows = state.dailyMetricsCache.slice();
+    if (q) {
+      rows = rows.filter((m) => {
+        const hay = [m.alias, m.hostname, m.username, ...(m.top_apps || []).map((a) => a.app_name)].join(' ');
+        return stNormalize(hay).includes(q);
+      });
+    }
+    const num = (v) => Number(v) || 0;
+    const cmp = {
+      active: (a, b) => num(b.active_seconds) - num(a.active_seconds),
+      focus: (a, b) => (b.focus_score === null || b.focus_score === undefined ? -1 : b.focus_score) - (a.focus_score === null || a.focus_score === undefined ? -1 : a.focus_score) || num(b.active_seconds) - num(a.active_seconds),
+      switches: (a, b) => num(b.switches_count) - num(a.switches_count),
+      net: (a, b) => num(b.net_total_bytes) - num(a.net_total_bytes),
+      name: (a, b) => String(a.alias || '').localeCompare(String(b.alias || ''), 'es'),
+    };
+    rows.sort(cmp[sortBy] || cmp.active);
+    return rows;
+  }
+
+  function renderDailyMetricsTable() {
+    if (!metricsTbody) return;
+    if (!state.dailyMetricsCache.length) {
+      metricsTbody.innerHTML = '<tr><td colspan="8" class="empty-row">No hay registros de actividad para la fecha seleccionada.</td></tr>';
+      return;
+    }
+    const rows = dmFilteredSortedRows();
+    if (!rows.length) {
+      metricsTbody.innerHTML = '<tr><td colspan="8" class="empty-row">Ningún colaborador coincide con el filtro.</td></tr>';
+      return;
+    }
+    metricsTbody.innerHTML = rows.map((m) => {
+      const meta = getStatusMeta(m.activity_status, m.current_idle_seconds || 0);
+      const act = Number(m.active_seconds) || 0;
+      const idl = Number(m.idle_seconds) || 0;
+      const actPct = act + idl > 0 ? Math.round((act * 100) / (act + idl)) : 0;
+      const alertsBadge = m.away_alerts_count > 0
+        ? `<span class="alert-count-badge">${m.away_alerts_count} alerta${m.away_alerts_count > 1 ? 's' : ''}</span>`
+        : '';
+      const score = m.focus_score;
+      const appsHtml = (m.top_apps || []).length
+        ? `<div class="app-tags-wrap">${m.top_apps.slice(0, 4).map((ap) => `<span class="app-usage-pill" title="${escapeHtml(ap.category || '')} · ${escapeHtml(formatAccumulatedTime(ap.seconds))}"><i class="dm-app-dot" style="background:${getCategoryColor(ap.category)}"></i><span>${escapeHtml(ap.app_name)}</span><span class="app-usage-pct">${ap.percent}%</span></span>`).join('')}</div>`
+        : '<span class="muted-text">Sin datos aún</span>';
+      const win = m.active_window || '';
+      const dot = m.is_online ? '<span class="status-dot dot-emerald"></span>' : '<span class="status-dot dot-slate"></span>';
+      const aid = escapeHtml(m.agent_id);
+      return `
+        <tr class="metrics-row-selectable ${stSelectedAgentId === m.agent_id ? 'metrics-row-selected' : ''}" data-row-agent="${aid}">
+          <td>
+            <div class="dm-collab">${dot}<div><strong>${escapeHtml(m.alias)}</strong>
+            <div class="muted-text">${escapeHtml(m.hostname)} (${escapeHtml(m.username)})</div></div></div>
+          </td>
+          <td>
+            <span class="badge-status ${meta.badgeClass}">${escapeHtml(meta.label)}</span>
+            <div class="dm-live-win muted-text" title="${escapeHtml(win)}">${escapeHtml(win || '---')}</div>
+          </td>
+          <td>
+            <div class="dm-jornada"><strong>${escapeHtml(dmShortTime(m.first_seen_at))}</strong>${dmSparklineHtml(m)}</div>
+            <div class="muted-text dm-peak-lbl">Pico ${escapeHtml(dmFmtHour(m.peak_hour))}</div>
+          </td>
+          <td>
+            <div class="dm-ai-row"><strong class="text-emerald">${escapeHtml(formatAccumulatedTime(act))}</strong><span class="muted-text">/ ${escapeHtml(formatAccumulatedTime(idl))}</span></div>
+            <div class="dm-bicolor" title="${actPct}% activo"><span style="width:${actPct}%"></span></div>
+            ${alertsBadge}
+          </td>
+          <td>
+            <span class="st-score-badge ${dmFocusClass(score)}">${score === null || score === undefined ? '---' : `${score}%`}</span>
+            <div class="muted-text dm-switch-lbl">${Number(m.switches_count) || 0} cambios</div>
+          </td>
+          <td>
+            <button type="button" class="dm-net-pill js-dm-goto-net" data-agent-id="${aid}" title="Abrir flujos de red del equipo (RX ${escapeHtml(formatBytes(m.net_rx_bytes))} / TX ${escapeHtml(formatBytes(m.net_tx_bytes))})">
+              <svg class="icon-xs" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z"/></svg>
+              <span>${escapeHtml(formatBytes(m.net_total_bytes))}</span>
+            </button>
+          </td>
+          <td>${appsHtml}</td>
+          <td>
+            <div class="dm-actions">
+              <button type="button" class="btn btn-secondary btn-sm js-dm-goto-st" data-agent-id="${aid}" title="Ver Tiempo en Pantalla del colaborador">Foco</button>
+              ${m.is_online ? `<button type="button" class="btn btn-primary btn-sm js-metric-connect" data-agent-id="${aid}">Ver</button>` : ''}
+              <button type="button" class="btn btn-secondary btn-sm js-metric-logs" data-agent-id="${aid}">Logs</button>
+            </div>
+          </td>
+        </tr>`;
+    }).join('');
+  }
+
+  function renderDailyMetricsAll() {
+    const rows = state.dailyMetricsCache;
+    renderDailyMetricsKPIs(rows);
+    renderDailySwimlanes(rows);
+    renderDailyComparisonCharts(rows);
+    renderDailyMetricsTable();
+  }
+
+  // ---- MF-JS05: topologia de productividad (SVG) ----
+  function topoTrunc(str, n) {
+    const s = String(str || '');
+    return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+  }
+
+  function topoLayoutColumn(nodes, x, w, H, padTop, maxH) {
+    const n = nodes.length;
+    if (!n) return;
+    const gap = n > 12 ? 5 : 8;
+    const usable = H - padTop * 2;
+    const h = Math.max(22, Math.min(maxH, (usable - gap * (n - 1)) / n));
+    const totalH = n * h + gap * (n - 1);
+    let y = padTop + Math.max(0, (usable - totalH) / 2);
+    nodes.forEach((nd) => {
+      nd.x = x;
+      nd.y = y;
+      nd.w = w;
+      nd.h = h;
+      y += h + gap;
+    });
+  }
+
+  function topoLinkPath(a, b) {
+    const x1 = a.x + a.w;
+    const y1 = a.y + a.h / 2;
+    const x2 = b.x;
+    const y2 = b.y + b.h / 2;
+    const mx = (x1 + x2) / 2;
+    return `M${x1.toFixed(1)},${y1.toFixed(1)} C${mx.toFixed(1)},${y1.toFixed(1)} ${mx.toFixed(1)},${y2.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
+  }
+
+  function topoNodeSvg(nd, colMax, cls, extraAttrs) {
+    const pct = colMax > 0 ? Math.max(0.03, nd.value / colMax) : 0;
+    const showSub = nd.h >= 34;
+    const labelY = showSub ? nd.y + nd.h / 2 - 3 : nd.y + nd.h / 2 + 4;
+    const barW = Math.max(2, (nd.w - 20) * pct);
+    return `<g class="${cls}" ${extraAttrs}>
+      <rect class="topo-node-box" x="${nd.x.toFixed(1)}" y="${nd.y.toFixed(1)}" width="${nd.w}" height="${nd.h.toFixed(1)}" rx="8" ry="8"></rect>
+      <rect class="topo-node-accent" x="${nd.x.toFixed(1)}" y="${nd.y.toFixed(1)}" width="4" height="${nd.h.toFixed(1)}" rx="2" fill="${nd.color}"></rect>
+      <text class="topo-node-label" x="${(nd.x + 12).toFixed(1)}" y="${labelY.toFixed(1)}">${escapeHtml(topoTrunc(nd.label, 26))}</text>
+      ${showSub ? `<text class="topo-node-sub" x="${(nd.x + 12).toFixed(1)}" y="${(nd.y + nd.h / 2 + 11).toFixed(1)}">${escapeHtml(topoTrunc(nd.sub || '', 34))}</text>` : ''}
+      <rect class="topo-node-track" x="${(nd.x + 10).toFixed(1)}" y="${(nd.y + nd.h - 5).toFixed(1)}" width="${nd.w - 20}" height="2.5" rx="1.25"></rect>
+      <rect class="topo-node-fill" x="${(nd.x + 10).toFixed(1)}" y="${(nd.y + nd.h - 5).toFixed(1)}" width="${barW.toFixed(1)}" height="2.5" rx="1.25" fill="${nd.color}"></rect>
+      <title>${escapeHtml(nd.label)}${nd.sub ? ' - ' + escapeHtml(nd.sub) : ''}</title>
+    </g>`;
+  }
+
+  function wtPopulateAgentSelect() {
+    if (!wtAgentSelect) return;
+    const cur = wtAgentSelect.value || 'ALL';
+    let html = '<option value="ALL">Todos los colaboradores</option>';
+    state.dailyMetricsCache.filter(dmHasActivity).forEach((m) => {
+      const lbl = m.username && m.username !== '---' ? `${m.alias} (${m.username})` : m.alias;
+      html += `<option value="${escapeHtml(m.agent_id)}">${escapeHtml(lbl)}</option>`;
+    });
+    wtAgentSelect.innerHTML = html;
+    wtAgentSelect.value = Array.from(wtAgentSelect.options).some((o) => o.value === cur) ? cur : 'ALL';
+  }
+
+  function wtBuildGraph() {
+    const metric = (wtMetricSelect && wtMetricSelect.value) || 'time';
+    const agentFilter = (wtAgentSelect && wtAgentSelect.value) || 'ALL';
+    const fmt = (v) => (metric === 'time' ? formatAccumulatedTime(v) : `${Math.round(v)} cambios`);
+    const agents = new Map();
+    const cats = new Map();
+    const apps = new Map();
+    const linkMap = new Map();
+    const addLink = (from, to, w, agentId) => {
+      const k = `${from}>${to}`;
+      const l = linkMap.get(k) || { from, to, value: 0, agents: new Set() };
+      l.value += w;
+      l.agents.add(agentId);
+      linkMap.set(k, l);
+    };
+    state.dailyMetricsCache.forEach((m) => {
+      if (agentFilter !== 'ALL' && m.agent_id !== agentFilter) return;
+      const aKey = `agent:${m.agent_id}`;
+      let aTotal = 0;
+      const catWeights = new Map();
+      if (metric === 'time') {
+        (m.categories || []).forEach((c) => {
+          const v = Number(c.seconds) || 0;
+          if (v > 0) catWeights.set(c.category, (catWeights.get(c.category) || 0) + v);
+        });
+      } else {
+        (m.top_apps || []).forEach((ap) => {
+          const v = Number(ap.switches_count) || 0;
+          if (v > 0) catWeights.set(ap.category, (catWeights.get(ap.category) || 0) + v);
+        });
+      }
+      catWeights.forEach((v, cat) => {
+        aTotal += v;
+        const cKey = `cat:${cat}`;
+        const c = cats.get(cKey) || { key: cKey, type: 'category', label: cat, value: 0, color: getCategoryColor(cat) };
+        c.value += v;
+        cats.set(cKey, c);
+        addLink(aKey, cKey, v, m.agent_id);
+      });
+      (m.top_apps || []).forEach((ap) => {
+        const v = metric === 'time' ? Number(ap.seconds) || 0 : Number(ap.switches_count) || 0;
+        if (v <= 0) return;
+        const pKey = `app:${ap.category}|${ap.app_name}`;
+        const p = apps.get(pKey) || { key: pKey, type: 'app', label: ap.app_name, category: ap.category, value: 0, color: getCategoryColor(ap.category), agents: new Set() };
+        p.value += v;
+        p.agents.add(m.agent_id);
+        apps.set(pKey, p);
+      });
+      if (aTotal > 0) {
+        agents.set(aKey, { key: aKey, type: 'agent', agentId: m.agent_id, label: m.alias || m.hostname || m.agent_id, value: aTotal, color: m.is_online ? '#10b981' : '#64748b' });
+      }
+    });
+    const agentList = [...agents.values()].sort((a, b) => b.value - a.value).slice(0, 14);
+    const agentKeys = new Set(agentList.map((a) => a.key));
+    const appList = [...apps.values()].sort((a, b) => b.value - a.value).slice(0, 14);
+    const appKeys = new Set(appList.map((a) => a.key));
+    appList.forEach((p) => {
+      p.agents.forEach((aid) => {
+        if (!agentKeys.has(`agent:${aid}`)) return;
+        const m = state.dailyMetricsCache.find((x) => x.agent_id === aid);
+        const ap = m && (m.top_apps || []).find((x) => x.app_name === p.label && x.category === p.category);
+        const v = ap ? (metric === 'time' ? Number(ap.seconds) || 0 : Number(ap.switches_count) || 0) : 0;
+        if (v > 0) addLink(`cat:${p.category}`, p.key, v, aid);
+      });
+    });
+    const links = [...linkMap.values()].filter((l) => (agentKeys.has(l.from) || l.from.startsWith('cat:')) && (l.to.startsWith('cat:') || appKeys.has(l.to)));
+    const catList = [...cats.values()].filter((c) => links.some((l) => l.to === c.key || l.from === c.key)).sort((a, b) => b.value - a.value);
+    agentList.forEach((a) => { a.sub = fmt(a.value); });
+    catList.forEach((c) => { c.sub = fmt(c.value); });
+    appList.forEach((p) => { p.sub = `${fmt(p.value)} · ${p.agents.size} colab.`; });
+    return { metric, fmt, agents: agentList, cats: catList, apps: appList, links };
+  }
+
+  function wtLinkOn(l, sel, g) {
+    if (!sel) return false;
+    if (sel.type === 'agent') return l.agents.has(sel.agentId);
+    if (sel.type === 'category') return l.from === sel.key || l.to === sel.key;
+    if (sel.type === 'app') {
+      if (l.to === sel.key) return true;
+      const p = g.apps.find((x) => x.key === sel.key);
+      if (!p || l.to !== `cat:${p.category}`) return false;
+      return [...l.agents].some((aid) => p.agents.has(aid));
+    }
+    return false;
+  }
+
+  function renderWorkTopology() {
+    if (!wtTopologySvg) return;
+    wtPopulateAgentSelect();
+    const g = wtBuildGraph();
+    wtGraph = g;
+    const W = 1140;
+    const H = 560;
+    if (!g.agents.length) {
+      wtTopologySvg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" class="topo-empty-text">Sin datos de productividad para la fecha seleccionada.</text>`;
+      if (wtInspectorBar) wtInspectorBar.innerHTML = '<span class="muted-text">Sin datos.</span>';
+      return;
+    }
+    topoLayoutColumn(g.agents, 16, 240, H, 14, 56);
+    topoLayoutColumn(g.cats, 450, 240, H, 14, 70);
+    topoLayoutColumn(g.apps, 884, 240, H, 14, 56);
+    const nodeMap = new Map();
+    [...g.agents, ...g.cats, ...g.apps].forEach((n) => nodeMap.set(n.key, n));
+    const maxLink = g.links.reduce((m, l) => Math.max(m, l.value), 0) || 1;
+    const linksSvg = g.links.map((l, idx) => {
+      const a = nodeMap.get(l.from);
+      const b = nodeMap.get(l.to);
+      if (!a || !b) return '';
+      const color = l.from.startsWith('cat:') ? a.color : b.color;
+      const sw = 1.5 + (14 * l.value) / maxLink;
+      return `<path class="wt-link topo-link" data-link-idx="${idx}" d="${topoLinkPath(a, b)}" stroke="${color}" stroke-width="${sw.toFixed(1)}" fill="none"><title>${escapeHtml(a.label)} - ${escapeHtml(b.label)}: ${escapeHtml(g.fmt(l.value))}</title></path>`;
+    }).join('');
+    const colMax = (list) => list.reduce((m, n) => Math.max(m, n.value), 0);
+    const nodeSvg = (list) => {
+      const mx = colMax(list);
+      return list.map((n) => topoNodeSvg(n, mx, `wt-node topo-node wt-node-${n.type}`, `data-wt-key="${escapeHtml(n.key)}" tabindex="0" role="button"`)).join('');
+    };
+    wtTopologySvg.innerHTML = `<g class="topo-links">${linksSvg}</g><g class="topo-nodes">${nodeSvg(g.agents)}${nodeSvg(g.cats)}${nodeSvg(g.apps)}</g>`;
+    if (wtSelection && !nodeMap.has(wtSelection.key)) wtSelection = null;
+    wtApplySelection();
+  }
+
+  function wtApplySelection() {
+    if (!wtTopologySvg || !wtGraph) return;
+    const g = wtGraph;
+    const sel = wtSelection;
+    wtTopologySvg.classList.toggle('topo-has-focus', !!sel);
+    const onNodes = new Set();
+    const onLinks = [];
+    if (sel) {
+      onNodes.add(sel.key);
+      g.links.forEach((l, idx) => {
+        if (wtLinkOn(l, sel, g)) {
+          onLinks.push(idx);
+          onNodes.add(l.from);
+          onNodes.add(l.to);
+        }
+      });
+    }
+    const onLinkSet = new Set(onLinks);
+    wtTopologySvg.querySelectorAll('.wt-link').forEach((p) => p.classList.toggle('is-on', onLinkSet.has(Number(p.dataset.linkIdx))));
+    wtTopologySvg.querySelectorAll('.wt-node').forEach((n) => {
+      n.classList.toggle('is-on', onNodes.has(n.dataset.wtKey));
+      n.classList.toggle('is-selected', !!sel && n.dataset.wtKey === sel.key);
+    });
+    if (!wtInspectorBar) return;
+    if (!sel) {
+      wtInspectorBar.innerHTML = `<span class="muted-text">Haz clic en un colaborador, categoría o aplicación para ver sus conexiones. ${g.agents.length} colaboradores · ${g.cats.length} categorías · ${g.apps.length} aplicaciones.</span>`;
+      return;
+    }
+    const node = [...g.agents, ...g.cats, ...g.apps].find((n) => n.key === sel.key);
+    if (!node) return;
+    const pick = (list) => list.filter((n) => onNodes.has(n.key) && n.key !== sel.key);
+    const chips = (list) => (list.length
+      ? list.map((n) => `<span class="wt-insp-chip"><i class="dm-comp-dot" style="background:${n.color}"></i>${escapeHtml(n.label)}</span>`).join('')
+      : '<span class="muted-text">---</span>');
+    const typeLbl = { agent: 'Colaborador', category: 'Categoría', app: 'Aplicación' }[node.type];
+    wtInspectorBar.innerHTML = `
+      <div class="wt-insp-main"><span class="badge-pill">${typeLbl}</span><strong>${escapeHtml(node.label)}</strong><span class="muted-text">${escapeHtml(g.fmt(node.value))}</span></div>
+      ${node.type !== 'agent' ? `<div class="wt-insp-group"><span class="wt-insp-k">Colaboradores</span>${chips(pick(g.agents))}</div>` : ''}
+      ${node.type !== 'category' ? `<div class="wt-insp-group"><span class="wt-insp-k">Categorías</span>${chips(pick(g.cats))}</div>` : ''}
+      ${node.type !== 'app' ? `<div class="wt-insp-group"><span class="wt-insp-k">Aplicaciones</span>${chips(pick(g.apps))}</div>` : ''}`;
+  }
+
+  // ---- Carga de datos ----
   async function loadDailyMetrics() {
     loadScreenTimeAnalytics();
     const dateVal = metricsDateInput.value || todayIso;
     const tParam = state.tenantFilter && state.tenantFilter !== 'ALL' ? `&tenant_id=${encodeURIComponent(state.tenantFilter)}` : '';
+    const seq = ++dmLoadSeq;
+    if (refreshMetricsBtn) refreshMetricsBtn.classList.add('is-loading');
     try {
       const res = await authFetch(`/api/metrics?date=${encodeURIComponent(dateVal)}${tParam}`);
       const data = await res.json();
-      const rows = data.metrics || [];
-      if (rows.length === 0) {
-        metricsTbody.innerHTML = '<tr><td colspan="7" class="empty-row">No hay registros de actividad para la fecha seleccionada.</td></tr>';
-        return;
-      }
-
-      metricsTbody.innerHTML = rows
-        .map((m) => {
-          const meta = getStatusMeta(m.activity_status, m.current_idle_seconds || 0);
-          const appsHtml =
-            (m.top_apps || []).length > 0
-              ? `<div class="app-tags-wrap">${m.top_apps
-                  .map(
-                    (ap) =>
-                      `<span class="app-usage-pill"><span>${escapeHtml(ap.app_name)}</span><span class="app-usage-pct">${ap.percent}%</span></span>`
-                  )
-                  .join('')}</div>`
-              : '<span class="muted-text">Sin datos aún</span>';
-
-          const alertsBadge =
-            m.away_alerts_count > 0
-              ? `<span class="alert-count-badge">${m.away_alerts_count} alerta${m.away_alerts_count > 1 ? 's' : ''}</span>`
-              : '';
-
-          return `
-            <tr class="metrics-row-selectable ${stSelectedAgentId === m.agent_id ? 'metrics-row-selected' : ''}" data-row-agent="${escapeHtml(m.agent_id)}">
-              <td>
-                <strong>${escapeHtml(m.alias)}</strong>
-                <div class="muted-text">${escapeHtml(m.hostname)} (${escapeHtml(m.username)})</div>
-              </td>
-              <td>
-                <span class="badge-status ${meta.badgeClass}">${escapeHtml(meta.label)}</span>
-              </td>
-              <td>${escapeHtml(m.first_seen_at || '---')}</td>
-              <td><strong class="text-emerald">${escapeHtml(formatAccumulatedTime(m.active_seconds))}</strong></td>
-              <td>
-                <span>${escapeHtml(formatAccumulatedTime(m.idle_seconds))}</span>
-                ${alertsBadge}
-              </td>
-              <td>${appsHtml}</td>
-              <td>
-                <div style="display:flex; gap:6px;">
-                  ${
-                    m.is_online
-                      ? `<button type="button" class="btn btn-primary btn-sm js-metric-connect" data-agent-id="${escapeHtml(m.agent_id)}">Ver</button>`
-                      : ''
-                  }
-                  <button type="button" class="btn btn-secondary btn-sm js-metric-logs" data-agent-id="${escapeHtml(m.agent_id)}">Logs</button>
-                </div>
-              </td>
-            </tr>
-          `;
-        })
-        .join('');
+      if (seq !== dmLoadSeq) return;
+      state.dailyMetricsCache = (data && data.metrics) || [];
+      renderDailyMetricsAll();
+      if (state.activitySubview === 'worktopology') renderWorkTopology();
+      else wtPopulateAgentSelect();
     } catch (err) {
       console.error('Error al cargar métricas:', err);
+    } finally {
+      if (seq === dmLoadSeq && refreshMetricsBtn) refreshMetricsBtn.classList.remove('is-loading');
     }
   }
 
@@ -2881,7 +3451,94 @@
     }
   });
 
+  // ---- Listeners de sub-vistas de productividad ----
+  actSubtabBtns.forEach((btn) => {
+    btn.addEventListener('click', () => actSwitchSubview(btn.dataset.actSubview));
+  });
+  if (dmSwimlanesWrap) {
+    dmSwimlanesWrap.addEventListener('mouseover', (e) => {
+      const cell = e.target.closest('.dm-sl-cell');
+      if (cell) dmShowSwimlaneTooltip(cell);
+    });
+    dmSwimlanesWrap.addEventListener('mouseleave', dmHideSwimlaneTooltip);
+  }
+  if (dmTableSearch) dmTableSearch.addEventListener('input', renderDailyMetricsTable);
+  if (dmTableSort) dmTableSort.addEventListener('change', renderDailyMetricsTable);
+  if (dmOrgDonut) {
+    dmOrgDonut.addEventListener('click', (e) => {
+      const item = e.target.closest('.dm-donut-legend-item');
+      if (!item) return;
+      const cat = item.dataset.cat;
+      const already = item.classList.contains('is-active');
+      dmOrgDonut.querySelectorAll('.dm-donut-legend-item').forEach((x) => x.classList.toggle('is-active', !already && x.dataset.cat === cat));
+      dmOrgDonut.querySelectorAll('.dm-donut-seg').forEach((seg) => seg.classList.toggle('is-dim', !already && seg.dataset.cat !== cat));
+    });
+  }
+  if (wtAgentSelect) wtAgentSelect.addEventListener('change', () => { wtSelection = null; renderWorkTopology(); });
+  if (wtMetricSelect) wtMetricSelect.addEventListener('change', renderWorkTopology);
+  if (wtResetBtn) {
+    wtResetBtn.addEventListener('click', () => {
+      wtSelection = null;
+      if (wtAgentSelect) wtAgentSelect.value = 'ALL';
+      if (wtMetricSelect) wtMetricSelect.value = 'time';
+      renderWorkTopology();
+    });
+  }
+  if (wtTopologySvg) {
+    const wtPick = (target) => {
+      const nodeEl = target.closest('.wt-node');
+      if (!nodeEl || !wtGraph) {
+        wtSelection = null;
+        wtApplySelection();
+        return;
+      }
+      const key = nodeEl.dataset.wtKey;
+      if (wtSelection && wtSelection.key === key) {
+        wtSelection = null;
+      } else {
+        const n = [...wtGraph.agents, ...wtGraph.cats, ...wtGraph.apps].find((x) => x.key === key);
+        wtSelection = n ? { key: n.key, type: n.type, agentId: n.agentId } : null;
+      }
+      wtApplySelection();
+    };
+    wtTopologySvg.addEventListener('click', (e) => wtPick(e.target));
+    wtTopologySvg.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        wtPick(e.target);
+      }
+    });
+  }
+
   metricsTbody.addEventListener('click', (e) => {
+    const netBtn = e.target.closest('.js-dm-goto-net');
+    if (netBtn) {
+      const aid = netBtn.dataset.agentId;
+      if (netDeviceFilter && aid) {
+        if (!Array.from(netDeviceFilter.options).some((o) => o.value === aid)) {
+          const opt = document.createElement('option');
+          opt.value = aid;
+          const m = state.dailyMetricsCache.find((x) => x.agent_id === aid);
+          opt.textContent = (m && m.alias) || aid;
+          netDeviceFilter.appendChild(opt);
+        }
+        netDeviceFilter.value = aid;
+      }
+      netSwitchSubview('flows');
+      switchView('network');
+      netUpdateActiveHostPill();
+      return;
+    }
+    const stBtn = e.target.closest('.js-dm-goto-st');
+    if (stBtn) {
+      const aid = stBtn.dataset.agentId || 'ALL';
+      stSelectedAgentId = aid;
+      if (stDeviceSelect) stDeviceSelect.value = aid;
+      actSwitchSubview('screentime');
+      loadScreenTimeAnalytics();
+      renderDailyMetricsTable();
+      return;
+    }
     const connectBtn = e.target.closest('.js-metric-connect');
     if (connectBtn) {
       openViewerForAgent(connectBtn.dataset.agentId);
@@ -3612,14 +4269,238 @@
     return `${netFaviconHtml(d.favicon_url)}<strong>${escapeHtml(shown)}</strong>${rawTag}`;
   }
 
+  // ---- MF-JS06: topologia de red en vivo (Host -> Categoria/ASN -> Destino) ----
+  const netSubviewTopology = document.getElementById('net-subview-topology');
+  const netTopoGroupMode = document.getElementById('net-topo-group-mode');
+  const netTopoLimitSelect = document.getElementById('net-topo-limit-select');
+  const netTopologySvg = document.getElementById('net-topology-svg');
+  const netTopoLegend = document.getElementById('net-topo-legend');
+  const NET_TOPO_ASN_PALETTE = ['#124fae', '#06b6d4', '#16a34a', '#8b5cf6', '#f97316', '#e11d48', '#eab308', '#ec4899', '#0ea5e9', '#64748b'];
+  let netTopoGraph = null;
+  let netTopoSelection = null;
+
+  function netTopoWeight(d) {
+    const num = (v) => Number(v) || 0;
+    return num(d.estimated_bytes) || (num(d.rx_bytes) + num(d.tx_bytes)) || num(d.hit_count);
+  }
+
+  function netTopoBuildGraph() {
+    const mode = (netTopoGroupMode && netTopoGroupMode.value) || 'category';
+    const limit = Number((netTopoLimitSelect && netTopoLimitSelect.value) || 12) || 12;
+    const flows = (netState.domains || []).filter((d) => netTopoWeight(d) > 0);
+    const useBytes = flows.some((d) => (Number(d.estimated_bytes) || 0) + (Number(d.rx_bytes) || 0) + (Number(d.tx_bytes) || 0) > 0);
+    const fmt = (v) => (useBytes ? formatBytes(v) : `${Math.round(v)} hits`);
+    const groupKeyOf = (d) => (mode === 'asn'
+      ? (d.org_name || d.whois_org || d.asn || 'Proveedor desconocido')
+      : (d.category || 'OTHER'));
+
+    // Destinos agregados
+    const dests = new Map();
+    flows.forEach((d) => {
+      const k = d.domain;
+      const w = netTopoWeight(d);
+      const cur = dests.get(k) || { key: `dst:${k}`, type: 'dest', label: d.resolved_domain && d.raw_target === d.domain ? d.resolved_domain : d.domain, value: 0, flows: [], cc: d.country_code || '', lastTs: 0 };
+      cur.value += w;
+      cur.flows.push(d);
+      if (!cur.cc && d.country_code) cur.cc = d.country_code;
+      const ts = netParseTs(d.last_seen_at) || 0;
+      if (ts > cur.lastTs) cur.lastTs = ts;
+      dests.set(k, cur);
+    });
+    const destList = [...dests.values()].sort((a, b) => b.value - a.value).slice(0, limit);
+
+    // Grupos (max 10, el resto en Otros)
+    const groupTotals = new Map();
+    destList.forEach((dst) => dst.flows.forEach((d) => {
+      const g = groupKeyOf(d);
+      groupTotals.set(g, (groupTotals.get(g) || 0) + netTopoWeight(d));
+    }));
+    const groupOrder = [...groupTotals.entries()].sort((a, b) => b[1] - a[1]);
+    const keepGroups = new Set(groupOrder.slice(0, 10).map(([g]) => g));
+    const groupFor = (d) => {
+      const g = groupKeyOf(d);
+      return keepGroups.has(g) ? g : 'Otros';
+    };
+
+    const hosts = new Map();
+    const groups = new Map();
+    const linkMap = new Map();
+    const addLink = (from, to, w, agentId) => {
+      const k = `${from}>${to}`;
+      const l = linkMap.get(k) || { from, to, value: 0, agents: new Set() };
+      l.value += w;
+      l.agents.add(agentId);
+      linkMap.set(k, l);
+    };
+    const clients = (netState.summary && netState.summary.clients) || [];
+    let asnIdx = 0;
+    const now = Date.now();
+    destList.forEach((dst) => {
+      dst.active = netIsViewingToday() && dst.lastTs > 0 && now - dst.lastTs < 5 * 60 * 1000;
+      dst.sub = `${dst.cc ? `[${String(dst.cc).toUpperCase()}] ` : ''}${fmt(dst.value)}${dst.active ? ' · activo' : ''}`;
+      dst.color = dst.active ? '#10b981' : '#94a3b8';
+      dst.agentSet = new Set();
+      dst.flows.forEach((d) => {
+        const w = netTopoWeight(d);
+        const gName = groupFor(d);
+        const gKey = `grp:${gName}`;
+        if (!groups.has(gKey)) {
+          const color = mode === 'asn'
+            ? (gName === 'Otros' ? '#94a3b8' : NET_TOPO_ASN_PALETTE[asnIdx++ % NET_TOPO_ASN_PALETTE.length])
+            : (NET_CATEGORY_COLORS[gName] || '#94a3b8');
+          groups.set(gKey, { key: gKey, type: 'group', label: mode === 'asn' ? gName : (NET_CATEGORY_LABELS[gName] || gName), raw: gName, value: 0, color });
+        }
+        groups.get(gKey).value += w;
+        const hKey = `host:${d.agent_id}`;
+        if (!hosts.has(hKey)) {
+          const c = clients.find((x) => x.agent_id === d.agent_id);
+          const live = state.agents.get(d.agent_id);
+          const rxk = live ? live.rx_kbps : (c ? c.rx_kbps : 0);
+          const txk = live ? live.tx_kbps : (c ? c.tx_kbps : 0);
+          hosts.set(hKey, {
+            key: hKey, type: 'host', agentId: d.agent_id,
+            label: (c && c.alias) || (live && live.alias) || d.alias || d.agent_id,
+            value: 0, online: !!live || !!(c && c.is_online), rxk, txk, total: c ? c.total_bytes : 0,
+          });
+        }
+        hosts.get(hKey).value += w;
+        dst.agentSet.add(d.agent_id);
+        addLink(hKey, gKey, w, d.agent_id);
+        addLink(gKey, dst.key, w, d.agent_id);
+      });
+    });
+    const hostList = [...hosts.values()].sort((a, b) => b.value - a.value).slice(0, 14);
+    const hostKeys = new Set(hostList.map((h) => h.key));
+    hostList.forEach((h) => {
+      h.color = h.online ? '#10b981' : '#64748b';
+      h.sub = h.online && (h.rxk || h.txk)
+        ? `RX ${formatBitrate(h.rxk)} · TX ${formatBitrate(h.txk)}`
+        : `${formatBytes(h.total || 0)} hoy`;
+    });
+    const groupList = [...groups.values()].sort((a, b) => b.value - a.value);
+    groupList.forEach((g) => { g.sub = fmt(g.value); });
+    const links = [...linkMap.values()].filter((l) => !l.from.startsWith('host:') || hostKeys.has(l.from));
+    return { mode, fmt, hosts: hostList, groups: groupList, dests: destList, links };
+  }
+
+  function netTopoLinkOn(l, sel, g) {
+    if (!sel) return false;
+    if (sel.type === 'host') return l.agents.has(sel.agentId);
+    if (sel.type === 'group') return l.from === sel.key || l.to === sel.key;
+    if (sel.type === 'dest') {
+      if (l.to === sel.key) return true;
+      const dst = g.dests.find((x) => x.key === sel.key);
+      if (!dst || !l.from.startsWith('host:')) return false;
+      const grpLinks = g.links.filter((x) => x.to === sel.key).map((x) => x.from);
+      return grpLinks.includes(l.to) && [...l.agents].some((aid) => dst.agentSet.has(aid));
+    }
+    return false;
+  }
+
+  function netTopoApplySelection() {
+    if (!netTopologySvg || !netTopoGraph) return;
+    const g = netTopoGraph;
+    const sel = netTopoSelection;
+    netTopologySvg.classList.toggle('topo-has-focus', !!sel);
+    const onNodes = new Set();
+    const onLinks = new Set();
+    if (sel) {
+      onNodes.add(sel.key);
+      g.links.forEach((l, idx) => {
+        if (netTopoLinkOn(l, sel, g)) {
+          onLinks.add(idx);
+          onNodes.add(l.from);
+          onNodes.add(l.to);
+        }
+      });
+    }
+    netTopologySvg.querySelectorAll('.net-topo-link').forEach((p) => p.classList.toggle('is-on', onLinks.has(Number(p.dataset.linkIdx))));
+    netTopologySvg.querySelectorAll('.net-topo-node').forEach((n) => {
+      n.classList.toggle('is-on', onNodes.has(n.dataset.topoKey));
+      n.classList.toggle('is-selected', !!sel && n.dataset.topoKey === sel.key);
+    });
+    if (netTopoLegend) {
+      netTopoLegend.querySelectorAll('.net-topo-legend-item').forEach((b) => b.classList.toggle('is-active', !!sel && sel.key === b.dataset.topoKey));
+    }
+  }
+
+  function renderNetworkTopology() {
+    if (!netTopologySvg) return;
+    const g = netTopoBuildGraph();
+    netTopoGraph = g;
+    const W = 1140;
+    const H = 580;
+    if (!g.dests.length) {
+      netTopologySvg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" class="topo-empty-text">Sin flujos de red para el filtro actual.</text>`;
+      if (netTopoLegend) netTopoLegend.innerHTML = '';
+      return;
+    }
+    topoLayoutColumn(g.hosts, 16, 240, H, 14, 58);
+    topoLayoutColumn(g.groups, 450, 240, H, 14, 64);
+    topoLayoutColumn(g.dests, 884, 240, H, 14, 48);
+    const nodeMap = new Map();
+    [...g.hosts, ...g.groups, ...g.dests].forEach((n) => nodeMap.set(n.key, n));
+    const maxLink = g.links.reduce((m, l) => Math.max(m, l.value), 0) || 1;
+    const linksSvg = g.links.map((l, idx) => {
+      const a = nodeMap.get(l.from);
+      const b = nodeMap.get(l.to);
+      if (!a || !b) return '';
+      const color = l.from.startsWith('grp:') ? a.color : b.color;
+      const sw = 1.5 + (14 * l.value) / maxLink;
+      return `<path class="net-topo-link topo-link" data-link-idx="${idx}" d="${topoLinkPath(a, b)}" stroke="${color}" stroke-width="${sw.toFixed(1)}" fill="none"><title>${escapeHtml(a.label)} - ${escapeHtml(b.label)}: ${escapeHtml(g.fmt(l.value))}</title></path>`;
+    }).join('');
+    const nodeSvg = (list) => {
+      const mx = list.reduce((m, n) => Math.max(m, n.value), 0);
+      return list.map((n) => topoNodeSvg(n, mx, `net-topo-node topo-node net-topo-node-${n.type}${n.active ? ' is-live' : ''}`, `data-topo-key="${escapeHtml(n.key)}" tabindex="0" role="button"`)).join('');
+    };
+    netTopologySvg.innerHTML = `<g class="topo-links">${linksSvg}</g><g class="topo-nodes">${nodeSvg(g.hosts)}${nodeSvg(g.groups)}${nodeSvg(g.dests)}</g>`;
+    if (netTopoLegend) {
+      const total = g.groups.reduce((s, x) => s + x.value, 0) || 1;
+      netTopoLegend.innerHTML = g.groups.map((x) => `
+        <button type="button" class="net-topo-legend-item" data-topo-key="${escapeHtml(x.key)}">
+          <i class="dm-comp-dot" style="background:${x.color}"></i>
+          <span>${escapeHtml(x.label)}</span>
+          <strong>${Math.round((x.value * 100) / total)}%</strong>
+        </button>`).join('');
+    }
+    if (netTopoSelection && !nodeMap.has(netTopoSelection.key)) netTopoSelection = null;
+    netTopoApplySelection();
+  }
+
+  function netTopoHandlePick(target) {
+    const nodeEl = target.closest('.net-topo-node');
+    if (!nodeEl || !netTopoGraph) {
+      netTopoSelection = null;
+      netTopoApplySelection();
+      return;
+    }
+    const key = nodeEl.dataset.topoKey;
+    const g = netTopoGraph;
+    const n = [...g.hosts, ...g.groups, ...g.dests].find((x) => x.key === key);
+    if (!n) return;
+    netTopoSelection = { key: n.key, type: n.type, agentId: n.agentId };
+    netTopoApplySelection();
+    if (n.type === 'host') {
+      openNetDrawer('host', n.agentId);
+    } else if (n.type === 'dest') {
+      const host = netSelectedHost();
+      const flows = n.flows.filter((d) => host === 'ALL' || d.agent_id === host);
+      const best = (flows.length ? flows : n.flows).slice().sort((a, b) => netTopoWeight(b) - netTopoWeight(a))[0];
+      if (best) openNetDrawer('flow', netFlowKey(best));
+    }
+  }
+
   function netSwitchSubview(viewName) {
     netState.subview = viewName;
     netSubtabBtns.forEach((b) => b.classList.toggle('active', b.dataset.subview === viewName));
     if (netSubviewOverview) netSubviewOverview.classList.toggle('hidden', viewName !== 'overview');
     if (netSubviewHosts) netSubviewHosts.classList.toggle('hidden', viewName !== 'hosts');
     if (netSubviewFlows) netSubviewFlows.classList.toggle('hidden', viewName !== 'flows');
+    if (netSubviewTopology) netSubviewTopology.classList.toggle('hidden', viewName !== 'topology');
 
-    if (viewName === 'overview') {
+    if (viewName === 'topology') {
+      renderNetworkTopology();
+    } else if (viewName === 'overview') {
       drawTrafficChart();
     } else if (viewName === 'hosts') {
       renderNetworkHosts();
@@ -4310,6 +5191,7 @@
     renderNetworkHosts();
     renderNetworkDomains();
     drawTrafficChart();
+    if (netState.subview === 'topology') renderNetworkTopology();
     netUpdateActiveHostPill();
   }
 
@@ -4448,6 +5330,8 @@
     netState.lastRender = Date.now();
     if (netState.subview === 'flows') {
       renderNetworkDomains();
+    } else if (netState.subview === 'topology') {
+      renderNetworkTopology();
     } else if (netState.subview === 'hosts') {
       renderNetworkHosts();
     } else {
@@ -4554,6 +5438,27 @@
   netSubtabBtns.forEach((btn) => {
     btn.addEventListener('click', () => netSwitchSubview(btn.dataset.subview));
   });
+
+  if (netTopoGroupMode) netTopoGroupMode.addEventListener('change', () => { netTopoSelection = null; renderNetworkTopology(); });
+  if (netTopoLimitSelect) netTopoLimitSelect.addEventListener('change', () => { netTopoSelection = null; renderNetworkTopology(); });
+  if (netTopologySvg) {
+    netTopologySvg.addEventListener('click', (e) => netTopoHandlePick(e.target));
+    netTopologySvg.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        netTopoHandlePick(e.target);
+      }
+    });
+  }
+  if (netTopoLegend) {
+    netTopoLegend.addEventListener('click', (e) => {
+      const item = e.target.closest('.net-topo-legend-item');
+      if (!item || !netTopoGraph) return;
+      const key = item.dataset.topoKey;
+      netTopoSelection = netTopoSelection && netTopoSelection.key === key ? null : { key, type: 'group' };
+      netTopoApplySelection();
+    });
+  }
 
   if (netClearHostBtn) {
     netClearHostBtn.addEventListener('click', () => {
