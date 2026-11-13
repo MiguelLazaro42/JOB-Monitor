@@ -1804,6 +1804,15 @@ async def _ingest_network_telemetry_slice(
         }
         agent.today_rx_bytes += d_rx
         agent.today_tx_bytes += d_tx
+
+        def _opt_nonneg_int(v):
+            if v is None:
+                return None
+            try:
+                return max(0, int(v))
+            except (TypeError, ValueError):
+                return None
+
         agent.recent_domains = [
             {
                 "domain": str(d.get("domain") or "")[:120],
@@ -1811,6 +1820,11 @@ async def _ingest_network_telemetry_slice(
                 "category": str(d.get("category") or "OTHER").upper(),
                 "connections": int(d.get("connections") or 1),
                 "estimated_bytes": int(d.get("estimated_bytes") or 0),
+                # Desglose por direccion para el upsert reactivo del panel (WebSocket)
+                "rx_bytes": _opt_nonneg_int(d.get("rx_bytes")),
+                "tx_bytes": _opt_nonneg_int(d.get("tx_bytes")),
+                "direction": "INBOUND" if str(d.get("direction") or "").upper() == "INBOUND" else "OUTBOUND",
+                "port": _opt_nonneg_int(d.get("port") or d.get("local_port")) or 443,
             }
             for d in domains[:15] if isinstance(d, dict) and d.get("domain")
         ]

@@ -3750,15 +3750,225 @@ body {
   border-color: var(--sitai-navy);
   box-shadow: 0 2px 8px rgba(19, 52, 71, 0.22);
 }
+/* Barra de filtros modular de la matriz de flujos */
 .net-flows-toolbar {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 12px 16px;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
 }
-.net-flows-toolbar-actions { display: flex; align-items: center; gap: 10px; }
+.net-ft-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.net-ft-row-meta {
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-color);
+}
+.net-ft-spacer { flex: 1 1 auto; }
+
+/* Buscador inteligente */
+.net-ft-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 300px;
+  min-width: 220px;
+  height: 36px;
+  padding: 0 8px 0 34px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
+}
+.net-ft-search:hover { border-color: var(--border-hover); }
+.net-ft-search:focus-within {
+  background: var(--bg-card);
+  border-color: var(--sitai-navy);
+  box-shadow: 0 0 0 3px rgba(19, 52, 71, 0.08);
+}
+.net-ft-search-icon {
+  position: absolute;
+  left: 11px;
+  width: 15px;
+  height: 15px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.net-ft-search:focus-within .net-ft-search-icon { color: var(--sitai-navy); }
+.net-ft-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 12.5px;
+}
+.net-ft-search input::placeholder { color: var(--text-muted); }
+.net-ft-search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease;
+}
+.net-ft-search-clear svg { width: 11px; height: 11px; }
+.net-ft-search-clear:hover { background: var(--sitai-navy); color: #ffffff; }
+.net-ft-search-clear.hidden { display: none; }
+
+/* Segmentado de direccion */
+.net-ft-segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  flex-wrap: wrap;
+}
+.net-ft-seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease, box-shadow .15s ease;
+}
+.net-ft-seg-btn:hover { color: var(--sitai-navy); background: var(--bg-card); }
+.net-ft-seg-btn.active {
+  background: var(--sitai-navy);
+  color: #ffffff;
+  box-shadow: 0 2px 6px rgba(19, 52, 71, 0.22);
+}
+.net-ft-seg-btn:focus-visible,
+.net-ft-search-clear:focus-visible,
+.net-ft-clear-all:focus-visible,
+.net-chip-btn:focus-visible {
+  outline: 2px solid var(--sitai-blue);
+  outline-offset: 2px;
+}
+.net-ft-arrow { font-weight: 800; }
+.net-ft-arrow-rx { color: #16a34a; }
+.net-ft-arrow-tx { color: #f97316; }
+.net-ft-seg-btn.active .net-ft-arrow { color: inherit; }
+.net-ft-hidden-select { display: none !important; }
+
+/* Ordenacion */
+.net-ft-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 4px 0 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-color);
+  border-radius: 9px;
+  cursor: pointer;
+}
+.net-ft-sort:focus-within { border-color: var(--sitai-navy); }
+.net-ft-sort-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--text-muted);
+}
+.net-ft-sort .toolbar-select {
+  height: 100%;
+  padding-right: 6px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.net-ft-switch { margin-left: 2px; }
+
+/* Limpiar filtros y contador */
+.net-ft-clear-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(225, 29, 72, 0.28);
+  background: rgba(225, 29, 72, 0.07);
+  color: var(--rose);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease;
+}
+.net-ft-clear-all svg { width: 11px; height: 11px; }
+.net-ft-clear-all:hover { background: var(--rose); color: #ffffff; }
+.net-ft-clear-all.hidden { display: none; }
+.net-ft-counter {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.net-ft-counter.is-filtered {
+  background: rgba(18, 79, 174, 0.08);
+  border-color: rgba(18, 79, 174, 0.25);
+  color: var(--sitai-blue);
+}
+
+/* Conteo por chip de categoria */
+.net-chip-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.net-chip-btn.active .net-chip-count {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+.net-chip-btn.net-chip-empty:not(.active) { opacity: .55; }
+
+@media (max-width: 760px) {
+  .net-ft-segment { width: 100%; }
+  .net-ft-seg-btn { flex: 1 1 auto; justify-content: center; }
+  .net-ft-spacer { display: none; }
+}
 .net-inspect-btn {
   display: inline-flex;
   align-items: center;
@@ -3893,8 +4103,6 @@ body {
 .drawer-ratio-other { background: #94a3b8; height: 100%; }
 
 /* ===== Matriz de flujos multi-capa (estilo ntopng / Wireshark) ===== */
-.net-sort-wrap { display: inline-flex; align-items: center; gap: 6px; }
-.net-sort-label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); }
 
 .net-flows-matrix-table { table-layout: auto; border-collapse: separate; border-spacing: 0; }
 .net-flows-matrix-table thead th {

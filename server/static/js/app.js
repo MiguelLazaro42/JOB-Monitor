@@ -2725,6 +2725,10 @@
   const netHostsGrid = document.getElementById('net-hosts-grid');
   const netHostsTableWrap = document.getElementById('net-hosts-table-wrap');
   const netCategoryChipBtns = document.querySelectorAll('.net-chip-btn');
+  const netCategoryChipsBar = document.getElementById('net-category-chips');
+  const netDirectionPillBtns = document.querySelectorAll('#net-direction-pills .net-ft-seg-btn');
+  const netSearchClearBtn = document.getElementById('net-search-clear-btn');
+  const netClearFiltersBtn = document.getElementById('net-clear-filters-btn');
   const netDrawer = document.getElementById('net-drawer');
   const netDrawerBackdrop = document.getElementById('net-drawer-backdrop');
   const netDrawerTitle = document.getElementById('net-drawer-title');
@@ -2771,6 +2775,13 @@
     hostViewMode: 'cards',
     hostHistory: new Map(),
   };
+
+  // Tiempo real por WebSocket: debounce de render, sincronizacion por log y respaldo HTTP relajado
+  const NET_WS_RENDER_DEBOUNCE_MS = 800;
+  const NET_LOG_SYNC_DEBOUNCE_MS = 3000;
+  const NET_BACKUP_SYNC_MS = 45000;
+  let netWsRenderTimer = null;
+  let netLastSyncAt = 0;
 
   function formatBytes(bytes) {
     const n = Math.max(0, Number(bytes) || 0);
@@ -3103,7 +3114,7 @@
     return `<div class="ntop-bar"><div class="ntop-bar-track"><div class="ntop-bar-fill" style="width:${pct}%"></div></div><span class="ntop-bar-val">${label}</span></div>`;
   }
 
-  // Orden estable de filas de clientes: se fija al inicio y no cambia durante el polling de 4s
+  // Orden estable de filas de clientes: se fija al inicio y no cambia durante las actualizaciones en vivo
   let netClientOrder = [];
   let netClientOrderDate = null;
 
@@ -3649,20 +3660,33 @@
     return apps.length > 0 && apps.every((a) => NET_BG_DAEMONS.includes(a));
   }
 
+  // Estado actual de los filtros de la matriz de flujos
+  function netFlowFilterState() {
+    return {
+      cat: (netCategoryFilter && netCategoryFilter.value) || 'ALL',
+      dir: (netDirectionFilter && netDirectionFilter.value) || 'ALL',
+      q: netSearchInput ? netSearchInput.value.trim().toLowerCase() : '',
+      showSys: !!(netShowSysToggle && netShowSysToggle.checked),
+    };
+  }
+
+  function netFlowMatchesSearch(d, q) {
+    if (!q) return true;
+    return `${d.domain} ${d.raw_target || ''} ${d.resolved_domain || ''} ${d.asn || ''} ${d.org_name || ''} ${d.whois_org || ''} ${d.country_code || ''} ${d.app_name} ${d.alias} ${d.hostname}`.toLowerCase().includes(q);
+  }
+
+  function netFlowMatches(d, f) {
+    if (!f.showSys && netIsSystemNoise(d, f.cat, f.q)) return false;
+    if (f.cat !== 'ALL' && (d.category || 'OTHER') !== f.cat) return false;
+    if (f.dir === 'INBOUND' && d.direction !== 'INBOUND') return false;
+    if (f.dir === 'RX_HEAVY' && !((d.rx_bytes || 0) > (d.tx_bytes || 0))) return false;
+    if (f.dir === 'TX_HEAVY' && !((d.tx_bytes || 0) > (d.rx_bytes || 0))) return false;
+    return netFlowMatchesSearch(d, f.q);
+  }
+
   function netFilteredFlows() {
-    const cat = (netCategoryFilter && netCategoryFilter.value) || 'ALL';
-    const q = netSearchInput ? netSearchInput.value.trim().toLowerCase() : '';
-    const dir = (netDirectionFilter && netDirectionFilter.value) || 'ALL';
-    const showSys = !!(netShowSysToggle && netShowSysToggle.checked);
-    const flows = netState.domains.filter((d) => {
-      if (!showSys && netIsSystemNoise(d, cat, q)) return false;
-      if (cat !== 'ALL' && (d.category || 'OTHER') !== cat) return false;
-      if (dir === 'INBOUND' && d.direction !== 'INBOUND') return false;
-      if (dir === 'RX_HEAVY' && !((d.rx_bytes || 0) > (d.tx_bytes || 0))) return false;
-      if (dir === 'TX_HEAVY' && !((d.tx_bytes || 0) > (d.rx_bytes || 0))) return false;
-      if (!q) return true;
-      return `${d.domain} ${d.raw_target || ''} ${d.resolved_domain || ''} ${d.asn || ''} ${d.org_name || ''} ${d.whois_org || ''} ${d.country_code || ''} ${d.app_name} ${d.alias} ${d.hostname}`.toLowerCase().includes(q);
-    });
+    const f = netFlowFilterState();
+    const flows = netState.domains.filter((d) => netFlowMatches(d, f));
     const sortBy = (netFlowSortSelect && netFlowSortSelect.value) || 'TOTAL';
     const num = (v) => Number(v) || 0;
     const total = (d) => num(d.estimated_bytes) || (num(d.rx_bytes) + num(d.tx_bytes));
@@ -3790,12 +3814,62 @@
     </div></td></tr>`;
   }
 
+  // Universo base de flujos visibles (solo aplica el filtro de ruido de sistema)
+  function netBaseFlowCount() {
+    const f = netFlowFilterState();
+    const base = { cat: 'ALL', dir: 'ALL', q: '', showSys: f.showSys };
+    return netState.domains.reduce((n, d) => n + (netFlowMatches(d, base) ? 1 : 0), 0);
+  }
+
+  function netHasActiveFlowFilters() {
+    const f = netFlowFilterState();
+    return f.cat !== 'ALL' || f.dir !== 'ALL' || f.q !== '';
+  }
+
+  // Conteo de flujos por chip de categoria (respeta busqueda y ruido de sistema, no la categoria activa)
+  function netRenderCategoryCounts() {
+    if (!netCategoryChipsBar) return;
+    const f = netFlowFilterState();
+    netCategoryChipBtns.forEach((chip) => {
+      const chipCat = chip.dataset.category || 'ALL';
+      const crit = chipCat === 'INBOUND'
+        ? { cat: 'ALL', dir: 'INBOUND', q: f.q, showSys: f.showSys }
+        : { cat: chipCat, dir: 'ALL', q: f.q, showSys: f.showSys };
+      const count = netState.domains.reduce((n, d) => n + (netFlowMatches(d, crit) ? 1 : 0), 0);
+      const badge = chip.querySelector('.net-chip-count');
+      if (badge) badge.textContent = String(count);
+      chip.classList.toggle('net-chip-empty', count === 0 && chipCat !== 'ALL');
+    });
+  }
+
+  // Sincroniza chips, pildoras de direccion y botones de limpiar con el estado de los filtros
+  function netSyncFlowFilterUi() {
+    const f = netFlowFilterState();
+    const activeChip = f.cat === 'ALL' && f.dir === 'INBOUND' ? 'INBOUND' : f.cat;
+    netCategoryChipBtns.forEach((c) => c.classList.toggle('active', (c.dataset.category || 'ALL') === activeChip));
+    netDirectionPillBtns.forEach((b) => {
+      const on = b.dataset.dir === f.dir;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+    if (netSearchClearBtn) netSearchClearBtn.classList.toggle('hidden', !(netSearchInput && netSearchInput.value));
+    if (netClearFiltersBtn) netClearFiltersBtn.classList.toggle('hidden', !netHasActiveFlowFilters());
+  }
+
   function renderNetworkDomains() {
     const domains = netFilteredFlows();
-    if (netCounterBadge) netCounterBadge.textContent = `${domains.length} dominios`;
+    const baseTotal = netBaseFlowCount();
+    if (netCounterBadge) {
+      netCounterBadge.textContent = `Mostrando ${domains.length} de ${baseTotal} flujos`;
+      netCounterBadge.title = domains.length > 300 ? 'La tabla muestra los primeros 300 flujos segun el orden seleccionado' : '';
+      netCounterBadge.classList.toggle('is-filtered', domains.length !== baseTotal);
+    }
+    netSyncFlowFilterUi();
+    netRenderCategoryCounts();
     if (!netDomainsTbody) return;
     if (!domains.length) {
-      netDomainsTbody.innerHTML = '<tr><td colspan="6" class="empty-row">Sin dominios registrados.</td></tr>';
+      const msg = netHasActiveFlowFilters() ? 'Ningún flujo coincide con los filtros activos.' : 'Sin dominios registrados.';
+      netDomainsTbody.innerHTML = `<tr><td colspan="6" class="empty-row">${msg}</td></tr>`;
       return;
     }
     const isToday = ((netDateInput && netDateInput.value) || netTodayStr()) === netTodayStr();
@@ -3912,13 +3986,14 @@
 
   function netApplyAutoUi() {
     if (netLiveInd) netLiveInd.classList.toggle('paused', !netState.auto);
-    setText('net-live-indicator', netState.auto ? 'En vivo • Auto-actualización 4s' : 'Auto-actualización en pausa');
+    setText('net-live-indicator', netState.auto ? 'Tiempo Real (WebSocket)' : 'Feed en vivo en pausa');
   }
 
   async function loadNetworkDashboard(opts = {}) {
     const silent = !!opts.silent;
     if (netState.loading) return;
     netState.loading = true;
+    netLastSyncAt = Date.now();
     if (netDateInput && !netDateInput.value) netDateInput.value = netTodayStr();
     if (!silent && refreshNetBtn) refreshNetBtn.classList.add('loading');
     try {
@@ -3956,34 +4031,143 @@
     return loadNetworkDashboard();
   }
 
-  // Evento en vivo desde WebSocket (agent_telemetry / new_log NETWORK)
+  // ---- Motor de tiempo real por WebSocket (sin polling HTTP periodico) ----
+  function netLocalStamp(date = new Date()) {
+    const pad = (x) => String(x).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
+
+  function netIsViewingToday() {
+    return ((netDateInput && netDateInput.value) || netTodayStr()) === netTodayStr();
+  }
+
+  // Inserta o actualiza en memoria los flujos recibidos por WebSocket (sin consultar la BD)
+  function netUpsertLiveDomains(agent, list) {
+    if (!agent || !Array.isArray(list) || !list.length) return false;
+    if (!netIsViewingToday()) return false;
+    const host = netSelectedHost();
+    if (host !== 'ALL' && agent.agent_id !== host) return false;
+    if (state.tenantFilter && state.tenantFilter !== 'ALL' && agent.tenant_id && agent.tenant_id !== state.tenantFilter) return false;
+
+    const index = new Map();
+    netState.domains.forEach((d, i) => index.set(netFlowKey(d), i));
+    const stamp = netLocalStamp();
+    let changed = false;
+
+    list.forEach((item) => {
+      if (!item || !item.domain) return;
+      const est = Math.max(0, Number(item.estimated_bytes) || 0);
+      const hasSplit = item.rx_bytes !== null && item.rx_bytes !== undefined
+        || item.tx_bytes !== null && item.tx_bytes !== undefined;
+      let rx = hasSplit ? Math.max(0, Number(item.rx_bytes) || 0) : Math.round(est * 0.85);
+      let tx = hasSplit ? Math.max(0, Number(item.tx_bytes) || 0) : est - Math.round(est * 0.85);
+      if (hasSplit && rx + tx === 0 && est > 0) {
+        rx = Math.round(est * 0.85);
+        tx = est - rx;
+      }
+      const total = Math.max(est, rx + tx);
+      const hits = Math.max(1, Number(item.connections) || 1);
+      const inbound = String(item.direction || '').toUpperCase() === 'INBOUND';
+      const key = `${agent.agent_id}|${item.domain}`;
+      const pos = index.get(key);
+
+      if (pos !== undefined) {
+        const d = netState.domains[pos];
+        d.rx_bytes = (Number(d.rx_bytes) || 0) + rx;
+        d.tx_bytes = (Number(d.tx_bytes) || 0) + tx;
+        d.estimated_bytes = (Number(d.estimated_bytes) || 0) + total;
+        d.hit_count = (Number(d.hit_count) || 0) + hits;
+        d.last_seen_at = stamp;
+        if (item.category) d.category = item.category;
+        if (inbound) {
+          d.direction = 'INBOUND';
+          if (item.port) d.port = item.port;
+        }
+      } else {
+        netState.domains.push({
+          agent_id: agent.agent_id,
+          alias: agent.alias || agent.hostname || agent.agent_id,
+          hostname: agent.hostname || '',
+          domain: item.domain,
+          app_name: item.app_name || '',
+          apps_list: item.app_name || '',
+          category: item.category || 'OTHER',
+          hit_count: hits,
+          estimated_bytes: total,
+          rx_bytes: rx,
+          tx_bytes: tx,
+          direction: inbound ? 'INBOUND' : 'OUTBOUND',
+          port: item.port || 443,
+          first_seen_at: stamp,
+          last_seen_at: stamp,
+        });
+        index.set(key, netState.domains.length - 1);
+      }
+      changed = true;
+    });
+    return changed;
+  }
+
+  // Redibuja solo la sub-vista visible
+  function netRenderActiveView() {
+    if (state.currentView !== 'network') return;
+    netState.lastRender = Date.now();
+    if (netState.subview === 'flows') {
+      renderNetworkDomains();
+    } else if (netState.subview === 'hosts') {
+      renderNetworkHosts();
+    } else {
+      renderNetworkDonuts();
+      renderTopTalkersLeaderboard();
+      setText('net-kpi-flows', `${netState.domains.length} Flujos / Dominios`);
+    }
+    netMarkUpdated(true);
+  }
+
+  // Agrupa rafagas de telemetria de varios agentes en un solo render (maximo uno cada 800ms)
+  function netScheduleLiveRender() {
+    if (netWsRenderTimer) return;
+    netWsRenderTimer = setTimeout(() => {
+      netWsRenderTimer = null;
+      netRenderActiveView();
+    }, NET_WS_RENDER_DEBOUNCE_MS);
+  }
+
+  // Evento en vivo desde WebSocket (agent_telemetry)
   function netOnLiveTelemetry(msg) {
     if (state.currentView !== 'network') return;
     const ag = msg && msg.agent;
-    if (ag && Array.isArray(msg.recent_domains)) netState.liveDomains.set(ag.agent_id, msg.recent_domains);
+    if (ag && Array.isArray(msg.recent_domains)) {
+      netState.liveDomains.set(ag.agent_id, msg.recent_domains);
+    }
     netUpdateLiveIndicators();
-    drawTrafficChart();
-    const now = Date.now();
-    if (now - netState.lastRender > 1500) {
-      netState.lastRender = now;
-      renderNetworkDomains();
+    if (!netState.auto) return;
+    if (ag && Array.isArray(msg.recent_domains) && netUpsertLiveDomains(ag, msg.recent_domains)) {
+      netScheduleLiveRender();
     }
   }
 
+  // Evento new_log de categoria NETWORK: sincronizacion suave con debounce
   function netOnNetworkLog() {
-    if (state.currentView !== 'network') return;
+    if (state.currentView !== 'network' || !netState.auto) return;
     clearTimeout(netState.refreshTimer);
-    netState.refreshTimer = setTimeout(() => loadNetworkDashboard({ silent: true }), 800);
+    netState.refreshTimer = setTimeout(() => loadNetworkDashboard({ silent: true }), NET_LOG_SYNC_DEBOUNCE_MS);
   }
 
-  // Muestreo cada 4s (siempre, para conservar historial) + auto-refresh en la vista
+  // Muestreo local cada 4s: historial de velocidad, indicadores y grafica (sin peticiones HTTP)
   setInterval(() => {
     netPushSample();
     if (state.currentView !== 'network') return;
     netUpdateLiveIndicators();
     drawTrafficChart();
-    if (netState.auto && !document.hidden) loadNetworkDashboard({ silent: true });
   }, NET_TICK_MS);
+
+  // Respaldo relajado: sincroniza con la BD cada 45s solo si el feed en vivo esta activo
+  setInterval(() => {
+    if (state.currentView !== 'network' || !netState.auto || document.hidden) return;
+    if (Date.now() - netLastSyncAt < NET_BACKUP_SYNC_MS - 1000) return;
+    loadNetworkDashboard({ silent: true });
+  }, NET_BACKUP_SYNC_MS);
   window.addEventListener('resize', () => { if (state.currentView === 'network') drawTrafficChart(); });
 
   // Canvas hover scrubbing para tooltip interactivo
@@ -4150,8 +4334,41 @@
   let netSearchTimer = null;
   if (netSearchInput) {
     netSearchInput.addEventListener('input', () => {
+      if (netSearchClearBtn) netSearchClearBtn.classList.toggle('hidden', !netSearchInput.value);
       clearTimeout(netSearchTimer);
       netSearchTimer = setTimeout(renderNetworkDomains, 150);
+    });
+    netSearchInput.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && netSearchInput.value) {
+        netSearchInput.value = '';
+        clearTimeout(netSearchTimer);
+        renderNetworkDomains();
+      }
+    });
+  }
+  if (netSearchClearBtn) {
+    netSearchClearBtn.addEventListener('click', () => {
+      if (netSearchInput) {
+        netSearchInput.value = '';
+        netSearchInput.focus();
+      }
+      clearTimeout(netSearchTimer);
+      renderNetworkDomains();
+    });
+  }
+  netDirectionPillBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (netDirectionFilter) netDirectionFilter.value = btn.dataset.dir || 'ALL';
+      renderNetworkDomains();
+    });
+  });
+  if (netClearFiltersBtn) {
+    netClearFiltersBtn.addEventListener('click', () => {
+      if (netCategoryFilter) netCategoryFilter.value = 'ALL';
+      if (netDirectionFilter) netDirectionFilter.value = 'ALL';
+      if (netSearchInput) netSearchInput.value = '';
+      clearTimeout(netSearchTimer);
+      renderNetworkDomains();
     });
   }
   if (netAutoToggle) {
@@ -4174,8 +4391,6 @@
   // Chips rápidos de categoría
   netCategoryChipBtns.forEach((chip) => {
     chip.addEventListener('click', () => {
-      netCategoryChipBtns.forEach((c) => c.classList.remove('active'));
-      chip.classList.add('active');
       const cat = chip.dataset.category || 'ALL';
       if (cat === 'INBOUND') {
         if (netCategoryFilter) netCategoryFilter.value = 'ALL';

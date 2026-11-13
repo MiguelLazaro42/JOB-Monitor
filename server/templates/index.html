@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=20261113-v13" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261113-v14" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -1163,18 +1163,18 @@
         </div>
         <div class="ntop-live-ind">
           <span id="net-live-dot" class="ntop-live-dot"></span>
-          <span id="net-live-indicator">En vivo • Auto 4s</span>
+          <span id="net-live-indicator">Tiempo Real (WebSocket)</span>
           <span id="net-last-update" class="ntop-last-update"></span>
           <span id="net-intel-pill" class="net-intel-pill" title="Caché de inteligencia IP/Dominio y límite de API">Intel DB: --</span>
         </div>
         <div class="ntop-quick-actions">
           <input id="net-date-input" type="date" class="toolbar-select net-subnav-date" />
-          <label class="ntop-switch" title="Auto-Refresh 4s">
+          <label class="ntop-switch" title="Feed en vivo por WebSocket (respaldo HTTP cada 45s)">
             <input id="net-auto-toggle" type="checkbox" checked />
             <span class="ntop-switch-track"></span>
-            <span class="ntop-switch-label">Auto 4s</span>
+            <span class="ntop-switch-label">Feed en Vivo (WS)</span>
           </label>
-          <button id="refresh-net-btn" type="button" class="btn btn-primary btn-sm ntop-refresh-btn" title="Refrescar">
+          <button id="refresh-net-btn" type="button" class="btn btn-primary btn-sm ntop-refresh-btn" title="Refrescar ahora desde la base de datos">
             <svg class="icon-sm ntop-refresh-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
             <span>Refrescar</span>
           </button>
@@ -1329,35 +1329,44 @@
     <div id="net-subview-flows" class="net-subview hidden">
       <!-- Chips rápidos de categoría ntopng -->
       <div class="net-chips-bar" id="net-category-chips" role="toolbar" aria-label="Categorías de tráfico">
-        <button type="button" class="net-chip-btn active" data-category="ALL">Todos</button>
-        <button type="button" class="net-chip-btn" data-category="STREAMING">Streaming</button>
-        <button type="button" class="net-chip-btn" data-category="AI">IA / Asistentes</button>
-        <button type="button" class="net-chip-btn" data-category="CLOUD">Cloud / Almacenamiento</button>
-        <button type="button" class="net-chip-btn" data-category="MESSAGING">Mensajería / Chat</button>
-        <button type="button" class="net-chip-btn" data-category="WORK">Trabajo / Dev</button>
-        <button type="button" class="net-chip-btn" data-category="GAMING">Gaming</button>
-        <button type="button" class="net-chip-btn" data-category="INBOUND">Inbound (Puertos)</button>
-        <button type="button" class="net-chip-btn" data-category="SYSTEM">Sistema</button>
+        <button type="button" class="net-chip-btn active" data-category="ALL"><span class="net-chip-label">Todos</span><span class="net-chip-count" data-chip-count="ALL">0</span></button>
+        <button type="button" class="net-chip-btn" data-category="STREAMING"><span class="net-chip-label">Streaming</span><span class="net-chip-count" data-chip-count="STREAMING">0</span></button>
+        <button type="button" class="net-chip-btn" data-category="AI"><span class="net-chip-label">IA / Asistentes</span><span class="net-chip-count" data-chip-count="AI">0</span></button>
+        <button type="button" class="net-chip-btn" data-category="CLOUD"><span class="net-chip-label">Cloud / Almacenamiento</span><span class="net-chip-count" data-chip-count="CLOUD">0</span></button>
+        <button type="button" class="net-chip-btn" data-category="MESSAGING"><span class="net-chip-label">Mensajería / Chat</span><span class="net-chip-count" data-chip-count="MESSAGING">0</span></button>
+        <button type="button" class="net-chip-btn" data-category="WORK"><span class="net-chip-label">Trabajo / Dev</span><span class="net-chip-count" data-chip-count="WORK">0</span></button>
+        <button type="button" class="net-chip-btn" data-category="GAMING"><span class="net-chip-label">Gaming</span><span class="net-chip-count" data-chip-count="GAMING">0</span></button>
+        <button type="button" class="net-chip-btn" data-category="INBOUND"><span class="net-chip-label">Inbound (Puertos)</span><span class="net-chip-count" data-chip-count="INBOUND">0</span></button>
+        <button type="button" class="net-chip-btn" data-category="SYSTEM"><span class="net-chip-label">Sistema</span><span class="net-chip-count" data-chip-count="SYSTEM">0</span></button>
       </div>
 
       <!-- Barra de herramientas de flujos -->
       <div class="panel-card net-flows-toolbar">
-        <div class="search-box">
-          <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-          </svg>
-          <input id="net-search-input" type="text" placeholder="Filtrar dominio, app, host o ASN..." />
-        </div>
-        <div class="control-select-wrap">
-          <select id="net-direction-filter" class="toolbar-select">
-            <option value="ALL">Todo el Tráfico (↓ RX + ↑ TX)</option>
-            <option value="RX_HEAVY">Mayor Descarga (↓ RX)</option>
-            <option value="TX_HEAVY">Mayor Subida (↑ TX)</option>
-            <option value="INBOUND">Entrantes al Equipo (Puertos)</option>
+        <div class="net-ft-row net-ft-row-main">
+          <div class="net-ft-search" id="net-ft-search">
+            <svg class="net-ft-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input id="net-search-input" type="text" autocomplete="off" spellcheck="false" placeholder="Buscar dominio, IP, app, equipo, ASN u organización" aria-label="Buscar flujos" />
+            <button type="button" id="net-search-clear-btn" class="net-ft-search-clear hidden" title="Limpiar búsqueda" aria-label="Limpiar búsqueda">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+
+          <div class="net-ft-segment" id="net-direction-pills" role="radiogroup" aria-label="Dirección del tráfico">
+            <button type="button" class="net-ft-seg-btn active" data-dir="ALL" role="radio" aria-checked="true">Todo el Tráfico</button>
+            <button type="button" class="net-ft-seg-btn" data-dir="RX_HEAVY" role="radio" aria-checked="false"><span class="net-ft-arrow net-ft-arrow-rx">&darr;</span> Descarga (RX)</button>
+            <button type="button" class="net-ft-seg-btn" data-dir="TX_HEAVY" role="radio" aria-checked="false"><span class="net-ft-arrow net-ft-arrow-tx">&uarr;</span> Subida (TX)</button>
+            <button type="button" class="net-ft-seg-btn" data-dir="INBOUND" role="radio" aria-checked="false">Inbound (Puertos)</button>
+          </div>
+          <!-- Selectores nativos conservados como fuente de verdad (ocultos) -->
+          <select id="net-direction-filter" class="toolbar-select net-ft-hidden-select" tabindex="-1" aria-hidden="true">
+            <option value="ALL">Todo el Tráfico</option>
+            <option value="RX_HEAVY">Descarga (RX)</option>
+            <option value="TX_HEAVY">Subida (TX)</option>
+            <option value="INBOUND">Inbound (Puertos)</option>
           </select>
-        </div>
-        <div class="control-select-wrap" style="display:none">
-          <select id="net-category-filter" class="toolbar-select">
+          <select id="net-category-filter" class="toolbar-select net-ft-hidden-select" tabindex="-1" aria-hidden="true">
             <option value="ALL">Todas las categorías</option>
             <option value="STREAMING">Streaming / Video</option>
             <option value="SOCIAL">Redes Sociales</option>
@@ -1372,23 +1381,29 @@
             <option value="OTHER">Otros</option>
           </select>
         </div>
-        <div class="control-select-wrap net-sort-wrap">
-          <span class="net-sort-label">Ordenar</span>
-          <select id="net-flow-sort-select" class="toolbar-select" title="Criterio de ordenamiento de flujos">
-            <option value="TOTAL">Mayor Tráfico Total</option>
-            <option value="RX">Mayor Descarga (RX)</option>
-            <option value="TX">Mayor Subida (TX)</option>
-            <option value="RECENT">Más Recientes</option>
-            <option value="KEYS">Mayor Teclado / Interactividad</option>
-          </select>
-        </div>
-        <label class="ntop-switch" title="Mostrar tráfico interno del sistema y flujos de 0 B">
-          <input id="net-show-sys-toggle" type="checkbox" />
-          <span class="ntop-switch-track"></span>
-          <span class="ntop-switch-label">Ruido de Sistema</span>
-        </label>
-        <div class="net-flows-toolbar-actions">
-          <span id="net-counter-badge" class="badge-pill muted-badge">0 dominios</span>
+
+        <div class="net-ft-row net-ft-row-meta">
+          <label class="net-ft-sort" for="net-flow-sort-select">
+            <span class="net-ft-sort-label">Ordenar por</span>
+            <select id="net-flow-sort-select" class="toolbar-select" title="Criterio de ordenamiento de flujos">
+              <option value="TOTAL">Mayor Tráfico Total</option>
+              <option value="RX">Mayor Descarga (RX)</option>
+              <option value="TX">Mayor Subida (TX)</option>
+              <option value="RECENT">Más Recientes</option>
+              <option value="KEYS">Mayor Teclado / Interactividad</option>
+            </select>
+          </label>
+          <label class="ntop-switch net-ft-switch" title="Mostrar tráfico interno del sistema y flujos de 0 B">
+            <input id="net-show-sys-toggle" type="checkbox" />
+            <span class="ntop-switch-track"></span>
+            <span class="ntop-switch-label">Ruido de Sistema</span>
+          </label>
+          <div class="net-ft-spacer"></div>
+          <button type="button" id="net-clear-filters-btn" class="net-ft-clear-all hidden" title="Restablecer categoría, dirección y búsqueda">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            <span>Limpiar Filtros</span>
+          </button>
+          <span id="net-counter-badge" class="net-ft-counter" aria-live="polite">Mostrando 0 de 0 flujos</span>
           <button id="export-net-csv-btn" type="button" class="btn btn-secondary btn-sm" title="Descargar reporte en CSV">
             <span>Exportar CSV</span>
           </button>
@@ -1678,6 +1693,6 @@
 
   <script src="/static/js/audio.js?v=20261111-v9"></script>
   <script src="/static/js/viewer.js?v=20261111-v9"></script>
-  <script src="/static/js/app.js?v=20261113-v13"></script>
+  <script src="/static/js/app.js?v=20261113-v14"></script>
 </body>
 </html>
