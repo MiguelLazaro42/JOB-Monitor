@@ -1221,7 +1221,7 @@
         return `<details class="st-app-details" ${isOpen ? 'open' : ''}>
               <summary class="st-app-summary">
                 <div class="st-app-left">
-                  <svg class="st-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"/></svg>
+                  <svg class="st-chevron icon-xs" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"/></svg>
                   <span class="st-app-title" title="${escapeHtml(ap.app_name)}">${stHighlight(ap.app_name, q)}</span>
                   <span class="st-app-cat-pill" style="--st-cat-color:${col}">${escapeHtml(ap.category)}</span>
                 </div>
