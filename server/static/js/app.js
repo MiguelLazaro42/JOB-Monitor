@@ -2312,6 +2312,8 @@
     SOCIAL: 'Redes Sociales',
     MESSAGING: 'Mensajería',
     AI: 'Inteligencia Artificial',
+    GAMING: 'Videojuegos',
+    SHOPPING: 'Compras / E-commerce',
     CLOUD: 'Almacenamiento Cloud',
     REMOTE: 'Acceso Remoto',
     WORK: 'Desarrollo / Trabajo',
@@ -2320,6 +2322,7 @@
   };
   const NET_CATEGORY_COLORS = {
     STREAMING: '#e11d48', SOCIAL: '#f97316', MESSAGING: '#06b6d4', AI: '#8b5cf6',
+    GAMING: '#eab308', SHOPPING: '#ec4899',
     CLOUD: '#6366f1', REMOTE: '#d946ef', WORK: '#16a34a', SYSTEM: '#64748b', OTHER: '#94a3b8',
   };
   const NET_PALETTE = ['#e11d48', '#06b6d4', '#16a34a', '#8b5cf6', '#f97316', '#94a3b8'];

@@ -2320,6 +2320,8 @@ body {
 .ntop-badge.ntop-badge-off { background: var(--bg-elevated); color: var(--text-muted); }
 .net-live-row td:nth-child(2) strong::before { content: "● "; color: var(--emerald); }
 .net-cat-pill.cat-MESSAGING { background: #e0f2fe; color: #0369a1; }
+.net-cat-pill.cat-GAMING { background: #fef9c3; color: #a16207; }
+.net-cat-pill.cat-SHOPPING { background: #fce7f3; color: #be185d; }
 .net-cat-pill.cat-CLOUD { background: #ede9fe; color: #6d28d9; }
 .net-cat-pill.cat-SYSTEM { background: #e5e7eb; color: #4b5563; }
 

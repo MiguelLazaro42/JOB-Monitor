@@ -7,14 +7,32 @@ import secrets
 import sqlite3
 import threading
 from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 import config
 
+try:
+    from server.service_catalog import match_service_domain_or_ip
+except ImportError:  # el servidor se ejecuta con server/ como directorio raíz
+    from service_catalog import match_service_domain_or_ip
+
 DB_PATH: Path = config.DATA_DIR / "remote_assist.db"
 MASTER_TENANT_ID = "sitai-master"
+
+
+@lru_cache(maxsize=8192)
+def _normalize_domain(domain: str, app_name: str = "", agent_cat: str = "OTHER") -> tuple:
+    """Traduce dominio CDN/IP crudo al servicio canónico (catálogo AdGuard + nDPI).
+    Conserva la categoría enviada por el agente si el catálogo no aporta una mejor."""
+    clean, cat = match_service_domain_or_ip(domain, app_name)
+    if not clean:
+        return "", agent_cat
+    if cat == "OTHER" and agent_cat and agent_cat != "OTHER":
+        cat = agent_cat
+    return clean[:253], cat
 
 
 def hash_password(plain: str) -> str:
@@ -930,6 +948,9 @@ class DatabaseManager:
                 continue
             app = str(d.get("app_name") or "Desconocido").strip()[:80] or "Desconocido"
             cat = str(d.get("category") or "OTHER").strip().upper()[:30]
+            domain, cat = _normalize_domain(domain, app, cat)
+            if not domain:
+                continue
             try:
                 hits = max(1, int(d.get("connections", d.get("hit_count", 1))))
                 est = max(0, int(d.get("estimated_bytes", 0)))
@@ -999,8 +1020,26 @@ class DatabaseManager:
             finally:
                 conn.close()
 
+        def _merge_rows(rows, sum_keys, max_key=None):
+            merged: Dict[tuple, dict] = {}
+            for r in rows:
+                dom, cat = _normalize_domain(r["domain"], "", (r["category"] or "OTHER").upper())
+                if not dom:
+                    continue
+                m = merged.setdefault((r["agent_id"], dom, cat), {
+                    "agent_id": r["agent_id"], "domain": dom, "category": cat, **{k: 0 for k in sum_keys},
+                    **({max_key: ""} if max_key else {}),
+                })
+                for k in sum_keys:
+                    m[k] += r[k] or 0
+                if max_key and (r[max_key] or "") > m[max_key]:
+                    m[max_key] = r[max_key] or ""
+            return list(merged.values())
+
+        dom_rows = _merge_rows(dom_rows, ("hits", "est"))
+        recent_rows = _merge_rows(recent_rows, (), "last_seen")
         valid_ids = {d["agent_id"] for d in devices}
-        by_agent: Dict[str, List[sqlite3.Row]] = {}
+        by_agent: Dict[str, List[dict]] = {}
         global_domains: Dict[str, dict] = {}
         categories: Dict[str, dict] = {}
         for r in dom_rows:
@@ -1015,8 +1054,8 @@ class DatabaseManager:
             c["estimated_bytes"] += r["est"] or 0
 
         generic_domains = {"google.com", "microsoft.com"}
-        priority_cats = {"STREAMING", "SOCIAL", "MESSAGING", "AI", "CLOUD"}
-        recent_by_agent: Dict[str, List[sqlite3.Row]] = {}
+        priority_cats = {"STREAMING", "SOCIAL", "MESSAGING", "AI", "GAMING", "SHOPPING", "CLOUD"}
+        recent_by_agent: Dict[str, List[dict]] = {}
         for r in recent_rows:
             recent_by_agent.setdefault(r["agent_id"], []).append(r)
 
@@ -1095,14 +1134,10 @@ class DatabaseManager:
         if agent_id and agent_id != "ALL":
             clauses.append("n.agent_id = ?")
             params.append(agent_id)
-        if category and category != "ALL":
-            clauses.append("n.category = ?")
-            params.append(category)
-        if search_q and search_q.strip():
-            q = f"%{search_q.strip()}%"
-            clauses.append("(n.domain LIKE ? OR n.app_name LIKE ? OR d.alias LIKE ? OR d.hostname LIKE ?)")
-            params.extend([q, q, q, q])
-        params.append(max(1, min(5000, int(limit))))
+        # Categoría y búsqueda se aplican tras normalizar (filas históricas guardan dominios CDN crudos).
+        q_low = (search_q or "").strip().lower()
+        max_rows = max(1, min(5000, int(limit)))
+        params.append(5000)
         sql = f"""
             SELECT n.date, n.agent_id, n.domain, n.app_name, n.category, n.hit_count, n.estimated_bytes,
                    n.first_seen_at, n.last_seen_at,
@@ -1117,9 +1152,28 @@ class DatabaseManager:
         with self._lock:
             conn = self._get_conn()
             try:
-                return [dict(r) for r in conn.execute(sql, params).fetchall()]
+                raw = [dict(r) for r in conn.execute(sql, params).fetchall()]
             finally:
                 conn.close()
+        merged: Dict[tuple, dict] = {}
+        for r in raw:
+            dom, cat = _normalize_domain(r["domain"], r["app_name"] or "", (r["category"] or "OTHER").upper())
+            if not dom:
+                continue
+            if category and category != "ALL" and cat != category:
+                continue
+            if q_low and not any(q_low in str(v or "").lower() for v in (dom, r["domain"], r["app_name"], r["alias"], r["hostname"])):
+                continue
+            key = (r["agent_id"], dom, r["app_name"])
+            m = merged.get(key)
+            if m is None:
+                merged[key] = {**r, "domain": dom, "category": cat}
+                continue
+            m["hit_count"] += r["hit_count"] or 0
+            m["estimated_bytes"] += r["estimated_bytes"] or 0
+            m["first_seen_at"] = min(m["first_seen_at"] or "9", r["first_seen_at"] or "9")
+            m["last_seen_at"] = max(m["last_seen_at"] or "", r["last_seen_at"] or "")
+        return sorted(merged.values(), key=lambda x: (x["estimated_bytes"], x["hit_count"]), reverse=True)[:max_rows]
 
     def export_network_csv(
         self,
