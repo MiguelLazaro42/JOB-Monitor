@@ -2693,6 +2693,7 @@
   const netDateInput = document.getElementById('net-date-input');
   const netDeviceFilter = document.getElementById('net-device-filter');
   const netCategoryFilter = document.getElementById('net-category-filter');
+  const netDirectionFilter = document.getElementById('net-direction-filter');
   const netSearchInput = document.getElementById('net-search-input');
   const refreshNetBtn = document.getElementById('refresh-net-btn');
   const exportNetCsvBtn = document.getElementById('export-net-csv-btn');
@@ -3186,11 +3187,31 @@
   function netFilteredFlows() {
     const cat = (netCategoryFilter && netCategoryFilter.value) || 'ALL';
     const q = netSearchInput ? netSearchInput.value.trim().toLowerCase() : '';
-    return netState.domains.filter((d) => {
+    const dir = (netDirectionFilter && netDirectionFilter.value) || 'ALL';
+    const flows = netState.domains.filter((d) => {
       if (cat !== 'ALL' && (d.category || 'OTHER') !== cat) return false;
+      if (dir === 'INBOUND' && d.direction !== 'INBOUND') return false;
+      if (dir === 'RX_HEAVY' && !((d.rx_bytes || 0) > (d.tx_bytes || 0))) return false;
+      if (dir === 'TX_HEAVY' && !((d.tx_bytes || 0) > (d.rx_bytes || 0))) return false;
       if (!q) return true;
       return `${d.domain} ${d.raw_target || ''} ${d.resolved_domain || ''} ${d.asn || ''} ${d.org_name || ''} ${d.whois_org || ''} ${d.country_code || ''} ${d.app_name} ${d.alias} ${d.hostname}`.toLowerCase().includes(q);
     });
+    if (dir === 'RX_HEAVY') flows.sort((a, b) => (b.rx_bytes || 0) - (a.rx_bytes || 0));
+    else if (dir === 'TX_HEAVY') flows.sort((a, b) => (b.tx_bytes || 0) - (a.tx_bytes || 0));
+    return flows;
+  }
+
+  function netDirectionBadgeHtml(d) {
+    const port = escapeHtml(String(d.port || 443));
+    if (d.direction === 'INBOUND') {
+      return `<span class="net-dir-badge net-dir-in" title="Conexión entrante al puerto local ${port}">↓ ENTRANTE :${port}</span>`;
+    }
+    return `<span class="net-dir-badge net-dir-std" title="Flujo iniciado por el equipo (puerto remoto ${port})">↓ RX / ↑ TX :${port}</span>`;
+  }
+
+  function netBytesBreakdownHtml(d, maxBytes) {
+    const est = d.estimated_bytes || 0;
+    return `${netBar(est, maxBytes, formatBytes(est))}<div class="net-rxtx"><span class="net-rx">↓ ${formatBytes(d.rx_bytes || 0)}</span><span class="net-tx">↑ ${formatBytes(d.tx_bytes || 0)}</span></div>`;
   }
 
   function renderNetworkDomains() {
@@ -3216,12 +3237,12 @@
         const isLive = liveSet.has(`${d.agent_id}|${d.domain}`);
         return `<tr class="${isLive ? 'net-live-row' : ''}">
           <td>${escapeHtml(d.alias || d.agent_id)}</td>
-          <td>${netDomainCellHtml(d)}${isLive ? ' <span class="ntop-badge ntop-badge-live">EN VIVO</span>' : ''}${netIntelHtml(d)}</td>
+          <td>${netDomainCellHtml(d)} ${netDirectionBadgeHtml(d)}${isLive ? ' <span class="ntop-badge ntop-badge-live">EN VIVO</span>' : ''}${netIntelHtml(d)}</td>
           <td><span class="ntop-badge ntop-badge-off">${escapeHtml(d.app_name || '---')}</span></td>
           <td>${netCrossContextHtml(d)}</td>
           <td><span class="net-cat-pill cat-${escapeHtml(cat)}">${escapeHtml(NET_CATEGORY_LABELS[cat] || cat)}</span></td>
           <td class="net-num">${d.hit_count}</td>
-          <td>${netBar(d.estimated_bytes || 0, maxBytes, formatBytes(d.estimated_bytes))}</td>
+          <td>${netBytesBreakdownHtml(d, maxBytes)}</td>
           <td class="net-num">${escapeHtml(d.last_seen_at || '')}</td>
         </tr>`;
       })
@@ -3328,6 +3349,7 @@
   if (netDateInput) netDateInput.addEventListener('change', () => loadNetworkDashboard());
   if (netDeviceFilter) netDeviceFilter.addEventListener('change', () => loadNetworkDashboard({ silent: true }));
   if (netCategoryFilter) netCategoryFilter.addEventListener('change', renderNetworkDomains);
+  if (netDirectionFilter) netDirectionFilter.addEventListener('change', renderNetworkDomains);
   let netSearchTimer = null;
   if (netSearchInput) {
     netSearchInput.addEventListener('input', () => {

@@ -3442,3 +3442,11 @@ body {
 .net-intel-pill.pg-on { background: #dcfce7; color: #15803d; }
 .net-intel-pill.pg-off { background: #fef3c7; color: #92400e; }
 .net-intel-pill.quota-hot { background: #fee2e2; color: #b91c1c; }
+
+/* Tráfico entrante / saliente por dominio */
+.net-dir-badge { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 600; white-space: nowrap; }
+.net-dir-std { background: #eef1f5; color: #5b6676; }
+.net-dir-in { background: #d1fae5; color: #047857; box-shadow: 0 0 0 1px #34d399 inset; }
+.net-rxtx { display: flex; gap: 12px; margin-top: 3px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.net-rx { color: #0891b2; font-weight: 600; }
+.net-tx { color: #b45309; font-weight: 600; }

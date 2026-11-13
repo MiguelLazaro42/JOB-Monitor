@@ -2514,7 +2514,8 @@ class NetworkTrafficCollector:
             return True
         return (ip_str or "").startswith(self._GOOGLE_IP_PREFIXES)
 
-    def _register_conn(self, conns: dict, remote_ip: str, proc_name: str, site_hint: Optional[tuple[str, str]], weight: int = 1):
+    def _register_conn(self, conns: dict, remote_ip: str, proc_name: str, site_hint: Optional[tuple[str, str]], weight: int = 1,
+                       direction: str = "OUTBOUND", port: int = 443):
         raw_dom = self._resolve_ip_to_domain(remote_ip) or remote_ip
         clean_dom, cat = classify_domain_ndpi(raw_dom, proc_name)
         # Anycast de Google: atribuir el flujo al sitio exacto que indica la ventana activa
@@ -2529,9 +2530,26 @@ class NetworkTrafficCollector:
             return
         k = (clean_dom, proc_name[:40])
         if k not in conns:
-            conns[k] = {"domain": clean_dom, "app_name": proc_name[:40], "category": cat, "connections": weight}
+            conns[k] = {"domain": clean_dom, "app_name": proc_name[:40], "category": cat, "connections": weight,
+                        "direction": direction, "port": int(port or 443)}
         else:
             conns[k]["connections"] += weight
+            if direction == "INBOUND":
+                conns[k]["direction"] = "INBOUND"
+                conns[k]["port"] = int(port or 443)
+
+    _LOCAL_SERVICE_PORTS = frozenset({22, 80, 443, 8080, 3000, 5000, 445, 139, 3389, 5900, 7070, 5938,
+                                      21115, 21116, 21117, 21118, 21119})
+
+    @staticmethod
+    def _port_of(addr: str) -> int:
+        try:
+            return int(addr.rsplit(":", 1)[1])
+        except Exception:
+            return 0
+
+    def _is_inbound_port(self, local_port: int, listening_ports: set) -> bool:
+        return local_port > 0 and (local_port in listening_ports or local_port in self._LOCAL_SERVICE_PORTS)
 
     def _scan_active_connections(self, fallback_app: str, window_title: str = "") -> list[dict]:
         """
@@ -2542,6 +2560,7 @@ class NetworkTrafficCollector:
         no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         site_hint = self._infer_site_from_window_title(window_title, fallback_app)
         quic_procs: set[str] = set()
+        listening_ports: set[int] = set()
 
         if IS_WINDOWS:
             self._refresh_windows_dns_cache()
@@ -2556,8 +2575,16 @@ class NetworkTrafficCollector:
                     ).decode("utf-8", errors="ignore")
                 except Exception:
                     continue
+                if proto == "tcp":
+                    for line in out.splitlines():
+                        lp = line.split()
+                        if len(lp) >= 4 and lp[0].upper() == "TCP" and lp[3].upper() in ("LISTEN", "LISTENING"):
+                            lport = self._port_of(lp[1])
+                            if lport:
+                                listening_ports.add(lport)
                 for line in out.splitlines():
                     parts = line.split()
+                    direction, conn_port = "OUTBOUND", 0
                     try:
                         if proto == "tcp":
                             if len(parts) < 5 or parts[0].upper() != "TCP":
@@ -2565,6 +2592,10 @@ class NetworkTrafficCollector:
                             if parts[3].upper() not in ("ESTABLISHED", "SYN_SENT", "TIME_WAIT"):
                                 continue
                             foreign, pid_s = parts[2], parts[4]
+                            if parts[3].upper() == "ESTABLISHED":
+                                lport = self._port_of(parts[1])
+                                if self._is_inbound_port(lport, listening_ports):
+                                    direction, conn_port = "INBOUND", lport
                         else:
                             if len(parts) < 4 or parts[0].upper() != "UDP":
                                 continue
@@ -2582,7 +2613,10 @@ class NetworkTrafficCollector:
                             continue
                         remote_ip, remote_port = foreign.rsplit(":", 1)
                         remote_ip = remote_ip.strip("[]")
-                        if self._is_private_or_ignored_ip(remote_ip):
+                        if direction == "INBOUND":
+                            if remote_ip in ("", "*", "0.0.0.0", "127.0.0.1", "::1", "::"):
+                                continue
+                        elif self._is_private_or_ignored_ip(remote_ip):
                             continue
                         if proto == "udp" and remote_port != "443":
                             continue
@@ -2590,7 +2624,8 @@ class NetworkTrafficCollector:
                         proc_name = self._pid_to_name_cache.get(pid, ("", 0.0))[0] or fallback_app or "Sistema"
                         if proc_name.lower() in ("python.exe", "pythonw.exe") and remote_port == "5080":
                             continue
-                        self._register_conn(conns, remote_ip, proc_name, site_hint)
+                        self._register_conn(conns, remote_ip, proc_name, site_hint, direction=direction,
+                                            port=conn_port or (int(remote_port) if str(remote_port).isdigit() else 443))
                     except Exception:
                         continue
 
@@ -2607,6 +2642,14 @@ class NetworkTrafficCollector:
             except Exception:
                 out = ""
             for line in out.splitlines()[1:]:
+                if "(LISTEN)" in line:
+                    lp = line.split()
+                    if len(lp) >= 9 and lp[7].upper() == "TCP":
+                        lport = self._port_of(lp[8])
+                        if lport:
+                            listening_ports.add(lport)
+            for line in out.splitlines()[1:]:
+                direction, conn_port = "OUTBOUND", 0
                 try:
                     parts = line.split()
                     if len(parts) < 9:
@@ -2619,6 +2662,9 @@ class NetworkTrafficCollector:
                     if proto == "TCP":
                         if "(ESTABLISHED)" not in line or "->" not in name_col:
                             continue
+                        lport = self._port_of(name_col.split("->", 1)[0])
+                        if self._is_inbound_port(lport, listening_ports):
+                            direction, conn_port = "INBOUND", lport
                     elif proto == "UDP":
                         local_part = name_col.split("->", 1)[0]
                         if "->" not in name_col:
@@ -2633,13 +2679,17 @@ class NetworkTrafficCollector:
                         continue
                     remote_ip, remote_port = remote_part.rsplit(":", 1)
                     remote_ip = remote_ip.strip("[]")
-                    if self._is_private_or_ignored_ip(remote_ip):
+                    if direction == "INBOUND":
+                        if remote_ip in ("", "*", "0.0.0.0", "127.0.0.1", "::1", "::"):
+                            continue
+                    elif self._is_private_or_ignored_ip(remote_ip):
                         continue
                     if proto == "UDP" and remote_port != "443":
                         continue
                     if proc_name.lower().startswith("python") and remote_port == "5080":
                         continue
-                    self._register_conn(conns, remote_ip, proc_name, site_hint)
+                    self._register_conn(conns, remote_ip, proc_name, site_hint, direction=direction,
+                                        port=conn_port or (int(remote_port) if remote_port.isdigit() else 443))
                 except Exception:
                     continue
 
@@ -2728,30 +2778,44 @@ class NetworkTrafficCollector:
             weights.append(w)
             focus_flags.append(in_focus)
         total_w = sum(weights) or 1.0
-        est = [total_slice_bytes * (w / total_w) for w in weights]
+        # RX: proporcional a los pesos; TX: sesgado hacia dominios interactivos/subida en foco
+        rx_est = [delta_rx * (w / total_w) for w in weights]
+        tx_weights: list[float] = []
+        for item, w, in_focus in zip(hits, weights, focus_flags):
+            tw = w
+            if item.get("category") in ("MESSAGING", "AI", "CLOUD", "WORK"):
+                tw *= 2.0 if in_focus else 1.5
+            tx_weights.append(tw)
+        total_tw = sum(tx_weights) or 1.0
+        tx_est = [delta_tx * (tw / total_tw) for tw in tx_weights]
 
         # Streaming dominante: >= 75% del RX al dominio de streaming (preferir el que está en foco)
         if rx_kbps >= 250 and len(hits) > 1 and delta_rx > 0:
             stream_idx = [i for i, h in enumerate(hits) if h.get("category") == "STREAMING"]
             if stream_idx:
-                top = max(stream_idx, key=lambda i: (focus_flags[i], est[i]))
+                top = max(stream_idx, key=lambda i: (focus_flags[i], rx_est[i]))
                 floor_bytes = 0.75 * delta_rx
-                if est[top] < floor_bytes:
+                if rx_est[top] < floor_bytes:
                     others = [i for i in range(len(hits)) if i != top]
-                    rest_total = max(0.0, total_slice_bytes - floor_bytes)
+                    rest_total = max(0.0, delta_rx - floor_bytes)
                     other_w = sum(weights[i] for i in others) or 1.0
-                    est[top] = floor_bytes
+                    rx_est[top] = floor_bytes
                     for i in others:
-                        est[i] = rest_total * (weights[i] / other_w)
+                        rx_est[i] = rest_total * (weights[i] / other_w)
 
         domain_hits_payload = []
-        for item, eb in zip(hits, est):
+        for item, rxb, txb in zip(hits, rx_est, tx_est):
+            rx_i, tx_i = int(round(rxb)), int(round(txb))
             domain_hits_payload.append({
                 "domain": item["domain"],
                 "app_name": item["app_name"],
                 "category": item["category"],
                 "connections": max(1, int(item.get("connections", 1))),
-                "estimated_bytes": int(round(eb)),
+                "rx_bytes": rx_i,
+                "tx_bytes": tx_i,
+                "estimated_bytes": rx_i + tx_i,
+                "direction": item.get("direction", "OUTBOUND"),
+                "port": int(item.get("port", 443) or 443),
             })
 
         packet_profile = classify_packet_profile(
@@ -4167,6 +4231,11 @@ class SilentRemoteAgent:
             else:
                 cur["connections"] = int(cur.get("connections", 0)) + int(d.get("connections", 0))
                 cur["estimated_bytes"] = int(cur.get("estimated_bytes", 0)) + int(d.get("estimated_bytes", 0))
+                cur["rx_bytes"] = int(cur.get("rx_bytes", 0)) + int(d.get("rx_bytes", 0))
+                cur["tx_bytes"] = int(cur.get("tx_bytes", 0)) + int(d.get("tx_bytes", 0))
+                if d.get("direction") == "INBOUND":
+                    cur["direction"] = "INBOUND"
+                    cur["port"] = d.get("port", cur.get("port", 443))
 
     def _take_offline_net(self) -> Optional[dict]:
         acc = self._offline_net_acc

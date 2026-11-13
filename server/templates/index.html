@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=20261113-v7" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261113-v8" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -1230,6 +1230,14 @@
             <option value="OTHER">Otros</option>
           </select>
         </div>
+        <div class="control-select-wrap">
+          <select id="net-direction-filter" class="toolbar-select">
+            <option value="ALL">Todo el Tráfico (Entrante ↓ + Saliente ↑)</option>
+            <option value="RX_HEAVY">Mayor Tráfico Entrante (↓ Descarga / RX)</option>
+            <option value="TX_HEAVY">Mayor Tráfico Saliente (↑ Subida / TX)</option>
+            <option value="INBOUND">Conexiones Entrantes al Equipo (Puertos Locales / LAN / Remoto)</option>
+          </select>
+        </div>
         <div class="search-box">
           <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -1293,7 +1301,7 @@
               <th style="min-width:230px">Contexto Cruzado (Foco + Teclado + Tipo de Paquete)</th>
               <th>Categoría (nDPI)</th>
               <th>Conexiones</th>
-              <th style="min-width:180px">Bytes estimados</th>
+              <th style="min-width:230px">Bytes: ↓ Entrante (RX) / ↑ Saliente (TX)</th>
               <th>Última vez</th>
             </tr>
           </thead>
@@ -1550,6 +1558,6 @@
 
   <script src="/static/js/audio.js?v=20261111-v9"></script>
   <script src="/static/js/viewer.js?v=20261111-v9"></script>
-  <script src="/static/js/app.js?v=20261113-v7"></script>
+  <script src="/static/js/app.js?v=20261113-v8"></script>
 </body>
 </html>

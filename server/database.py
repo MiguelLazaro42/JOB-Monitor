@@ -310,6 +310,10 @@ class DatabaseManager:
                     "ALTER TABLE network_domains_daily ADD COLUMN last_packet_type TEXT DEFAULT ''",
                     "ALTER TABLE network_domains_daily ADD COLUMN focus_app TEXT DEFAULT ''",
                     "ALTER TABLE network_domains_daily ADD COLUMN confidence INTEGER DEFAULT 80",
+                    "ALTER TABLE network_domains_daily ADD COLUMN rx_bytes INTEGER DEFAULT 0",
+                    "ALTER TABLE network_domains_daily ADD COLUMN tx_bytes INTEGER DEFAULT 0",
+                    "ALTER TABLE network_domains_daily ADD COLUMN direction TEXT DEFAULT 'OUTBOUND'",
+                    "ALTER TABLE network_domains_daily ADD COLUMN port INTEGER DEFAULT 443",
                 ):
                     try:
                         conn.execute(_ddl)
@@ -1157,7 +1161,21 @@ class DatabaseManager:
             get_or_enqueue_intel(domain, app)  # no bloquea: caché en memoria o encola enriquecimiento ASN/WHOIS
             try:
                 hits = max(1, int(d.get("connections", d.get("hit_count", 1))))
-                est = max(0, int(d.get("estimated_bytes", 0)))
+                est = max(0, int(d.get("estimated_bytes", 0) or 0))
+                if d.get("rx_bytes") is not None or d.get("tx_bytes") is not None:
+                    rx_b = max(0, int(d.get("rx_bytes") or 0))
+                    tx_b = max(0, int(d.get("tx_bytes") or 0))
+                    est = max(est, rx_b + tx_b)
+                    if rx_b + tx_b == 0 and est > 0:
+                        rx_b = int(est * 0.85)
+                        tx_b = est - rx_b
+                else:
+                    rx_b = int(est * 0.85)
+                    tx_b = est - rx_b
+                direction = "INBOUND" if str(d.get("direction") or "").upper() == "INBOUND" else "OUTBOUND"
+                port = int(d.get("port") or d.get("local_port") or 443)
+                if not 0 < port <= 65535:
+                    port = 443
             except (TypeError, ValueError):
                 continue
             try:
@@ -1167,7 +1185,8 @@ class DatabaseManager:
                 keys, conf = 0, 80
             ptype = str(d.get("packet_type") or d.get("last_packet_type") or "").strip()[:80]
             focus = str(d.get("focus_app") or "").strip()[:40]
-            rows.append((day, agent_id, domain, app, cat, hits, est, now_str, now_str, keys, ptype, focus, conf))
+            rows.append((day, agent_id, domain, app, cat, hits, est, now_str, now_str, keys, ptype, focus, conf,
+                         rx_b, tx_b, direction, port))
         if not rows:
             return
         with self._lock:
@@ -1177,8 +1196,9 @@ class DatabaseManager:
                     """
                     INSERT INTO network_domains_daily
                         (date, agent_id, domain, app_name, category, hit_count, estimated_bytes, first_seen_at, last_seen_at,
-                         keystrokes_count, last_packet_type, focus_app, confidence)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         keystrokes_count, last_packet_type, focus_app, confidence,
+                         rx_bytes, tx_bytes, direction, port)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(date, agent_id, domain, app_name) DO UPDATE SET
                         hit_count = hit_count + excluded.hit_count,
                         estimated_bytes = estimated_bytes + excluded.estimated_bytes,
@@ -1189,7 +1209,13 @@ class DatabaseManager:
                                                 THEN excluded.last_packet_type ELSE COALESCE(last_packet_type, '') END,
                         focus_app = CASE WHEN excluded.focus_app != ''
                                          THEN excluded.focus_app ELSE COALESCE(focus_app, '') END,
-                        confidence = MAX(COALESCE(confidence, 0), excluded.confidence)
+                        confidence = MAX(COALESCE(confidence, 0), excluded.confidence),
+                        rx_bytes = COALESCE(rx_bytes, 0) + excluded.rx_bytes,
+                        tx_bytes = COALESCE(tx_bytes, 0) + excluded.tx_bytes,
+                        direction = CASE WHEN excluded.direction = 'INBOUND' THEN 'INBOUND'
+                                         ELSE COALESCE(network_domains_daily.direction, 'OUTBOUND') END,
+                        port = CASE WHEN excluded.direction = 'INBOUND' THEN excluded.port
+                                    ELSE COALESCE(network_domains_daily.port, 443) END
                     """,
                     rows,
                 )
@@ -1223,7 +1249,12 @@ class DatabaseManager:
                     SELECT agent_id, domain, category, hit_count AS hits, estimated_bytes AS est,
                            COALESCE(keystrokes_count, 0) AS keys, COALESCE(confidence, 0) AS conf,
                            COALESCE(last_seen_at, '') AS last_seen,
-                           COALESCE(last_packet_type, '') AS ptype, COALESCE(focus_app, '') AS focus
+                           COALESCE(last_packet_type, '') AS ptype, COALESCE(focus_app, '') AS focus,
+                           CASE WHEN COALESCE(rx_bytes, 0) + COALESCE(tx_bytes, 0) = 0 AND estimated_bytes > 0
+                                THEN CAST(estimated_bytes * 0.85 AS INTEGER) ELSE COALESCE(rx_bytes, 0) END AS rx,
+                           CASE WHEN COALESCE(rx_bytes, 0) + COALESCE(tx_bytes, 0) = 0 AND estimated_bytes > 0
+                                THEN estimated_bytes - CAST(estimated_bytes * 0.85 AS INTEGER) ELSE COALESCE(tx_bytes, 0) END AS tx,
+                           COALESCE(direction, 'OUTBOUND') AS direction, COALESCE(port, 443) AS port
                     FROM network_domains_daily WHERE date = ?
                     """,
                     (day,),
@@ -1256,6 +1287,11 @@ class DatabaseManager:
                 if max_key and (r[max_key] or "") > m[max_key]:
                     m[max_key] = r[max_key] or ""
                 if extras:
+                    if r["direction"] == "INBOUND":
+                        m["direction"], m["port"] = "INBOUND", r["port"] or 443
+                    else:
+                        m.setdefault("direction", "OUTBOUND")
+                        m.setdefault("port", r["port"] or 443)
                     m["conf"] = max(m.get("conf", 0), r["conf"] or 0)
                     ls = r["last_seen"] or ""
                     if r["ptype"] and ls >= m.get("_ls", ""):
@@ -1266,13 +1302,14 @@ class DatabaseManager:
                         m["last_seen"] = ls
             return list(merged.values())
 
-        dom_rows = _merge_rows(dom_rows, ("hits", "est", "keys"), extras=True)
+        dom_rows = _merge_rows(dom_rows, ("hits", "est", "keys", "rx", "tx"), extras=True)
         recent_rows = _merge_rows(recent_rows, (), "last_seen")
         valid_ids = {d["agent_id"] for d in devices}
         by_agent: Dict[str, List[dict]] = {}
         global_domains: Dict[str, dict] = {}
         categories: Dict[str, dict] = {}
         packet_types: Dict[str, dict] = {}
+        inbound_flows_count = 0
         for r in dom_rows:
             if r["agent_id"] not in valid_ids:
                 continue
@@ -1280,7 +1317,13 @@ class DatabaseManager:
             g = global_domains.setdefault(r["domain"], {
                 "domain": r["domain"], "category": r["category"], "hits": 0, "estimated_bytes": 0,
                 "keystrokes_count": 0, "last_packet_type": "", "focus_app": "", "confidence": 0, "_ls": "",
+                "rx_bytes": 0, "tx_bytes": 0, "direction": "OUTBOUND", "port": r.get("port", 443),
             })
+            g["rx_bytes"] += r.get("rx", 0) or 0
+            g["tx_bytes"] += r.get("tx", 0) or 0
+            if r.get("direction") == "INBOUND":
+                g["direction"], g["port"] = "INBOUND", r.get("port", 443)
+                inbound_flows_count += 1
             g["hits"] += r["hits"] or 0
             g["estimated_bytes"] += r["est"] or 0
             g["keystrokes_count"] += r.get("keys", 0) or 0
@@ -1362,6 +1405,7 @@ class DatabaseManager:
         top_client = clients[0] if clients and clients[0]["total_bytes"] > 0 else None
         return {
             "date": day,
+            "inbound_flows_count": inbound_flows_count,
             "total_rx_bytes": total_rx,
             "total_tx_bytes": total_tx,
             "top_client": top_client,
@@ -1402,6 +1446,11 @@ class DatabaseManager:
                    COALESCE(n.last_packet_type, '') AS last_packet_type,
                    COALESCE(n.focus_app, '') AS focus_app,
                    COALESCE(n.confidence, 80) AS confidence,
+                   CASE WHEN COALESCE(n.rx_bytes, 0) + COALESCE(n.tx_bytes, 0) = 0 AND n.estimated_bytes > 0
+                        THEN CAST(n.estimated_bytes * 0.85 AS INTEGER) ELSE COALESCE(n.rx_bytes, 0) END AS rx_bytes,
+                   CASE WHEN COALESCE(n.rx_bytes, 0) + COALESCE(n.tx_bytes, 0) = 0 AND n.estimated_bytes > 0
+                        THEN n.estimated_bytes - CAST(n.estimated_bytes * 0.85 AS INTEGER) ELSE COALESCE(n.tx_bytes, 0) END AS tx_bytes,
+                   COALESCE(n.direction, 'OUTBOUND') AS direction, COALESCE(n.port, 443) AS port,
                    COALESCE(d.alias, n.agent_id) AS alias, COALESCE(d.hostname, '') AS hostname,
                    COALESCE(d.username, '') AS username
             FROM network_domains_daily n
@@ -1432,6 +1481,10 @@ class DatabaseManager:
                 continue
             m["hit_count"] += r["hit_count"] or 0
             m["estimated_bytes"] += r["estimated_bytes"] or 0
+            m["rx_bytes"] = (m["rx_bytes"] or 0) + (r["rx_bytes"] or 0)
+            m["tx_bytes"] = (m["tx_bytes"] or 0) + (r["tx_bytes"] or 0)
+            if r["direction"] == "INBOUND":
+                m["direction"], m["port"] = "INBOUND", r["port"]
             m["first_seen_at"] = min(m["first_seen_at"] or "9", r["first_seen_at"] or "9")
             if (r["last_seen_at"] or "") >= (m["last_seen_at"] or "") and r["last_packet_type"]:
                 m["last_packet_type"], m["focus_app"] = r["last_packet_type"], r["focus_app"]
