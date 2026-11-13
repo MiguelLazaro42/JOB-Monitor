@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 import config
-from database import AVAILABLE_TIMEZONES, MASTER_TENANT_ID, db
+from database import AVAILABLE_TIMEZONES, MASTER_TENANT_ID, db, intel_get_status, intel_start
 from service_catalog import classify_packet_profile
 from models import (
     AgentConnection,
@@ -1481,6 +1481,12 @@ async def get_network_domains(
     return {"ok": True, "domains": domains}
 
 
+@app.get("/api/network/intel-status")
+async def get_network_intel_status(request: Request):
+    verify_admin_access(request)
+    return {"ok": True, **intel_get_status()}
+
+
 @app.get("/api/network/export-csv")
 async def export_network_csv(
     request: Request,
@@ -1555,6 +1561,7 @@ async def _capture_retention_loop():
 @app.on_event("startup")
 async def _start_retention_cleaner():
     asyncio.create_task(_capture_retention_loop())
+    intel_start()  # workers de inteligencia IP/dominio + precarga de caché PostgreSQL/SQLite
 
 
 @app.get("/api/screen-time")

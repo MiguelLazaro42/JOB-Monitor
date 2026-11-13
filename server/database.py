@@ -19,6 +19,11 @@ try:
 except ImportError:  # el servidor se ejecuta con server/ como directorio raíz
     from service_catalog import match_service_domain_or_ip
 
+try:
+    from server.intel_resolver import get_or_enqueue_intel, get_status as intel_get_status, public_view as intel_public_view, start as intel_start, seed_existing_unknowns as intel_seed
+except ImportError:
+    from intel_resolver import get_or_enqueue_intel, get_status as intel_get_status, public_view as intel_public_view, start as intel_start, seed_existing_unknowns as intel_seed
+
 DB_PATH: Path = config.DATA_DIR / "remote_assist.db"
 MASTER_TENANT_ID = "sitai-master"
 
@@ -253,6 +258,24 @@ class DatabaseManager:
                         peak_tx_kbps REAL DEFAULT 0,
                         updated_at TEXT,
                         PRIMARY KEY (date, agent_id)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS ip_domain_intel (
+                        lookup_key TEXT PRIMARY KEY,
+                        is_ip INTEGER NOT NULL DEFAULT 0,
+                        resolved_domain TEXT NOT NULL DEFAULT '',
+                        org_name TEXT NOT NULL DEFAULT '',
+                        asn TEXT NOT NULL DEFAULT '',
+                        asn_name TEXT NOT NULL DEFAULT '',
+                        whois_org TEXT NOT NULL DEFAULT '',
+                        country_code TEXT NOT NULL DEFAULT '',
+                        country_name TEXT NOT NULL DEFAULT '',
+                        favicon_url TEXT NOT NULL DEFAULT '',
+                        category TEXT NOT NULL DEFAULT 'OTHER',
+                        lookup_source TEXT NOT NULL DEFAULT '',
+                        hit_count INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                     );
 
                     CREATE TABLE IF NOT EXISTS network_domains_daily (
@@ -1131,6 +1154,7 @@ class DatabaseManager:
             domain, cat = _normalize_domain(domain, app, cat)
             if not domain:
                 continue
+            get_or_enqueue_intel(domain, app)  # no bloquea: caché en memoria o encola enriquecimiento ASN/WHOIS
             try:
                 hits = max(1, int(d.get("connections", d.get("hit_count", 1))))
                 est = max(0, int(d.get("estimated_bytes", 0)))
@@ -1179,6 +1203,7 @@ class DatabaseManager:
         allowed_tenant_id: Optional[str] = None,
     ) -> dict:
         day = self._clean_date(date_str) or self._now_dt().strftime("%Y-%m-%d")
+        intel_seed()  # backfill throttled de IPs/dominios sin resolver
         tenant_names = self.get_tenant_name_map()
         with self._lock:
             conn = self._get_conn()
@@ -1329,6 +1354,11 @@ class DatabaseManager:
         for g in global_domains.values():
             g.pop("_ls", None)
         top_domains = sorted(global_domains.values(), key=lambda x: (x["estimated_bytes"], x["hits"]), reverse=True)[:10]
+        for g in top_domains:
+            g.update(intel_public_view(get_or_enqueue_intel(g["domain"])))
+        # Favicon del dominio destacado de cada cliente (sin consultas externas si ya es conocido).
+        for c in clients:
+            c["top_domain_favicon"] = intel_public_view(get_or_enqueue_intel(c["top_domain"]))["favicon_url"] if c["top_domain"] else ""
         top_client = clients[0] if clients and clients[0]["total_bytes"] > 0 else None
         return {
             "date": day,
@@ -1352,6 +1382,7 @@ class DatabaseManager:
         allowed_tenant_id: Optional[str] = None,
     ) -> List[dict]:
         day = self._clean_date(date_str) or self._now_dt().strftime("%Y-%m-%d")
+        intel_seed()
         clauses = ["n.date = ?"]
         params: list = [day]
         if allowed_tenant_id:
@@ -1407,7 +1438,15 @@ class DatabaseManager:
             m["last_seen_at"] = max(m["last_seen_at"] or "", r["last_seen_at"] or "")
             m["keystrokes_count"] = (m["keystrokes_count"] or 0) + (r["keystrokes_count"] or 0)
             m["confidence"] = max(m["confidence"] or 0, r["confidence"] or 0)
-        return sorted(merged.values(), key=lambda x: (x["estimated_bytes"], x["hit_count"]), reverse=True)[:max_rows]
+        out = sorted(merged.values(), key=lambda x: (x["estimated_bytes"], x["hit_count"]), reverse=True)[:max_rows]
+        for row in out:
+            entry = get_or_enqueue_intel(row["domain"], row.get("app_name") or "")
+            row.update(intel_public_view(entry))
+            if not row["raw_target"] and entry.get("is_ip"):
+                row["raw_target"] = row["domain"]
+            if (row.get("category") or "OTHER") == "OTHER" and entry.get("category") not in (None, "", "OTHER"):
+                row["category"] = entry["category"]
+        return out
 
     def export_network_csv(
         self,

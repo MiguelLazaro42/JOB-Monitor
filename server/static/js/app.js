@@ -3121,7 +3121,7 @@
         const pktLine = pktLabel || c.keystrokes_total
           ? `<div class="net-kpi-sub pkt-client-line">Teclas: ${Number(c.keystrokes_total || 0)} · ${pktBadgeHtml(pktLabel)}</div>`
           : '';
-        const topBadge = c.top_domain ? `<span class="ntop-badge">${escapeHtml(c.top_domain)}</span>` : '---';
+        const topBadge = c.top_domain ? `${netFaviconHtml(c.top_domain_favicon)}<span class="ntop-badge">${escapeHtml(c.top_domain)}</span>` : '---';
         return `<tr class="net-client-row ${c.agent_id === selected ? 'selected' : ''}" data-agent-id="${escapeHtml(c.agent_id)}">
           <td>${dot}<strong>${escapeHtml(c.alias)}</strong><div class="net-kpi-sub">${escapeHtml(c.hostname || '')}${c.username ? ' · ' + escapeHtml(c.username) : ''}</div>${liveRate}${pktLine}</td>
           <td class="net-num">${formatBytes(c.rx_bytes)}</td>
@@ -3135,13 +3135,61 @@
       .join('');
   }
 
+  // ---- Inteligencia IP/Dominio: favicon, bandera (flagcdn, sin emojis), ASN y WHOIS ----
+  function netFaviconHtml(url) {
+    if (!url) return '';
+    return `<img class="net-favicon" src="${escapeHtml(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'" />`;
+  }
+
+  function netFlagHtml(cc, name) {
+    const code = String(cc || '').toUpperCase();
+    if (!/^[A-Z]{2}$/.test(code)) return '';
+    const img = `<img class="net-flag-img" src="https://flagcdn.com/w20/${code.toLowerCase()}.png" alt="${code}" loading="lazy" onerror="this.style.display='none'" />`;
+    return `<span class="net-intel-chip" title="${escapeHtml(name || code)}">${img}<span class="net-cc-badge">[${code}]</span>${name ? ' ' + escapeHtml(name) : ''}</span>`;
+  }
+
+  function netIntelHtml(d) {
+    const chips = [];
+    const flag = netFlagHtml(d.country_code, d.country_name);
+    if (flag) chips.push(flag);
+    if (d.asn) chips.push(`<span class="net-intel-chip net-intel-asn" title="ASN">${escapeHtml(d.asn)}</span>`);
+    const org = d.whois_org || d.org_name;
+    if (org) chips.push(`<span class="net-intel-chip net-intel-org" title="WHOIS / Organización">${escapeHtml(org)}</span>`);
+    return chips.length ? `<div class="net-intel-row">${chips.join('')}</div>` : '';
+  }
+
+  function netDomainCellHtml(d) {
+    const raw = d.raw_target || '';
+    const shown = raw && d.resolved_domain && d.resolved_domain !== raw ? d.resolved_domain : d.domain;
+    const rawTag = raw && shown !== raw ? ` <span class="net-raw-ip">(${escapeHtml(raw)})</span>` : '';
+    return `${netFaviconHtml(d.favicon_url)}<strong>${escapeHtml(shown)}</strong>${rawTag}`;
+  }
+
+  async function loadNetworkIntelStatus() {
+    const pill = document.getElementById('net-intel-pill');
+    if (!pill) return;
+    try {
+      const res = await authFetch('/api/network/intel-status');
+      const s = await res.json();
+      if (!s.ok) return;
+      const db = s.pg_connected ? 'PostgreSQL' : 'SQLite local';
+      pill.textContent = `Intel DB (${db}): ${s.total_cached} IPs/Dominios · API ${s.requests_last_min}/${s.max_requests_per_min} rpm`;
+      pill.title = `Pendientes: ${s.pending} · Última hora: ${s.requests_last_hour}/${s.max_requests_per_hour}`;
+      pill.classList.toggle('pg-on', !!s.pg_connected);
+      pill.classList.toggle('pg-off', !s.pg_connected);
+      pill.classList.toggle('quota-hot', s.requests_last_min >= s.max_requests_per_min);
+    } catch (err) {
+      pill.textContent = 'Intel DB: sin datos';
+    }
+  }
+
   function netFilteredFlows() {
     const cat = (netCategoryFilter && netCategoryFilter.value) || 'ALL';
     const q = netSearchInput ? netSearchInput.value.trim().toLowerCase() : '';
     return netState.domains.filter((d) => {
       if (cat !== 'ALL' && (d.category || 'OTHER') !== cat) return false;
       if (!q) return true;
-      return `${d.domain} ${d.app_name} ${d.alias} ${d.hostname}`.toLowerCase().includes(q);
+      return `${d.domain} ${d.raw_target || ''} ${d.resolved_domain || ''} ${d.asn || ''} ${d.org_name || ''} ${d.whois_org || ''} ${d.country_code || ''} ${d.app_name} ${d.alias} ${d.hostname}`.toLowerCase().includes(q);
     });
   }
 
@@ -3168,7 +3216,7 @@
         const isLive = liveSet.has(`${d.agent_id}|${d.domain}`);
         return `<tr class="${isLive ? 'net-live-row' : ''}">
           <td>${escapeHtml(d.alias || d.agent_id)}</td>
-          <td><strong>${escapeHtml(d.domain)}</strong>${isLive ? ' <span class="ntop-badge ntop-badge-live">EN VIVO</span>' : ''}</td>
+          <td>${netDomainCellHtml(d)}${isLive ? ' <span class="ntop-badge ntop-badge-live">EN VIVO</span>' : ''}${netIntelHtml(d)}</td>
           <td><span class="ntop-badge ntop-badge-off">${escapeHtml(d.app_name || '---')}</span></td>
           <td>${netCrossContextHtml(d)}</td>
           <td><span class="net-cat-pill cat-${escapeHtml(cat)}">${escapeHtml(NET_CATEGORY_LABELS[cat] || cat)}</span></td>
@@ -3219,6 +3267,7 @@
       if (domData.ok) netState.domains = domData.domains || [];
       renderNetworkAll();
       netMarkUpdated(true);
+      loadNetworkIntelStatus();
       if (!silent && refreshNetBtn) {
         refreshNetBtn.classList.add('done');
         setTimeout(() => refreshNetBtn.classList.remove('done'), 700);
