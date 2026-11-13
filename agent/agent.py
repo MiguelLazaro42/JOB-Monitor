@@ -11,6 +11,7 @@ import json
 import os
 import platform
 import queue
+import re
 import socket
 import ssl
 import struct
@@ -1077,6 +1078,7 @@ def classify_domain_ndpi(raw_domain_or_ip: str, app_name: str = "") -> tuple[str
         (("openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com"), "chatgpt.com", "AI"),
         (("anthropic.com", "claude.ai"), "claude.ai", "AI"),
         (("gemini.google.com", "bard.google.com"), "gemini.google.com", "AI"),
+        (("1e100.net", "gvt1.com", "gvt2.com"), "google.com", "WORK"),
         (("copilot.microsoft.com",), "copilot.microsoft.com", "AI"),
         (("1drv.com", "onedrive.live.com", "sharepoint.com", "svc.ms", "office.com", "office365.com"), "office365.com", "CLOUD"),
         (("drive.google.com", "docs.google.com", "googleusercontent.com"), "drive.google.com", "CLOUD"),
@@ -1261,72 +1263,182 @@ class NetworkTrafficCollector:
         except Exception:
             pass
 
-    def _scan_active_connections(self, fallback_app: str) -> list[dict]:
+    # --- Inferencia de sitio por título de ventana (YouTube vs Google genérico) ---
+    _BROWSER_KEYS = (
+        "chrome", "msedge", "edge", "brave", "safari", "firefox", "opera", "vivaldi",
+        "arc", "webkit.networking", "webkit", "chromium", "google",
+    )
+    _TITLE_SITE_RULES = (
+        (("youtube",), "youtube.com", "STREAMING"),
+        (("netflix",), "netflix.com", "STREAMING"),
+        (("twitch",), "twitch.tv", "STREAMING"),
+        (("spotify",), "spotify.com", "STREAMING"),
+        (("tiktok",), "tiktok.com", "SOCIAL"),
+        (("facebook",), "facebook.com", "SOCIAL"),
+        (("instagram",), "instagram.com", "SOCIAL"),
+        (("whatsapp",), "web.whatsapp.com", "MESSAGING"),
+        (("telegram",), "telegram.org", "MESSAGING"),
+        (("discord",), "discord.com", "MESSAGING"),
+        (("chatgpt", "openai"), "chatgpt.com", "AI"),
+        (("claude",), "claude.ai", "AI"),
+        (("gemini",), "gemini.google.com", "AI"),
+        (("github",), "github.com", "WORK"),
+        (("gmail", "correo"), "mail.google.com", "WORK"),
+        (("google meet", "meet.google"), "meet.google.com", "WORK"),
+        (("google drive",), "drive.google.com", "CLOUD"),
+        (("onedrive",), "onedrive.live.com", "CLOUD"),
+        (("wetransfer",), "wetransfer.com", "CLOUD"),
+    )
+    _GOOGLE_FAMILY_SITES = (
+        "youtube.com", "mail.google.com", "drive.google.com", "gemini.google.com", "meet.google.com",
+    )
+    _GOOGLE_DOMAIN_KEYS = ("1e100.net", "google.com", "gstatic.com", "googlevideo.com", "gvt1.com", "gvt2.com", "googleapis.com")
+    _GOOGLE_IP_PREFIXES = ("142.250.", "142.251.", "172.217.", "216.58.", "74.125.", "172.253.", "209.85.", "108.177.")
+    _EXPLICIT_DOMAIN_RE = re.compile(
+        r"\b((?:[a-z0-9-]+\.)+(?:com|net|org|io|tv|co|app|dev|ai|edu|gob|gov|mx|ar|es|info|me|us|tech|cloud|xyz))\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _is_browser_name(cls, name: str) -> bool:
+        low = (name or "").lower()
+        return bool(low) and any(k in low for k in cls._BROWSER_KEYS)
+
+    @classmethod
+    def _infer_site_from_window_title(cls, window_title: str, app_name: str = "") -> Optional[tuple[str, str]]:
+        """Devuelve (dominio, categoría) deducido del título de ventana, o None."""
+        title = (window_title or "").strip().lower()
+        if not title:
+            return None
+        for keys, domain, cat in cls._TITLE_SITE_RULES:
+            if any(k in title for k in keys):
+                return domain, cat
+        m = cls._EXPLICIT_DOMAIN_RE.search(title)
+        if m:
+            clean, cat = classify_domain_ndpi(m.group(1), app_name)
+            if clean:
+                return clean, cat
+        return None
+
+    def _is_google_remote(self, ip_str: str, raw_dom: str) -> bool:
+        dom = (raw_dom or "").lower()
+        if any(dom == k or dom.endswith("." + k) for k in self._GOOGLE_DOMAIN_KEYS):
+            return True
+        return (ip_str or "").startswith(self._GOOGLE_IP_PREFIXES)
+
+    def _register_conn(self, conns: dict, remote_ip: str, proc_name: str, site_hint: Optional[tuple[str, str]], weight: int = 1):
+        raw_dom = self._resolve_ip_to_domain(remote_ip) or remote_ip
+        clean_dom, cat = classify_domain_ndpi(raw_dom, proc_name)
+        # Anycast de Google: atribuir el flujo al sitio exacto que indica la ventana activa
+        if (
+            site_hint
+            and site_hint[0] in self._GOOGLE_FAMILY_SITES
+            and self._is_browser_name(proc_name)
+            and self._is_google_remote(remote_ip, raw_dom)
+        ):
+            clean_dom, cat = site_hint
+        if not clean_dom:
+            return
+        k = (clean_dom, proc_name[:40])
+        if k not in conns:
+            conns[k] = {"domain": clean_dom, "app_name": proc_name[:40], "category": cat, "connections": weight}
+        else:
+            conns[k]["connections"] += weight
+
+    def _scan_active_connections(self, fallback_app: str, window_title: str = "") -> list[dict]:
         """
-        Inspecciona las conexiones TCP/UDP remotas activas y las cruza con procesos y dominios.
+        Inspecciona las conexiones TCP/UDP (incl. QUIC/HTTP3 en 443) activas y las cruza con
+        procesos, dominios y el sitio inferido de la ventana activa.
         """
-        connections_by_key: dict[tuple[str, str], dict] = {}
+        conns: dict[tuple[str, str], dict] = {}
         no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        site_hint = self._infer_site_from_window_title(window_title, fallback_app)
+        quic_procs: set[str] = set()
 
         if IS_WINDOWS:
             self._refresh_windows_dns_cache()
             self._refresh_windows_pid_map()
-            try:
-                out = subprocess.check_output(
-                    ["netstat", "-ano", "-p", "tcp"],
-                    stderr=subprocess.DEVNULL,
-                    timeout=2.5,
-                    creationflags=no_win,
-                ).decode("utf-8", errors="ignore")
+            for proto in ("tcp", "udp"):
+                try:
+                    out = subprocess.check_output(
+                        ["netstat", "-ano", "-p", proto],
+                        stderr=subprocess.DEVNULL,
+                        timeout=2.5,
+                        creationflags=no_win,
+                    ).decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
                 for line in out.splitlines():
                     parts = line.split()
-                    if len(parts) < 5 or parts[0].upper() != "TCP":
+                    try:
+                        if proto == "tcp":
+                            if len(parts) < 5 or parts[0].upper() != "TCP":
+                                continue
+                            if parts[3].upper() not in ("ESTABLISHED", "SYN_SENT", "TIME_WAIT"):
+                                continue
+                            foreign, pid_s = parts[2], parts[4]
+                        else:
+                            if len(parts) < 4 or parts[0].upper() != "UDP":
+                                continue
+                            foreign, pid_s = parts[2], parts[-1]
+                            local = parts[1]
+                            pid = int(pid_s) if pid_s.isdigit() else 0
+                            pname = self._pid_to_name_cache.get(pid, ("", 0.0))[0]
+                            # QUIC: sockets UDP sin destino fijo de un navegador (excluye mDNS/SSDP)
+                            if self._is_browser_name(pname) and not local.endswith((":5353", ":1900", ":137", ":138")) \
+                                    and (foreign.startswith("*") or foreign.endswith(":443")):
+                                quic_procs.add(pname[:40])
+                            if ":" not in foreign or foreign.startswith("*"):
+                                continue
+                        if ":" not in foreign:
+                            continue
+                        remote_ip, remote_port = foreign.rsplit(":", 1)
+                        remote_ip = remote_ip.strip("[]")
+                        if self._is_private_or_ignored_ip(remote_ip):
+                            continue
+                        if proto == "udp" and remote_port != "443":
+                            continue
+                        pid = int(pid_s) if pid_s.isdigit() else 0
+                        proc_name = self._pid_to_name_cache.get(pid, ("", 0.0))[0] or fallback_app or "Sistema"
+                        if proc_name.lower() in ("python.exe", "pythonw.exe") and remote_port == "5080":
+                            continue
+                        self._register_conn(conns, remote_ip, proc_name, site_hint)
+                    except Exception:
                         continue
-                    state_str = parts[3].upper()
-                    if state_str not in ("ESTABLISHED", "SYN_SENT", "TIME_WAIT"):
-                        continue
-                    foreign = parts[2]
-                    if ":" not in foreign:
-                        continue
-                    remote_ip, remote_port = foreign.rsplit(":", 1)
-                    remote_ip = remote_ip.strip("[]")
-                    if self._is_private_or_ignored_ip(remote_ip):
-                        continue
-                    pid = int(parts[4]) if parts[4].isdigit() else 0
-                    proc_name = self._pid_to_name_cache.get(pid, ("", 0.0))[0] or fallback_app or "Sistema"
-                    if proc_name.lower() in ("python.exe", "pythonw.exe") and remote_port == "5080":
-                        continue
-                    raw_dom = self._resolve_ip_to_domain(remote_ip) or remote_ip
-                    clean_dom, cat = classify_domain_ndpi(raw_dom, proc_name)
-                    if not clean_dom:
-                        continue
-                    k = (clean_dom, proc_name[:40])
-                    if k not in connections_by_key:
-                        connections_by_key[k] = {
-                            "domain": clean_dom,
-                            "app_name": proc_name[:40],
-                            "category": cat,
-                            "connections": 1,
-                        }
-                    else:
-                        connections_by_key[k]["connections"] += 1
-            except Exception:
-                pass
 
         elif IS_MAC:
             try:
                 out = subprocess.check_output(
-                    ["/usr/sbin/lsof", "-iTCP", "-sTCP:ESTABLISHED", "-n", "-P"],
+                    ["/usr/sbin/lsof", "+c", "0", "-i4", "-i6", "-n", "-P"],
                     stderr=subprocess.DEVNULL,
-                    timeout=2.5,
+                    timeout=3.0,
                 ).decode("utf-8", errors="ignore")
-                for line in out.splitlines()[1:]:
+            except subprocess.CalledProcessError as e:
+                # lsof devuelve código 1 si algún archivo no es accesible pero imprime resultados válidos
+                out = (e.output or b"").decode("utf-8", errors="ignore")
+            except Exception:
+                out = ""
+            for line in out.splitlines()[1:]:
+                try:
                     parts = line.split()
                     if len(parts) < 9:
                         continue
                     proc_name = parts[0].replace("\\x20", " ").strip()
+                    if "JOBMonitorAgent" in proc_name:
+                        continue
+                    proto = parts[7].upper()
                     name_col = parts[8]
-                    if "->" not in name_col:
+                    if proto == "TCP":
+                        if "(ESTABLISHED)" not in line or "->" not in name_col:
+                            continue
+                    elif proto == "UDP":
+                        local_part = name_col.split("->", 1)[0]
+                        if "->" not in name_col:
+                            # Socket UDP sin destino (típico de QUIC en navegadores)
+                            if self._is_browser_name(proc_name) and not local_part.endswith((":5353", ":1900")):
+                                quic_procs.add(proc_name[:40])
+                            continue
+                    else:
                         continue
                     remote_part = name_col.split("->", 1)[1]
                     if ":" not in remote_part:
@@ -1335,29 +1447,25 @@ class NetworkTrafficCollector:
                     remote_ip = remote_ip.strip("[]")
                     if self._is_private_or_ignored_ip(remote_ip):
                         continue
-                    if "JOBMonitorAgent" in proc_name or (proc_name.lower().startswith("python") and remote_port == "5080"):
+                    if proto == "UDP" and remote_port != "443":
                         continue
-                    raw_dom = self._resolve_ip_to_domain(remote_ip) or remote_ip
-                    clean_dom, cat = classify_domain_ndpi(raw_dom, proc_name)
-                    if not clean_dom:
+                    if proc_name.lower().startswith("python") and remote_port == "5080":
                         continue
-                    k = (clean_dom, proc_name[:40])
-                    if k not in connections_by_key:
-                        connections_by_key[k] = {
-                            "domain": clean_dom,
-                            "app_name": proc_name[:40],
-                            "category": cat,
-                            "connections": 1,
-                        }
-                    else:
-                        connections_by_key[k]["connections"] += 1
-            except Exception:
-                pass
+                    self._register_conn(conns, remote_ip, proc_name, site_hint)
+                except Exception:
+                    continue
 
-        results = sorted(connections_by_key.values(), key=lambda x: x["connections"], reverse=True)
+        # Navegadores con QUIC activo (UDP sin IP remota visible): atribuir al sitio de la ventana
+        if site_hint and quic_procs:
+            for pname in quic_procs:
+                k = (site_hint[0], pname)
+                if k not in conns:
+                    conns[k] = {"domain": site_hint[0], "app_name": pname, "category": site_hint[1], "connections": 2}
+
+        results = sorted(conns.values(), key=lambda x: x["connections"], reverse=True)
         return results[:15]
 
-    def collect_slice(self, active_app_name: str = "Escritorio") -> dict:
+    def collect_slice(self, active_app_name: str = "Escritorio", active_window_title: str = "") -> dict:
         """
         Mini-Función NF-1.6: Calcula el diferencial de bytes (RX/TX), la velocidad en Kbps
         y las conexiones a dominios activas para inyectarlas en el paquete de telemetría o bóveda .sitai.
@@ -1383,15 +1491,29 @@ class NetworkTrafficCollector:
         rx_kbps = round((delta_rx * 8.0) / (elapsed * 1000.0), 1)
         tx_kbps = round((delta_tx * 8.0) / (elapsed * 1000.0), 1)
 
-        # Escanear sockets y DNS cada 8 segundos para mantener el uso de CPU cercano a 0%
-        if (now - self._last_deep_scan_ts) >= 7.5:
-            self._last_deep_scan_ts = now
-            self._cached_domain_hits = self._scan_active_connections(active_app_name)
+        # Escaneo en cada ciclo (sin retardo) para reflejar el sitio activo al instante
+        self._last_deep_scan_ts = now
+        hits = [dict(h) for h in self._scan_active_connections(active_app_name, active_window_title)]
 
-        total_conns = sum(max(1, int(d.get("connections", 1))) for d in self._cached_domain_hits) or 1
         total_slice_bytes = delta_rx + delta_tx
+
+        # Inyectar siempre el sitio inferido de la ventana activa si es un navegador con tráfico
+        site = self._infer_site_from_window_title(active_window_title, active_app_name)
+        if site and self._is_browser_name(active_app_name) and (total_slice_bytes > 2048 or hits):
+            weight = max(1, sum(max(1, int(h.get("connections", 1))) for h in hits))
+            existing = next((h for h in hits if h["domain"] == site[0]), None)
+            if existing:
+                existing["connections"] = max(int(existing["connections"]), weight)
+            else:
+                hits.insert(0, {
+                    "domain": site[0], "app_name": (active_app_name or "Navegador")[:40],
+                    "category": site[1], "connections": weight,
+                })
+        self._cached_domain_hits = hits
+
+        total_conns = sum(max(1, int(d.get("connections", 1))) for d in hits) or 1
         domain_hits_payload = []
-        for item in self._cached_domain_hits:
+        for item in hits:
             conns = max(1, int(item.get("connections", 1)))
             est_bytes = int(round(total_slice_bytes * (conns / float(total_conns))))
             domain_hits_payload.append({
@@ -2140,7 +2262,7 @@ class SilentRemoteAgent:
                 # 4. Telemetría de red (en hilo aparte: el escaneo de sockets/DNS puede bloquear)
                 try:
                     net_slice = await asyncio.get_running_loop().run_in_executor(
-                        None, self.net_collector.collect_slice, app_name
+                        None, self.net_collector.collect_slice, app_name, current_win or ""
                     )
                 except Exception:
                     net_slice = {

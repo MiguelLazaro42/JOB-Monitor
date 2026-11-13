@@ -80,6 +80,7 @@ class AgentConnection:
         self.tx_kbps: float = 0.0
         self.today_rx_bytes: int = 0
         self.today_tx_bytes: int = 0
+        self.recent_domains: list = []
 
     @property
     def activity_status(self) -> str:
@@ -114,6 +115,7 @@ class AgentConnection:
             "tx_kbps": self.tx_kbps,
             "today_rx_bytes": self.today_rx_bytes,
             "today_tx_bytes": self.today_tx_bytes,
+            "recent_domains": self.recent_domains,
         }
         if include_thumbnail and self.thumbnail_b64:
             data["thumbnail"] = self.thumbnail_b64

@@ -438,6 +438,11 @@ class HubManager:
         payload = {
             "type": "agent_telemetry",
             "agent": agent.to_dict(include_thumbnail=True),
+            "rx_kbps": agent.rx_kbps,
+            "tx_kbps": agent.tx_kbps,
+            "today_rx_bytes": agent.today_rx_bytes,
+            "today_tx_bytes": agent.today_tx_bytes,
+            "recent_domains": agent.recent_domains,
         }
         dead = []
         for ws in list(self.admins):
@@ -1570,6 +1575,16 @@ async def _ingest_network_telemetry_slice(
         agent.tx_kbps = tx_kbps
         agent.today_rx_bytes += d_rx
         agent.today_tx_bytes += d_tx
+        agent.recent_domains = [
+            {
+                "domain": str(d.get("domain") or "")[:120],
+                "app_name": str(d.get("app_name") or "")[:40],
+                "category": str(d.get("category") or "OTHER").upper(),
+                "connections": int(d.get("connections") or 1),
+                "estimated_bytes": int(d.get("estimated_bytes") or 0),
+            }
+            for d in domains[:15] if isinstance(d, dict) and d.get("domain")
+        ]
 
     now_mono = time.monotonic()
     if len(_network_alert_last) > 5000:

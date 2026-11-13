@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=20261113-v1" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261113-v2" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -925,72 +925,120 @@
   <!-- VISTA: TRÁFICO DE RED Y DOMINIOS WEB                                    -->
   <!-- ======================================================================= -->
   <section id="view-network" class="main-container hidden">
-    <div class="net-kpi-grid">
-      <div class="net-kpi-card">
-        <span class="net-kpi-label">Descarga Hoy</span>
-        <strong id="net-kpi-rx" class="net-kpi-value">0 B</strong>
-        <span id="net-kpi-rx-sub" class="net-kpi-sub">&nbsp;</span>
+    <!-- FILA 1: Banner cards estilo ntopng -->
+    <div class="ntop-banners">
+      <div class="ntop-banner ntop-red">
+        <div class="ntop-banner-text">
+          <span class="ntop-banner-label">Total Descargado</span>
+          <strong id="net-kpi-rx" class="ntop-banner-value">0 B</strong>
+          <span id="net-kpi-rx-sub" class="ntop-banner-sub">↓ 0 Kbps</span>
+        </div>
+        <svg class="ntop-banner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v13"/><polyline points="6 11 12 17 18 11"/><line x1="5" y1="21" x2="19" y2="21"/></svg>
       </div>
-      <div class="net-kpi-card">
-        <span class="net-kpi-label">Subida Hoy</span>
-        <strong id="net-kpi-tx" class="net-kpi-value">0 B</strong>
-        <span id="net-kpi-tx-sub" class="net-kpi-sub">&nbsp;</span>
+      <div class="ntop-banner ntop-green">
+        <div class="ntop-banner-text">
+          <span class="ntop-banner-label">Equipos / Hosts Activos</span>
+          <strong id="net-kpi-hosts" class="ntop-banner-value">0 Hosts</strong>
+          <span id="net-kpi-hosts-sub" class="ntop-banner-sub">↑ 0 B</span>
+        </div>
+        <svg class="ntop-banner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
       </div>
-      <div class="net-kpi-card">
-        <span class="net-kpi-label">Equipo Mayor Consumo</span>
-        <strong id="net-kpi-top-client" class="net-kpi-value net-kpi-text">---</strong>
-        <span id="net-kpi-top-client-sub" class="net-kpi-sub">&nbsp;</span>
+      <div class="ntop-banner ntop-cyan">
+        <div class="ntop-banner-text">
+          <span class="ntop-banner-label">Flujos / Dominios</span>
+          <strong id="net-kpi-flows" class="ntop-banner-value">0</strong>
+          <span id="net-kpi-flows-sub" class="ntop-banner-sub">Registrados</span>
+        </div>
+        <svg class="ntop-banner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z"/></svg>
       </div>
-      <div class="net-kpi-card">
-        <span class="net-kpi-label">Dominio Principal</span>
-        <strong id="net-kpi-top-domain" class="net-kpi-value net-kpi-text">---</strong>
-        <span id="net-kpi-top-domain-sub" class="net-kpi-sub">&nbsp;</span>
+      <div class="ntop-banner ntop-purple">
+        <div class="ntop-banner-text">
+          <span class="ntop-banner-label">App / Sitio #1 en Consumo</span>
+          <strong id="net-kpi-top-domain" class="ntop-banner-value ntop-banner-text-val">---</strong>
+          <span id="net-kpi-top-domain-sub" class="ntop-banner-sub">Sin dominios registrados</span>
+        </div>
+        <svg class="ntop-banner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l3 6.5 7 .9-5.1 4.9 1.3 7L12 17.8 5.8 21.3l1.3-7L2 9.4l7-.9z"/></svg>
       </div>
     </div>
 
-    <div class="panel-card">
-      <div class="panel-card-header">
-        <div style="display:flex; align-items:center; gap:10px;">
-          <h2>Tráfico de Red y Dominios</h2>
-          <span id="net-counter-badge" class="badge-pill muted-badge">0 dominios</span>
+    <!-- FILA 2: Gráfica bipolar + donas -->
+    <div class="ntop-row2">
+      <div class="panel-card ntop-chart-card">
+        <div class="ntop-card-head">
+          <h3>Interfaces Traffic <small>(Sent / Rcvd en tiempo real)</small></h3>
+          <div class="ntop-legend-inline">
+            <span><i class="dot" style="background:#16a34a"></i>Rcvd <b id="net-live-rx">0 Kbps</b></span>
+            <span><i class="dot" style="background:#f97316"></i>Sent <b id="net-live-tx">0 Kbps</b></span>
+          </div>
         </div>
-        <div class="panel-controls">
-          <input id="net-date-input" type="date" class="toolbar-select" />
-          <div class="control-select-wrap">
-            <select id="net-device-filter" class="toolbar-select">
-              <option value="ALL">Todos los equipos</option>
-            </select>
-          </div>
-          <div class="control-select-wrap">
-            <select id="net-category-filter" class="toolbar-select">
-              <option value="ALL">Todas las categorías</option>
-              <option value="STREAMING">Streaming / Video</option>
-              <option value="SOCIAL">Redes Sociales</option>
-              <option value="MESSAGING">Mensajería</option>
-              <option value="AI">Inteligencia Artificial</option>
-              <option value="CLOUD">Almacenamiento Cloud</option>
-              <option value="REMOTE">Acceso Remoto</option>
-              <option value="WORK">Desarrollo / Trabajo</option>
-              <option value="SYSTEM">Sistema / Actualizaciones</option>
-              <option value="OTHER">Otros</option>
-            </select>
-          </div>
-          <div class="search-box">
-            <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-            </svg>
-            <input id="net-search-input" type="text" placeholder="Filtrar dominio, app o equipo..." />
-          </div>
-          <button id="refresh-net-btn" type="button" class="btn btn-secondary btn-sm">
-            <span>Actualizar</span>
-          </button>
-          <button id="export-net-csv-btn" type="button" class="btn btn-secondary btn-sm">
-            <span>CSV</span>
-          </button>
+        <div class="ntop-canvas-wrap"><canvas id="net-traffic-canvas"></canvas></div>
+      </div>
+      <div class="ntop-donuts">
+        <div class="panel-card ntop-donut-card">
+          <div class="ntop-card-head"><h3>Top Applications / Sitios</h3></div>
+          <div id="net-donut-apps" class="ntop-donut-box"></div>
+        </div>
+        <div class="panel-card ntop-donut-card">
+          <div class="ntop-card-head"><h3>Traffic Classification <small>(nDPI)</small></h3></div>
+          <div id="net-donut-cats" class="ntop-donut-box"></div>
         </div>
       </div>
+    </div>
 
-      <h3 class="net-section-title">Consumo por equipo <small>(clic en una fila para filtrar sus dominios)</small></h3>
+    <!-- FILA 3: Barra de herramientas -->
+    <div class="panel-card ntop-toolbar">
+      <div class="ntop-live-ind">
+        <span id="net-live-dot" class="ntop-live-dot"></span>
+        <span id="net-live-indicator">En vivo • Auto-actualización 4s</span>
+        <span id="net-last-update" class="ntop-last-update"></span>
+      </div>
+      <div class="panel-controls">
+        <input id="net-date-input" type="date" class="toolbar-select" />
+        <div class="control-select-wrap">
+          <select id="net-device-filter" class="toolbar-select">
+            <option value="ALL">Todos los equipos</option>
+          </select>
+        </div>
+        <div class="control-select-wrap">
+          <select id="net-category-filter" class="toolbar-select">
+            <option value="ALL">Todas las categorías</option>
+            <option value="STREAMING">Streaming / Video</option>
+            <option value="SOCIAL">Redes Sociales</option>
+            <option value="MESSAGING">Mensajería</option>
+            <option value="AI">Inteligencia Artificial</option>
+            <option value="CLOUD">Almacenamiento Cloud</option>
+            <option value="REMOTE">Acceso Remoto</option>
+            <option value="WORK">Desarrollo / Trabajo</option>
+            <option value="SYSTEM">Sistema / Actualizaciones</option>
+            <option value="OTHER">Otros</option>
+          </select>
+        </div>
+        <div class="search-box">
+          <svg class="icon-sm muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input id="net-search-input" type="text" placeholder="Filtrar dominio, app o equipo..." />
+        </div>
+        <label class="ntop-switch" title="Auto-Refresh 4s">
+          <input id="net-auto-toggle" type="checkbox" checked />
+          <span class="ntop-switch-track"></span>
+          <span class="ntop-switch-label">Auto-Refresh 4s</span>
+        </label>
+        <button id="refresh-net-btn" type="button" class="btn btn-primary btn-sm ntop-refresh-btn">
+          <svg class="icon-sm ntop-refresh-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          <span>Refrescar Ahora</span>
+        </button>
+        <button id="export-net-csv-btn" type="button" class="btn btn-secondary btn-sm">
+          <span>Exportar CSV</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- FILA 4: Tablas -->
+    <div class="panel-card">
+      <div class="panel-card-header">
+        <h3 class="net-section-title">Active Hosts / Ranking de Consumo por Cliente <small>(clic en un host para filtrar todo el dashboard)</small></h3>
+      </div>
       <div class="table-wrap">
         <table class="data-table net-table">
           <thead>
@@ -998,10 +1046,10 @@
               <th>Equipo</th>
               <th>Descarga</th>
               <th>Subida</th>
-              <th>Total</th>
+              <th style="min-width:180px">Total / Ancho de banda</th>
               <th>Pico (↓/↑ Kbps)</th>
               <th>Dominios</th>
-              <th>Dominio principal</th>
+              <th>Sitio principal</th>
             </tr>
           </thead>
           <tbody id="net-clients-tbody">
@@ -1009,8 +1057,15 @@
           </tbody>
         </table>
       </div>
+    </div>
 
-      <h3 class="net-section-title">Dominios y sitios conectados <small>(bytes estimados por frecuencia de conexión)</small></h3>
+    <div class="panel-card">
+      <div class="panel-card-header">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <h3 class="net-section-title">Active Flows / Inspector de Dominios y Aplicaciones <small>(bytes estimados por frecuencia de conexión)</small></h3>
+          <span id="net-counter-badge" class="badge-pill muted-badge">0 dominios</span>
+        </div>
+      </div>
       <div class="table-wrap">
         <table class="data-table net-table">
           <thead>
@@ -1018,9 +1073,9 @@
               <th>Equipo</th>
               <th>Dominio</th>
               <th>Aplicación</th>
-              <th>Categoría</th>
+              <th>Categoría (nDPI)</th>
               <th>Conexiones</th>
-              <th>Bytes estimados</th>
+              <th style="min-width:180px">Bytes estimados</th>
               <th>Última vez</th>
             </tr>
           </thead>
@@ -1113,6 +1168,6 @@
 
   <script src="/static/js/audio.js?v=20261111-v9"></script>
   <script src="/static/js/viewer.js?v=20261111-v9"></script>
-  <script src="/static/js/app.js?v=20261113-v1"></script>
+  <script src="/static/js/app.js?v=20261113-v2"></script>
 </body>
 </html>
