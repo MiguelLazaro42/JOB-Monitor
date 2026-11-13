@@ -7,14 +7,32 @@ import secrets
 import sqlite3
 import threading
 from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 import config
 
+try:
+    from server.service_catalog import match_service_domain_or_ip
+except ImportError:  # el servidor se ejecuta con server/ como directorio raíz
+    from service_catalog import match_service_domain_or_ip
+
 DB_PATH: Path = config.DATA_DIR / "remote_assist.db"
 MASTER_TENANT_ID = "sitai-master"
+
+
+@lru_cache(maxsize=8192)
+def _normalize_domain(domain: str, app_name: str = "", agent_cat: str = "OTHER") -> tuple:
+    """Traduce dominio CDN/IP crudo al servicio canónico (catálogo AdGuard + nDPI).
+    Conserva la categoría enviada por el agente si el catálogo no aporta una mejor."""
+    clean, cat = match_service_domain_or_ip(domain, app_name)
+    if not clean:
+        return "", agent_cat
+    if cat == "OTHER" and agent_cat and agent_cat != "OTHER":
+        cat = agent_cat
+    return clean[:253], cat
 
 
 def hash_password(plain: str) -> str:
@@ -54,6 +72,12 @@ def format_duration_short(seconds: int) -> str:
         return f"{mins}m {secs}s" if secs else f"{mins}m"
     hrs, rem_mins = divmod(mins, 60)
     return f"{hrs}h {rem_mins}m"
+
+
+def _csv_safe(value) -> str:
+    """Neutraliza inyección de fórmulas en Excel para texto controlado por el cliente."""
+    text = str(value if value is not None else "")
+    return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
 
 
 class DatabaseManager:
@@ -218,6 +242,30 @@ class DatabaseManager:
                         agent_id TEXT PRIMARY KEY,
                         revoked_at TEXT NOT NULL,
                         reason TEXT DEFAULT ''
+                    );
+
+                    CREATE TABLE IF NOT EXISTS network_usage_daily (
+                        date TEXT NOT NULL,
+                        agent_id TEXT NOT NULL,
+                        rx_bytes INTEGER DEFAULT 0,
+                        tx_bytes INTEGER DEFAULT 0,
+                        peak_rx_kbps REAL DEFAULT 0,
+                        peak_tx_kbps REAL DEFAULT 0,
+                        updated_at TEXT,
+                        PRIMARY KEY (date, agent_id)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS network_domains_daily (
+                        date TEXT NOT NULL,
+                        agent_id TEXT NOT NULL,
+                        domain TEXT NOT NULL,
+                        app_name TEXT NOT NULL,
+                        category TEXT,
+                        hit_count INTEGER DEFAULT 0,
+                        estimated_bytes INTEGER DEFAULT 0,
+                        first_seen_at TEXT,
+                        last_seen_at TEXT,
+                        PRIMARY KEY (date, agent_id, domain, app_name)
                     );
                     """
                 )
@@ -585,6 +633,8 @@ class DatabaseManager:
                 conn.execute("DELETE FROM screen_time_hourly WHERE agent_id = ?", (agent_id,))
                 conn.execute("DELETE FROM resource_usage_daily WHERE agent_id = ?", (agent_id,))
                 conn.execute("DELETE FROM chat_messages WHERE agent_id = ?", (agent_id,))
+                conn.execute("DELETE FROM network_usage_daily WHERE agent_id = ?", (agent_id,))
+                conn.execute("DELETE FROM network_domains_daily WHERE agent_id = ?", (agent_id,))
                 if revoke:
                     conn.execute(
                         "INSERT OR REPLACE INTO revoked_devices (agent_id, revoked_at, reason) VALUES (?, ?, 'autodestroy')",
@@ -997,6 +1047,323 @@ class DatabaseManager:
                 row["category"],
                 row["message"],
                 row["duration_seconds"] if row["duration_seconds"] is not None else "",
+            ])
+        return out.getvalue()
+
+    # ------------------------------------------------------------------
+    # Analítica de red y dominios
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _clean_date(custom_date: Optional[str]) -> Optional[str]:
+        val = (custom_date or "").strip()[:10]
+        if len(val) == 10 and val[4] == "-" and val[7] == "-":
+            return val
+        return None
+
+    def record_network_slice(
+        self,
+        agent_id: str,
+        delta_rx_bytes: int,
+        delta_tx_bytes: int,
+        rx_kbps: float,
+        tx_kbps: float,
+        custom_date: Optional[str] = None,
+    ):
+        now_dt = self._now_dt()
+        day = self._clean_date(custom_date) or now_dt.strftime("%Y-%m-%d")
+        now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+        rx = max(0, int(delta_rx_bytes or 0))
+        tx = max(0, int(delta_tx_bytes or 0))
+        prx = max(0.0, float(rx_kbps or 0.0))
+        ptx = max(0.0, float(tx_kbps or 0.0))
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO network_usage_daily (date, agent_id, rx_bytes, tx_bytes, peak_rx_kbps, peak_tx_kbps, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(date, agent_id) DO UPDATE SET
+                        rx_bytes = rx_bytes + excluded.rx_bytes,
+                        tx_bytes = tx_bytes + excluded.tx_bytes,
+                        peak_rx_kbps = MAX(peak_rx_kbps, excluded.peak_rx_kbps),
+                        peak_tx_kbps = MAX(peak_tx_kbps, excluded.peak_tx_kbps),
+                        updated_at = excluded.updated_at
+                    """,
+                    (day, agent_id, rx, tx, prx, ptx, now_str),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def record_domain_activity_batch(
+        self,
+        agent_id: str,
+        domains_list: List[dict],
+        custom_date: Optional[str] = None,
+    ):
+        if not domains_list:
+            return
+        now_dt = self._now_dt()
+        day = self._clean_date(custom_date) or now_dt.strftime("%Y-%m-%d")
+        now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+        rows = []
+        for d in domains_list:
+            if not isinstance(d, dict):
+                continue
+            domain = str(d.get("domain") or "").strip().lower()[:253]
+            if not domain:
+                continue
+            app = str(d.get("app_name") or "Desconocido").strip()[:80] or "Desconocido"
+            cat = str(d.get("category") or "OTHER").strip().upper()[:30]
+            domain, cat = _normalize_domain(domain, app, cat)
+            if not domain:
+                continue
+            try:
+                hits = max(1, int(d.get("connections", d.get("hit_count", 1))))
+                est = max(0, int(d.get("estimated_bytes", 0)))
+            except (TypeError, ValueError):
+                continue
+            rows.append((day, agent_id, domain, app, cat, hits, est, now_str, now_str))
+        if not rows:
+            return
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.executemany(
+                    """
+                    INSERT INTO network_domains_daily
+                        (date, agent_id, domain, app_name, category, hit_count, estimated_bytes, first_seen_at, last_seen_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(date, agent_id, domain, app_name) DO UPDATE SET
+                        hit_count = hit_count + excluded.hit_count,
+                        estimated_bytes = estimated_bytes + excluded.estimated_bytes,
+                        category = excluded.category,
+                        last_seen_at = excluded.last_seen_at
+                    """,
+                    rows,
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def get_network_dashboard_summary(
+        self,
+        date_str: Optional[str] = None,
+        allowed_tenant_id: Optional[str] = None,
+    ) -> dict:
+        day = self._clean_date(date_str) or self._now_dt().strftime("%Y-%m-%d")
+        tenant_names = self.get_tenant_name_map()
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                if allowed_tenant_id:
+                    devices = conn.execute(
+                        "SELECT * FROM devices WHERE tenant_id = ? ORDER BY alias ASC", (allowed_tenant_id,)
+                    ).fetchall()
+                else:
+                    devices = conn.execute("SELECT * FROM devices ORDER BY alias ASC").fetchall()
+                usage = {
+                    r["agent_id"]: dict(r)
+                    for r in conn.execute("SELECT * FROM network_usage_daily WHERE date = ?", (day,)).fetchall()
+                }
+                dom_rows = conn.execute(
+                    """
+                    SELECT agent_id, domain, category, SUM(hit_count) AS hits, SUM(estimated_bytes) AS est
+                    FROM network_domains_daily WHERE date = ?
+                    GROUP BY agent_id, domain, category
+                    """,
+                    (day,),
+                ).fetchall()
+                recent_cutoff = (self._now_dt() - timedelta(minutes=2)).strftime("%Y-%m-%d %H:%M:%S")
+                recent_rows = conn.execute(
+                    """
+                    SELECT agent_id, domain, category, MAX(last_seen_at) AS last_seen
+                    FROM network_domains_daily
+                    WHERE date = ? AND last_seen_at >= ?
+                    GROUP BY agent_id, domain, category
+                    """,
+                    (day, recent_cutoff),
+                ).fetchall()
+            finally:
+                conn.close()
+
+        def _merge_rows(rows, sum_keys, max_key=None):
+            merged: Dict[tuple, dict] = {}
+            for r in rows:
+                dom, cat = _normalize_domain(r["domain"], "", (r["category"] or "OTHER").upper())
+                if not dom:
+                    continue
+                m = merged.setdefault((r["agent_id"], dom, cat), {
+                    "agent_id": r["agent_id"], "domain": dom, "category": cat, **{k: 0 for k in sum_keys},
+                    **({max_key: ""} if max_key else {}),
+                })
+                for k in sum_keys:
+                    m[k] += r[k] or 0
+                if max_key and (r[max_key] or "") > m[max_key]:
+                    m[max_key] = r[max_key] or ""
+            return list(merged.values())
+
+        dom_rows = _merge_rows(dom_rows, ("hits", "est"))
+        recent_rows = _merge_rows(recent_rows, (), "last_seen")
+        valid_ids = {d["agent_id"] for d in devices}
+        by_agent: Dict[str, List[dict]] = {}
+        global_domains: Dict[str, dict] = {}
+        categories: Dict[str, dict] = {}
+        for r in dom_rows:
+            if r["agent_id"] not in valid_ids:
+                continue
+            by_agent.setdefault(r["agent_id"], []).append(r)
+            g = global_domains.setdefault(r["domain"], {"domain": r["domain"], "category": r["category"], "hits": 0, "estimated_bytes": 0})
+            g["hits"] += r["hits"] or 0
+            g["estimated_bytes"] += r["est"] or 0
+            c = categories.setdefault(r["category"] or "OTHER", {"category": r["category"] or "OTHER", "hits": 0, "estimated_bytes": 0})
+            c["hits"] += r["hits"] or 0
+            c["estimated_bytes"] += r["est"] or 0
+
+        generic_domains = {"google.com", "microsoft.com"}
+        priority_cats = {"STREAMING", "SOCIAL", "MESSAGING", "AI", "GAMING", "SHOPPING", "CLOUD"}
+        recent_by_agent: Dict[str, List[dict]] = {}
+        for r in recent_rows:
+            recent_by_agent.setdefault(r["agent_id"], []).append(r)
+
+        def _recent_top(aid: str) -> str:
+            cands = [r for r in recent_by_agent.get(aid, []) if r["domain"] not in generic_domains]
+            if not cands:
+                return ""
+            cands.sort(key=lambda r: (
+                (r["category"] or "").upper() in priority_cats,
+                r["last_seen"] or "",
+            ), reverse=True)
+            return cands[0]["domain"]
+
+        clients = []
+        total_rx = total_tx = 0
+        for dev in devices:
+            aid = dev["agent_id"]
+            u = usage.get(aid, {})
+            rx = int(u.get("rx_bytes") or 0)
+            tx = int(u.get("tx_bytes") or 0)
+            total_rx += rx
+            total_tx += tx
+            doms = by_agent.get(aid, [])
+            top = max(doms, key=lambda x: (x["est"] or 0, x["hits"] or 0), default=None)
+            tid = dev["tenant_id"] or MASTER_TENANT_ID
+            clients.append({
+                "agent_id": aid,
+                "alias": dev["alias"],
+                "hostname": dev["hostname"],
+                "username": dev["username"],
+                "tenant_id": tid,
+                "tenant_name": tenant_names.get(tid, tid),
+                "is_online": bool(dev["is_online"]),
+                "rx_bytes": rx,
+                "tx_bytes": tx,
+                "total_bytes": rx + tx,
+                "peak_rx_kbps": float(u.get("peak_rx_kbps") or 0),
+                "peak_tx_kbps": float(u.get("peak_tx_kbps") or 0),
+                "domains_count": len(doms),
+                "top_domain": _recent_top(aid) or (top["domain"] if top else ""),
+            })
+        clients.sort(key=lambda c: (
+            -round(c["total_bytes"] / (1024 * 1024)),
+            (c["hostname"] or "").lower(),
+            (c["username"] or "").lower(),
+            c["agent_id"],
+        ))
+        top_domains = sorted(global_domains.values(), key=lambda x: (x["estimated_bytes"], x["hits"]), reverse=True)[:10]
+        top_client = clients[0] if clients and clients[0]["total_bytes"] > 0 else None
+        return {
+            "date": day,
+            "total_rx_bytes": total_rx,
+            "total_tx_bytes": total_tx,
+            "top_client": top_client,
+            "top_domain": top_domains[0] if top_domains else None,
+            "top_domains": top_domains,
+            "categories": sorted(categories.values(), key=lambda x: x["estimated_bytes"], reverse=True),
+            "clients": clients,
+        }
+
+    def get_agent_domains_detail(
+        self,
+        date_str: Optional[str] = None,
+        agent_id: Optional[str] = "ALL",
+        category: Optional[str] = "ALL",
+        search_q: Optional[str] = "",
+        limit: int = 300,
+        allowed_tenant_id: Optional[str] = None,
+    ) -> List[dict]:
+        day = self._clean_date(date_str) or self._now_dt().strftime("%Y-%m-%d")
+        clauses = ["n.date = ?"]
+        params: list = [day]
+        if allowed_tenant_id:
+            clauses.append("n.agent_id IN (SELECT agent_id FROM devices WHERE tenant_id = ?)")
+            params.append(allowed_tenant_id)
+        if agent_id and agent_id != "ALL":
+            clauses.append("n.agent_id = ?")
+            params.append(agent_id)
+        # Categoría y búsqueda se aplican tras normalizar (filas históricas guardan dominios CDN crudos).
+        q_low = (search_q or "").strip().lower()
+        max_rows = max(1, min(5000, int(limit)))
+        params.append(5000)
+        sql = f"""
+            SELECT n.date, n.agent_id, n.domain, n.app_name, n.category, n.hit_count, n.estimated_bytes,
+                   n.first_seen_at, n.last_seen_at,
+                   COALESCE(d.alias, n.agent_id) AS alias, COALESCE(d.hostname, '') AS hostname,
+                   COALESCE(d.username, '') AS username
+            FROM network_domains_daily n
+            LEFT JOIN devices d ON d.agent_id = n.agent_id
+            WHERE {' AND '.join(clauses)}
+            ORDER BY n.estimated_bytes DESC, n.hit_count DESC
+            LIMIT ?
+        """
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                raw = [dict(r) for r in conn.execute(sql, params).fetchall()]
+            finally:
+                conn.close()
+        merged: Dict[tuple, dict] = {}
+        for r in raw:
+            dom, cat = _normalize_domain(r["domain"], r["app_name"] or "", (r["category"] or "OTHER").upper())
+            if not dom:
+                continue
+            if category and category != "ALL" and cat != category:
+                continue
+            if q_low and not any(q_low in str(v or "").lower() for v in (dom, r["domain"], r["app_name"], r["alias"], r["hostname"])):
+                continue
+            key = (r["agent_id"], dom, r["app_name"])
+            m = merged.get(key)
+            if m is None:
+                merged[key] = {**r, "domain": dom, "category": cat}
+                continue
+            m["hit_count"] += r["hit_count"] or 0
+            m["estimated_bytes"] += r["estimated_bytes"] or 0
+            m["first_seen_at"] = min(m["first_seen_at"] or "9", r["first_seen_at"] or "9")
+            m["last_seen_at"] = max(m["last_seen_at"] or "", r["last_seen_at"] or "")
+        return sorted(merged.values(), key=lambda x: (x["estimated_bytes"], x["hit_count"]), reverse=True)[:max_rows]
+
+    def export_network_csv(
+        self,
+        date_str: Optional[str] = None,
+        agent_id: Optional[str] = "ALL",
+        category: Optional[str] = "ALL",
+        search_q: Optional[str] = "",
+        allowed_tenant_id: Optional[str] = None,
+    ) -> str:
+        rows = self.get_agent_domains_detail(
+            date_str=date_str, agent_id=agent_id, category=category,
+            search_q=search_q, limit=5000, allowed_tenant_id=allowed_tenant_id,
+        )
+        out = io.StringIO()
+        writer = csv.writer(out)
+        writer.writerow(["Fecha", "Equipo (Alias)", "Hostname", "Usuario", "Dominio", "Aplicación", "Categoría",
+                         "Conexiones", "Bytes Estimados", "Primera Vez", "Última Vez"])
+        for r in rows:
+            writer.writerow([
+                r["date"], _csv_safe(r["alias"]), _csv_safe(r["hostname"]), _csv_safe(r["username"]),
+                _csv_safe(r["domain"]), _csv_safe(r["app_name"]), r["category"] or "",
+                r["hit_count"], r["estimated_bytes"], r["first_seen_at"] or "", r["last_seen_at"] or "",
             ])
         return out.getvalue()
 

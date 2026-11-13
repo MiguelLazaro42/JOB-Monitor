@@ -440,6 +440,11 @@ class HubManager:
         payload = {
             "type": "agent_telemetry",
             "agent": agent.to_dict(include_thumbnail=True),
+            "rx_kbps": agent.rx_kbps,
+            "tx_kbps": agent.tx_kbps,
+            "today_rx_bytes": agent.today_rx_bytes,
+            "today_tx_bytes": agent.today_tx_bytes,
+            "recent_domains": agent.recent_domains,
         }
         dead = []
         for ws in list(self.admins):
@@ -1433,6 +1438,73 @@ async def export_logs_csv(
     )
 
 
+@app.get("/api/network/summary")
+async def get_network_summary(
+    request: Request,
+    date: Optional[str] = Query(None, description="Fecha YYYY-MM-DD"),
+    tenant_id: Optional[str] = Query(None),
+):
+    user = verify_admin_access(request)
+    if user["role"] == "superadmin":
+        allowed_tid = (tenant_id or "").strip() if (tenant_id and tenant_id != "ALL") else None
+    else:
+        allowed_tid = user["tenant_id"]
+    summary = db.get_network_dashboard_summary(date_str=date, allowed_tenant_id=allowed_tid)
+    for c in summary["clients"]:
+        live = hub.agents.get(c["agent_id"])
+        c["is_online"] = bool(live)
+        c["rx_kbps"] = live.rx_kbps if live else 0.0
+        c["tx_kbps"] = live.tx_kbps if live else 0.0
+    return {"ok": True, **summary}
+
+
+@app.get("/api/network/domains")
+async def get_network_domains(
+    request: Request,
+    date: Optional[str] = Query(None),
+    agent_id: Optional[str] = Query("ALL"),
+    category: Optional[str] = Query("ALL"),
+    q: Optional[str] = Query(""),
+    limit: int = Query(300),
+    tenant_id: Optional[str] = Query(None),
+):
+    user = verify_admin_access(request)
+    if user["role"] == "superadmin":
+        allowed_tid = (tenant_id or "").strip() if (tenant_id and tenant_id != "ALL") else None
+    else:
+        allowed_tid = user["tenant_id"]
+    domains = db.get_agent_domains_detail(
+        date_str=date, agent_id=agent_id, category=category, search_q=q,
+        limit=limit, allowed_tenant_id=allowed_tid,
+    )
+    return {"ok": True, "domains": domains}
+
+
+@app.get("/api/network/export-csv")
+async def export_network_csv(
+    request: Request,
+    date: Optional[str] = Query(None),
+    agent_id: Optional[str] = Query("ALL"),
+    category: Optional[str] = Query("ALL"),
+    q: Optional[str] = Query(""),
+    tenant_id: Optional[str] = Query(None),
+):
+    user = verify_admin_access(request)
+    if user["role"] == "superadmin":
+        allowed_tid = (tenant_id or "").strip() if (tenant_id and tenant_id != "ALL") else None
+    else:
+        allowed_tid = user["tenant_id"]
+    csv_text = db.export_network_csv(
+        date_str=date, agent_id=agent_id, category=category, search_q=q,
+        allowed_tenant_id=allowed_tid,
+    )
+    return Response(
+        content="\ufeff" + csv_text,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="trafico_red_job_monitor.csv"'},
+    )
+
+
 @app.post("/api/devices/{agent_id}/alias")
 async def update_device_alias(request: Request, agent_id: str, body: AliasUpdateRequest):
     user = verify_admin_access(request)
@@ -1592,6 +1664,98 @@ def _save_capture_bytes(agent_id: str, sct_b64: str, prefix: str = "ev") -> Opti
     except Exception as e:
         print(f"[Captures] Error al almacenar evidencia visual: {e}")
         return None
+
+
+NETWORK_ALERT_CATEGORIES = {"STREAMING", "SOCIAL", "AI", "CLOUD", "REMOTE", "MESSAGING"}
+NETWORK_ALERT_THROTTLE_SECONDS = 15 * 60
+NETWORK_CATEGORY_LABELS = {
+    "STREAMING": "Streaming / Video",
+    "SOCIAL": "Redes Sociales",
+    "AI": "Inteligencia Artificial",
+    "CLOUD": "Almacenamiento Cloud",
+    "REMOTE": "Acceso Remoto",
+    "MESSAGING": "Mensajería",
+}
+_network_alert_last: Dict[tuple, float] = {}
+
+
+async def _ingest_network_telemetry_slice(
+    agent_id: str,
+    agent: AgentConnection,
+    net_data: dict,
+    custom_date: Optional[str] = None,
+):
+    if not isinstance(net_data, dict):
+        return
+    try:
+        d_rx = max(0, int(net_data.get("delta_rx_bytes", 0) or 0))
+        d_tx = max(0, int(net_data.get("delta_tx_bytes", 0) or 0))
+        rx_kbps = max(0.0, float(net_data.get("rx_kbps", 0.0) or 0.0))
+        tx_kbps = max(0.0, float(net_data.get("tx_kbps", 0.0) or 0.0))
+    except (TypeError, ValueError):
+        return
+    domains = net_data.get("domains") or []
+    if not isinstance(domains, list):
+        domains = []
+    domains = domains[:100]
+
+    if d_rx or d_tx or rx_kbps or tx_kbps:
+        db.record_network_slice(agent_id, d_rx, d_tx, rx_kbps, tx_kbps, custom_date=custom_date)
+    if domains:
+        db.record_domain_activity_batch(agent_id, domains, custom_date=custom_date)
+
+    # Métricas en vivo (las repeticiones offline no representan la velocidad actual)
+    if not custom_date:
+        today = db._now_dt().strftime("%Y-%m-%d")
+        if getattr(agent, "_net_day", None) != today:
+            agent._net_day = today
+            agent.today_rx_bytes = 0
+            agent.today_tx_bytes = 0
+        agent.rx_kbps = rx_kbps
+        agent.tx_kbps = tx_kbps
+        agent.today_rx_bytes += d_rx
+        agent.today_tx_bytes += d_tx
+        agent.recent_domains = [
+            {
+                "domain": str(d.get("domain") or "")[:120],
+                "app_name": str(d.get("app_name") or "")[:40],
+                "category": str(d.get("category") or "OTHER").upper(),
+                "connections": int(d.get("connections") or 1),
+                "estimated_bytes": int(d.get("estimated_bytes") or 0),
+            }
+            for d in domains[:15] if isinstance(d, dict) and d.get("domain")
+        ]
+
+    now_mono = time.monotonic()
+    if len(_network_alert_last) > 5000:
+        cutoff = now_mono - NETWORK_ALERT_THROTTLE_SECONDS
+        for k in [k for k, v in _network_alert_last.items() if v < cutoff]:
+            _network_alert_last.pop(k, None)
+    for item in domains:
+        if not isinstance(item, dict):
+            continue
+        cat = str(item.get("category") or "").strip().upper()
+        domain = str(item.get("domain") or "").strip().lower()
+        if cat not in NETWORK_ALERT_CATEGORIES or not domain:
+            continue
+        key = (agent_id, domain)
+        last = _network_alert_last.get(key)
+        if last is not None and (now_mono - last) < NETWORK_ALERT_THROTTLE_SECONDS:
+            continue
+        _network_alert_last[key] = now_mono
+        app_label = str(item.get("app_name") or "Desconocido")[:80]
+        msg = f"Conexión a {domain} ({NETWORK_CATEGORY_LABELS.get(cat, cat)}) desde '{app_label}'"
+        log_entry = db.add_log(
+            agent_id=agent_id,
+            alias=agent.alias,
+            hostname=agent.hostname,
+            username=agent.username,
+            category="NETWORK",
+            message=msg,
+            meta_json=json.dumps({"domain": domain, "app_name": app_label, "network_category": cat}),
+            custom_timestamp=(custom_date.strip() if custom_date and len(custom_date.strip()) >= 19 else None),
+        )
+        await hub.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)
 
 
 async def _ingest_keyboard_event_payload(
@@ -1833,6 +1997,9 @@ async def ws_agent_endpoint(websocket: WebSocket):
                             )
                             await hub.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)
 
+                    if data.get("network"):
+                        await _ingest_network_telemetry_slice(agent_id, agent, data["network"])
+
                     await hub.broadcast_telemetry_update(agent)
 
                 elif msg_type == "keyboard_event":
@@ -1912,6 +2079,11 @@ async def ws_agent_endpoint(websocket: WebSocket):
                                             custom_timestamp=ev_ts,
                                         )
                                         await hub.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)
+                                if inner_payload.get("network"):
+                                    await _ingest_network_telemetry_slice(
+                                        agent_id, agent, inner_payload["network"],
+                                        custom_date=custom_ts or db._now_dt().strftime("%Y-%m-%d"),
+                                    )
                                 ack_ok = True
                         except Exception as e:
                             print(f"[SITAI Vault] Error al descifrar contenedor '{vault_filename}' de {agent_id}: {e}")

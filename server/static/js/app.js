@@ -215,6 +215,7 @@
   const tabViewer = document.getElementById('tab-viewer');
   const tabActivity = document.getElementById('tab-activity');
   const tabLogs = document.getElementById('tab-logs');
+  const tabNetwork = document.getElementById('tab-network');
   const tabSettings = document.getElementById('tab-settings');
   const tabViewerLabel = document.getElementById('tab-viewer-label');
 
@@ -222,6 +223,7 @@
   const viewViewer = document.getElementById('view-viewer');
   const viewActivity = document.getElementById('view-activity');
   const viewLogs = document.getElementById('view-logs');
+  const viewNetwork = document.getElementById('view-network');
   const viewSettings = document.getElementById('view-settings');
 
   // Vista 1: Muro
@@ -1917,6 +1919,7 @@
       viewer: viewViewer,
       activity: viewActivity,
       logs: viewLogs,
+      network: viewNetwork,
       settings: viewSettings,
     };
     const tabs = {
@@ -1924,6 +1927,7 @@
       viewer: tabViewer,
       activity: tabActivity,
       logs: tabLogs,
+      network: tabNetwork,
       settings: tabSettings,
     };
 
@@ -1936,6 +1940,8 @@
       loadDailyMetrics();
     } else if (target === 'logs') {
       fetchLogsFromServer();
+    } else if (target === 'network') {
+      loadNetworkDashboard();
     } else if (target === 'settings') {
       loadSettingsView();
     }
@@ -2353,6 +2359,7 @@
         if (state.selectedAgentId === msg.agent.agent_id) {
           updateViewerHeader(msg.agent);
         }
+        if (state.currentView === 'network') netOnLiveTelemetry(msg);
         return;
       }
 
@@ -2366,6 +2373,7 @@
       }
 
       if (msg.type === 'new_log' && msg.log) {
+        if (msg.log.category === 'NETWORK') netOnNetworkLog();
         if (state.currentView === 'logs') {
           const devFilter = logDeviceFilter.value || 'ALL';
           const catFilter = logCategoryFilter.value || 'ALL';
@@ -2679,6 +2687,561 @@
     sendWsJson({ type: 'request_all_thumbnails' });
   });
 
+  // ===================== Vista: Tráfico de Red (estilo ntopng) =====================
+  const netDateInput = document.getElementById('net-date-input');
+  const netDeviceFilter = document.getElementById('net-device-filter');
+  const netCategoryFilter = document.getElementById('net-category-filter');
+  const netSearchInput = document.getElementById('net-search-input');
+  const refreshNetBtn = document.getElementById('refresh-net-btn');
+  const exportNetCsvBtn = document.getElementById('export-net-csv-btn');
+  const netClientsTbody = document.getElementById('net-clients-tbody');
+  const netDomainsTbody = document.getElementById('net-domains-tbody');
+  const netCounterBadge = document.getElementById('net-counter-badge');
+  const netAutoToggle = document.getElementById('net-auto-toggle');
+  const netLiveInd = document.querySelector('.ntop-live-ind');
+  const netCanvas = document.getElementById('net-traffic-canvas');
+
+  const NET_TICK_MS = 4000;
+  const NET_HISTORY_MAX = 150; // ~10 min a 4s
+  const NET_CATEGORY_LABELS = {
+    STREAMING: 'Streaming / Video',
+    SOCIAL: 'Redes Sociales',
+    MESSAGING: 'Mensajería',
+    AI: 'Inteligencia Artificial',
+    GAMING: 'Videojuegos',
+    SHOPPING: 'Compras / E-commerce',
+    CLOUD: 'Almacenamiento Cloud',
+    REMOTE: 'Acceso Remoto',
+    WORK: 'Desarrollo / Trabajo',
+    SYSTEM: 'Sistema / Actualizaciones',
+    OTHER: 'Otros',
+  };
+  const NET_CATEGORY_COLORS = {
+    STREAMING: '#e11d48', SOCIAL: '#f97316', MESSAGING: '#06b6d4', AI: '#8b5cf6',
+    GAMING: '#eab308', SHOPPING: '#ec4899',
+    CLOUD: '#6366f1', REMOTE: '#d946ef', WORK: '#16a34a', SYSTEM: '#64748b', OTHER: '#94a3b8',
+  };
+  const NET_PALETTE = ['#e11d48', '#06b6d4', '#16a34a', '#8b5cf6', '#f97316', '#94a3b8'];
+
+  const netState = {
+    summary: null,
+    domains: [],
+    history: [],
+    auto: true,
+    loading: false,
+    liveDomains: new Map(),
+    refreshTimer: null,
+    lastRender: 0,
+  };
+
+  function formatBytes(bytes) {
+    const n = Math.max(0, Number(bytes) || 0);
+    if (n < 1024) return `${Math.round(n)} B`;
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let v = n / 1024;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i += 1;
+    }
+    return `${v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2)} ${units[i]}`;
+  }
+
+  // Entrada en kilobits por segundo
+  function formatBitrate(kbps) {
+    const v = Math.max(0, Number(kbps) || 0);
+    if (v < 1000) return `${v >= 100 ? Math.round(v) : v.toFixed(1)} Kbps`;
+    if (v < 1000000) return `${(v / 1000).toFixed(v >= 100000 ? 0 : 1)} Mbps`;
+    return `${(v / 1000000).toFixed(2)} Gbps`;
+  }
+
+  function netTodayStr() {
+    const d = new Date();
+    const pad = (x) => String(x).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+
+  function netBaseParams() {
+    const params = new URLSearchParams({ date: (netDateInput && netDateInput.value) || netTodayStr() });
+    if (state.tenantFilter && state.tenantFilter !== 'ALL') params.set('tenant_id', state.tenantFilter);
+    return params;
+  }
+
+  function netFilterParams() {
+    const params = netBaseParams();
+    params.set('agent_id', (netDeviceFilter && netDeviceFilter.value) || 'ALL');
+    params.set('category', (netCategoryFilter && netCategoryFilter.value) || 'ALL');
+    params.set('q', netSearchInput ? netSearchInput.value.trim() : '');
+    return params;
+  }
+
+  function setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  }
+
+  function netSelectedHost() {
+    return (netDeviceFilter && netDeviceFilter.value) || 'ALL';
+  }
+
+  // ---- Velocidad en vivo agregada (de los agentes conectados por WebSocket) ----
+  function netLiveTotals() {
+    const host = netSelectedHost();
+    let rx = 0;
+    let tx = 0;
+    state.agents.forEach((a) => {
+      if (host !== 'ALL' && a.agent_id !== host) return;
+      if (state.tenantFilter !== 'ALL' && a.tenant_id && a.tenant_id !== state.tenantFilter) return;
+      rx += Number(a.rx_kbps) || 0;
+      tx += Number(a.tx_kbps) || 0;
+    });
+    return { rx, tx };
+  }
+
+  function netUpdateLiveIndicators() {
+    const live = netLiveTotals();
+    setText('net-live-rx', formatBitrate(live.rx));
+    setText('net-live-tx', formatBitrate(live.tx));
+    const sub = document.getElementById('net-kpi-rx-sub');
+    if (sub) sub.textContent = `↓ ${formatBitrate(live.rx)}`;
+  }
+
+  function netPushSample() {
+    const live = netLiveTotals();
+    netState.history.push({ t: Date.now(), rx: live.rx, tx: live.tx });
+    if (netState.history.length > NET_HISTORY_MAX) netState.history.shift();
+  }
+
+  // ---- Gráfica de área bipolar (Canvas nativo) ----
+  function netNiceMax(v) {
+    if (v <= 10) return 10;
+    const pow = Math.pow(10, Math.floor(Math.log10(v)));
+    const n = v / pow;
+    const step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+    return step * pow;
+  }
+
+  function drawTrafficChart() {
+    if (!netCanvas) return;
+    const w = netCanvas.clientWidth;
+    const h = netCanvas.clientHeight;
+    if (!w || !h) return;
+    const dpr = window.devicePixelRatio || 1;
+    if (netCanvas.width !== Math.round(w * dpr) || netCanvas.height !== Math.round(h * dpr)) {
+      netCanvas.width = Math.round(w * dpr);
+      netCanvas.height = Math.round(h * dpr);
+    }
+    const ctx = netCanvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const padL = 64;
+    const padR = 12;
+    const padT = 10;
+    const padB = 24;
+    const cw = w - padL - padR;
+    const ch = h - padT - padB;
+    const midY = padT + ch / 2;
+    const hist = netState.history;
+    const peak = hist.reduce((m, p) => Math.max(m, p.rx, p.tx), 0);
+    const maxV = netNiceMax(peak * 1.1);
+
+    ctx.font = '10.5px system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'right';
+    ctx.lineWidth = 1;
+
+    // Rejilla y escala Y (autoadaptativa Kbps/Mbps)
+    [-1, -0.5, 0, 0.5, 1].forEach((f) => {
+      const y = midY - f * (ch / 2);
+      ctx.strokeStyle = f === 0 ? '#8fa3b8' : '#e2e8f0';
+      ctx.beginPath();
+      ctx.moveTo(padL, y);
+      ctx.lineTo(w - padR, y);
+      ctx.stroke();
+      ctx.fillStyle = '#7b8ea3';
+      ctx.fillText(f === 0 ? '0 bps' : `${f < 0 ? '-' : ''}${formatBitrate(Math.abs(f) * maxV)}`, padL - 6, y);
+    });
+
+    if (hist.length < 2) {
+      ctx.fillStyle = '#7b8ea3';
+      ctx.textAlign = 'center';
+      ctx.fillText('Recopilando muestras en vivo…', padL + cw / 2, midY - 14);
+      return;
+    }
+
+    const tMax = hist[hist.length - 1].t;
+    const tMin = Math.min(hist[0].t, tMax - NET_TICK_MS * 30);
+    const xOf = (t) => padL + ((t - tMin) / (tMax - tMin)) * cw;
+    const yOf = (v, dir) => midY - dir * (Math.min(v, maxV) / maxV) * (ch / 2);
+
+    const drawArea = (key, dir, stroke, fillTop) => {
+      const grad = ctx.createLinearGradient(0, midY, 0, midY - dir * (ch / 2));
+      grad.addColorStop(0, fillTop.replace('ALPHA', '0.05'));
+      grad.addColorStop(1, fillTop.replace('ALPHA', '0.55'));
+      ctx.beginPath();
+      ctx.moveTo(xOf(hist[0].t), midY);
+      hist.forEach((p) => ctx.lineTo(xOf(p.t), yOf(p[key], dir)));
+      ctx.lineTo(xOf(tMax), midY);
+      ctx.closePath();
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.beginPath();
+      hist.forEach((p, i) => {
+        const x = xOf(p.t);
+        const y = yOf(p[key], dir);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+    };
+    drawArea('rx', 1, '#16a34a', 'rgba(22,163,74,ALPHA)');
+    drawArea('tx', -1, '#f97316', 'rgba(249,115,22,ALPHA)');
+
+    // Marcas de tiempo en eje X
+    ctx.fillStyle = '#7b8ea3';
+    ctx.textBaseline = 'top';
+    const ticks = Math.max(2, Math.min(6, Math.floor(cw / 110)));
+    for (let i = 0; i <= ticks; i += 1) {
+      const t = tMin + ((tMax - tMin) * i) / ticks;
+      ctx.textAlign = i === 0 ? 'left' : i === ticks ? 'right' : 'center';
+      const d = new Date(t);
+      const label = d.toLocaleTimeString('es-MX', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      ctx.fillText(label, padL + (cw * i) / ticks, h - padB + 6);
+    }
+  }
+
+  // ---- Donas SVG ----
+  function renderDonut(containerId, items, totalLabel) {
+    const box = document.getElementById(containerId);
+    if (!box) return;
+    const total = items.reduce((s, it) => s + it.value, 0);
+    if (!total) {
+      box.innerHTML = '<div class="ntop-empty">Sin datos</div>';
+      return;
+    }
+    let offset = 0;
+    const circles = items.map((it) => {
+      const pct = (it.value / total) * 100;
+      const c = `<circle cx="21" cy="21" r="15.9155" fill="none" stroke="${it.color}" stroke-width="6" stroke-dasharray="${pct.toFixed(3)} ${(100 - pct).toFixed(3)}" stroke-dashoffset="${(25 - offset).toFixed(3)}"><title>${escapeHtml(it.label)}: ${pct.toFixed(1)}%</title></circle>`;
+      offset += pct;
+      return c;
+    }).join('');
+    const legend = items.map((it) => {
+      const pct = (it.value / total) * 100;
+      return `<li><span><i class="dot" style="background:${it.color}"></i>${escapeHtml(it.label)}</span><b>${pct.toFixed(pct >= 10 ? 0 : 1)}%</b></li>`;
+    }).join('');
+    box.innerHTML = `<svg class="ntop-donut-svg" viewBox="0 0 42 42" role="img" aria-label="${escapeHtml(totalLabel)}">
+      <circle cx="21" cy="21" r="15.9155" fill="none" stroke="#e3eaf2" stroke-width="6"></circle>${circles}
+      <text x="21" y="22.5" text-anchor="middle" font-size="5.2" font-weight="700">${escapeHtml(totalLabel)}</text></svg>
+      <ul class="ntop-legend">${legend}</ul>`;
+  }
+
+  function netWeightedGroups(rows, keyFn) {
+    const useBytes = rows.some((r) => (r.estimated_bytes || 0) > 0);
+    const map = new Map();
+    rows.forEach((r) => {
+      const k = keyFn(r);
+      const w = useBytes ? (r.estimated_bytes || 0) : (r.hit_count || 0);
+      map.set(k, (map.get(k) || 0) + w);
+    });
+    return { groups: [...map.entries()].map(([k, v]) => ({ key: k, value: v })).filter((g) => g.value > 0).sort((a, b) => b.value - a.value), useBytes };
+  }
+
+  function renderNetworkDonuts() {
+    const rows = netState.domains;
+    const { groups: apps, useBytes } = netWeightedGroups(rows, (r) => r.domain);
+    const top = apps.slice(0, 5).map((g, i) => ({ label: g.key, value: g.value, color: NET_PALETTE[i] }));
+    const rest = apps.slice(5).reduce((s, g) => s + g.value, 0);
+    if (rest > 0) top.push({ label: 'Otros', value: rest, color: NET_PALETTE[5] });
+    renderDonut('net-donut-apps', top, useBytes ? formatBytes(apps.reduce((s, g) => s + g.value, 0)) : `${apps.length} sitios`);
+
+    const { groups: cats } = netWeightedGroups(rows, (r) => r.category || 'OTHER');
+    renderDonut('net-donut-cats', cats.map((g) => ({
+      label: NET_CATEGORY_LABELS[g.key] || g.key,
+      value: g.value,
+      color: NET_CATEGORY_COLORS[g.key] || '#94a3b8',
+    })), `${cats.length} cat.`);
+  }
+
+  // ---- Banner cards ----
+  function renderNetworkBanners() {
+    const data = netState.summary;
+    if (!data) return;
+    const host = netSelectedHost();
+    const clients = data.clients || [];
+    const sel = host !== 'ALL' ? clients.find((c) => c.agent_id === host) : null;
+    const rx = sel ? sel.rx_bytes : data.total_rx_bytes;
+    const tx = sel ? sel.tx_bytes : data.total_tx_bytes;
+    setText('net-kpi-rx', formatBytes(rx));
+    const active = sel ? (sel.total_bytes > 0 ? 1 : 0) : clients.filter((c) => c.total_bytes > 0).length;
+    setText('net-kpi-hosts', `${active} Host${active === 1 ? '' : 's'} Activo${active === 1 ? '' : 's'}`);
+    setText('net-kpi-hosts-sub', `↑ ${formatBytes(tx)} subidos`);
+    setText('net-kpi-flows', `${netState.domains.length} Flujos / Dominios`);
+    setText('net-kpi-flows-sub', sel ? `En ${sel.alias}` : 'Registrados en la fecha');
+    const { groups } = netWeightedGroups(netState.domains, (r) => r.domain);
+    if (groups.length) {
+      const topDom = groups[0].key;
+      const cat = (netState.domains.find((d) => d.domain === topDom) || {}).category || 'OTHER';
+      setText('net-kpi-top-domain', `${topDom} (${cat})`);
+      setText('net-kpi-top-domain-sub', NET_CATEGORY_LABELS[cat] || cat);
+    } else {
+      setText('net-kpi-top-domain', '---');
+      setText('net-kpi-top-domain-sub', 'Sin dominios registrados');
+    }
+    netUpdateLiveIndicators();
+  }
+
+  function netBar(value, max, label) {
+    const pct = max > 0 ? Math.max(2, Math.round((value / max) * 100)) : 0;
+    return `<div class="ntop-bar"><div class="ntop-bar-track"><div class="ntop-bar-fill" style="width:${pct}%"></div></div><span class="ntop-bar-val">${label}</span></div>`;
+  }
+
+  // Orden estable de filas de clientes: se fija al inicio y no cambia durante el polling de 4s
+  let netClientOrder = [];
+  let netClientOrderDate = null;
+
+  function netStableClientOrder(clients, dateKey) {
+    const ids = new Set(clients.map((c) => c.agent_id));
+    if (netClientOrderDate !== dateKey) {
+      netClientOrder = [];
+      netClientOrderDate = dateKey;
+    }
+    if (!netClientOrder.length) {
+      // Primera carga: bytes similares (±5%) se desempatan por hostname, usuario y agent_id
+      const bucket = (c) => Math.round(Math.log((c.total_bytes || 0) + 1) / Math.log(1.05));
+      const sorted = clients.slice().sort((a, b) =>
+        (bucket(b) - bucket(a))
+        || String(a.hostname || '').toLowerCase().localeCompare(String(b.hostname || '').toLowerCase())
+        || String(a.username || '').toLowerCase().localeCompare(String(b.username || '').toLowerCase())
+        || String(a.agent_id).localeCompare(String(b.agent_id)));
+      netClientOrder = sorted.map((c) => c.agent_id);
+    } else {
+      // Mantener posiciones existentes, descartar los que ya no existen y añadir nuevos al final
+      netClientOrder = netClientOrder.filter((id) => ids.has(id));
+      const known = new Set(netClientOrder);
+      clients.filter((c) => !known.has(c.agent_id)).forEach((c) => netClientOrder.push(c.agent_id));
+    }
+    const pos = new Map(netClientOrder.map((id, i) => [id, i]));
+    return clients.slice().sort((a, b) => pos.get(a.agent_id) - pos.get(b.agent_id));
+  }
+
+  function renderNetworkSummary(data) {
+    netState.summary = data;
+    // Selector de equipos (conserva la selección)
+    if (netDeviceFilter) {
+      const cur = netDeviceFilter.value || 'ALL';
+      let html = '<option value="ALL">Todos los equipos</option>';
+      (data.clients || []).forEach((c) => {
+        const label = c.username && c.username !== '---' ? `${c.alias} (${c.username})` : c.alias;
+        html += `<option value="${escapeHtml(c.agent_id)}">${escapeHtml(label)}</option>`;
+      });
+      netDeviceFilter.innerHTML = html;
+      netDeviceFilter.value = Array.from(netDeviceFilter.options).some((o) => o.value === cur) ? cur : 'ALL';
+    }
+
+    if (!netClientsTbody) return;
+    const selected = netSelectedHost();
+    let clients = data.clients || [];
+    if (!clients.length) {
+      netClientsTbody.innerHTML = '<tr><td colspan="7" class="empty-row">Sin datos de red.</td></tr>';
+      return;
+    }
+    clients = netStableClientOrder(clients, data.date || ((netDateInput && netDateInput.value) || ''));
+    const maxTotal = clients.reduce((m, c) => Math.max(m, c.total_bytes || 0), 0);
+    netClientsTbody.innerHTML = clients
+      .map((c) => {
+        const liveAg = state.agents.get(c.agent_id);
+        const online = !!liveAg || c.is_online;
+        const rxk = liveAg ? liveAg.rx_kbps : c.rx_kbps;
+        const txk = liveAg ? liveAg.tx_kbps : c.tx_kbps;
+        const dot = online ? '<span class="status-dot dot-emerald"></span> ' : '';
+        const liveRate = online && (rxk || txk)
+          ? `<div class="net-kpi-sub">↓ ${formatBitrate(rxk)} · ↑ ${formatBitrate(txk)} ahora</div>`
+          : '';
+        const topBadge = c.top_domain ? `<span class="ntop-badge">${escapeHtml(c.top_domain)}</span>` : '---';
+        return `<tr class="net-client-row ${c.agent_id === selected ? 'selected' : ''}" data-agent-id="${escapeHtml(c.agent_id)}">
+          <td>${dot}<strong>${escapeHtml(c.alias)}</strong><div class="net-kpi-sub">${escapeHtml(c.hostname || '')}${c.username ? ' · ' + escapeHtml(c.username) : ''}</div>${liveRate}</td>
+          <td class="net-num">${formatBytes(c.rx_bytes)}</td>
+          <td class="net-num">${formatBytes(c.tx_bytes)}</td>
+          <td>${netBar(c.total_bytes, maxTotal, formatBytes(c.total_bytes))}</td>
+          <td class="net-num">${Math.round(c.peak_rx_kbps)} / ${Math.round(c.peak_tx_kbps)}</td>
+          <td class="net-num">${c.domains_count}</td>
+          <td>${topBadge}</td>
+        </tr>`;
+      })
+      .join('');
+  }
+
+  function netFilteredFlows() {
+    const cat = (netCategoryFilter && netCategoryFilter.value) || 'ALL';
+    const q = netSearchInput ? netSearchInput.value.trim().toLowerCase() : '';
+    return netState.domains.filter((d) => {
+      if (cat !== 'ALL' && (d.category || 'OTHER') !== cat) return false;
+      if (!q) return true;
+      return `${d.domain} ${d.app_name} ${d.alias} ${d.hostname}`.toLowerCase().includes(q);
+    });
+  }
+
+  function renderNetworkDomains() {
+    const domains = netFilteredFlows();
+    if (netCounterBadge) netCounterBadge.textContent = `${domains.length} dominios`;
+    if (!netDomainsTbody) return;
+    if (!domains.length) {
+      netDomainsTbody.innerHTML = '<tr><td colspan="7" class="empty-row">Sin dominios registrados.</td></tr>';
+      return;
+    }
+    const isToday = ((netDateInput && netDateInput.value) || netTodayStr()) === netTodayStr();
+    const liveSet = new Set();
+    if (isToday) {
+      netState.liveDomains.forEach((list, agentId) => {
+        (list || []).forEach((d) => liveSet.add(`${agentId}|${d.domain}`));
+      });
+    }
+    const shown = domains.slice(0, 300);
+    const maxBytes = shown.reduce((m, d) => Math.max(m, d.estimated_bytes || 0), 0);
+    netDomainsTbody.innerHTML = shown
+      .map((d) => {
+        const cat = d.category || 'OTHER';
+        const isLive = liveSet.has(`${d.agent_id}|${d.domain}`);
+        return `<tr class="${isLive ? 'net-live-row' : ''}">
+          <td>${escapeHtml(d.alias || d.agent_id)}</td>
+          <td><strong>${escapeHtml(d.domain)}</strong>${isLive ? ' <span class="ntop-badge ntop-badge-live">EN VIVO</span>' : ''}</td>
+          <td><span class="ntop-badge ntop-badge-off">${escapeHtml(d.app_name || '---')}</span></td>
+          <td><span class="net-cat-pill cat-${escapeHtml(cat)}">${escapeHtml(NET_CATEGORY_LABELS[cat] || cat)}</span></td>
+          <td class="net-num">${d.hit_count}</td>
+          <td>${netBar(d.estimated_bytes || 0, maxBytes, formatBytes(d.estimated_bytes))}</td>
+          <td class="net-num">${escapeHtml(d.last_seen_at || '')}</td>
+        </tr>`;
+      })
+      .join('');
+  }
+
+  function renderNetworkAll() {
+    renderNetworkBanners();
+    renderNetworkDonuts();
+    renderNetworkDomains();
+    drawTrafficChart();
+  }
+
+  function netMarkUpdated(ok) {
+    const stamp = document.getElementById('net-last-update');
+    if (stamp) stamp.textContent = ok ? `· Última actualización ${new Date().toLocaleTimeString('es-MX', { hour12: false })}` : '· Error al actualizar';
+  }
+
+  function netApplyAutoUi() {
+    if (netLiveInd) netLiveInd.classList.toggle('paused', !netState.auto);
+    setText('net-live-indicator', netState.auto ? 'En vivo • Auto-actualización 4s' : 'Auto-actualización en pausa');
+  }
+
+  async function loadNetworkDashboard(opts = {}) {
+    const silent = !!opts.silent;
+    if (netState.loading) return;
+    netState.loading = true;
+    if (netDateInput && !netDateInput.value) netDateInput.value = netTodayStr();
+    if (!silent && refreshNetBtn) refreshNetBtn.classList.add('loading');
+    try {
+      const domParams = netBaseParams();
+      domParams.set('agent_id', netSelectedHost());
+      domParams.set('category', 'ALL');
+      domParams.set('q', '');
+      domParams.set('limit', '1000');
+      const [sumRes, domRes] = await Promise.all([
+        authFetch(`/api/network/summary?${netBaseParams().toString()}`),
+        authFetch(`/api/network/domains?${domParams.toString()}`),
+      ]);
+      const sumData = await sumRes.json();
+      const domData = await domRes.json();
+      if (sumData.ok) renderNetworkSummary(sumData);
+      if (domData.ok) netState.domains = domData.domains || [];
+      renderNetworkAll();
+      netMarkUpdated(true);
+      if (!silent && refreshNetBtn) {
+        refreshNetBtn.classList.add('done');
+        setTimeout(() => refreshNetBtn.classList.remove('done'), 700);
+      }
+    } catch (err) {
+      console.error('Error al consultar tráfico de red:', err);
+      netMarkUpdated(false);
+    } finally {
+      netState.loading = false;
+      if (refreshNetBtn) refreshNetBtn.classList.remove('loading');
+    }
+  }
+
+  // Compatibilidad con switchView
+  function loadNetworkView() {
+    return loadNetworkDashboard();
+  }
+
+  // Evento en vivo desde WebSocket (agent_telemetry / new_log NETWORK)
+  function netOnLiveTelemetry(msg) {
+    if (state.currentView !== 'network') return;
+    const ag = msg && msg.agent;
+    if (ag && Array.isArray(msg.recent_domains)) netState.liveDomains.set(ag.agent_id, msg.recent_domains);
+    netUpdateLiveIndicators();
+    drawTrafficChart();
+    const now = Date.now();
+    if (now - netState.lastRender > 1500) {
+      netState.lastRender = now;
+      renderNetworkDomains();
+    }
+  }
+
+  function netOnNetworkLog() {
+    if (state.currentView !== 'network') return;
+    clearTimeout(netState.refreshTimer);
+    netState.refreshTimer = setTimeout(() => loadNetworkDashboard({ silent: true }), 800);
+  }
+
+  // Muestreo cada 4s (siempre, para conservar historial) + auto-refresh en la vista
+  setInterval(() => {
+    netPushSample();
+    if (state.currentView !== 'network') return;
+    netUpdateLiveIndicators();
+    drawTrafficChart();
+    if (netState.auto && !document.hidden) loadNetworkDashboard({ silent: true });
+  }, NET_TICK_MS);
+  window.addEventListener('resize', () => { if (state.currentView === 'network') drawTrafficChart(); });
+
+  if (netClientsTbody) {
+    netClientsTbody.addEventListener('click', (ev) => {
+      const tr = ev.target.closest('tr.net-client-row');
+      if (!tr || !netDeviceFilter) return;
+      // Segundo clic sobre el mismo cliente quita el filtro
+      netDeviceFilter.value = netDeviceFilter.value === tr.dataset.agentId ? 'ALL' : tr.dataset.agentId;
+      loadNetworkDashboard({ silent: true });
+    });
+  }
+  if (netDateInput) netDateInput.addEventListener('change', () => loadNetworkDashboard());
+  if (netDeviceFilter) netDeviceFilter.addEventListener('change', () => loadNetworkDashboard({ silent: true }));
+  if (netCategoryFilter) netCategoryFilter.addEventListener('change', renderNetworkDomains);
+  let netSearchTimer = null;
+  if (netSearchInput) {
+    netSearchInput.addEventListener('input', () => {
+      clearTimeout(netSearchTimer);
+      netSearchTimer = setTimeout(renderNetworkDomains, 150);
+    });
+  }
+  if (netAutoToggle) {
+    netAutoToggle.addEventListener('change', () => {
+      netState.auto = netAutoToggle.checked;
+      netApplyAutoUi();
+      if (netState.auto) loadNetworkDashboard({ silent: true });
+    });
+  }
+  if (refreshNetBtn) refreshNetBtn.addEventListener('click', () => loadNetworkDashboard());
+  if (exportNetCsvBtn) {
+    exportNetCsvBtn.addEventListener('click', () => {
+      const params = netFilterParams();
+      params.set('admin_pass', state.password || '');
+      window.location.href = `/api/network/export-csv?${params.toString()}`;
+    });
+  }
+  netApplyAutoUi();
+
   tabWall.addEventListener('click', () => switchView('wall'));
   tabViewer.addEventListener('click', () => {
     if (state.selectedAgentId) {
@@ -2687,6 +3250,7 @@
   });
   tabActivity.addEventListener('click', () => switchView('activity'));
   tabLogs.addEventListener('click', () => switchView('logs'));
+  if (tabNetwork) tabNetwork.addEventListener('click', () => switchView('network'));
   if (tabSettings) {
     tabSettings.addEventListener('click', () => switchView('settings'));
   }

@@ -76,6 +76,11 @@ class AgentConnection:
         self.thumbnail_b64: Optional[str] = info.get("thumbnail") or None
         self.stream_quality: int = 65
         self.stream_fps: int = 18
+        self.rx_kbps: float = 0.0
+        self.tx_kbps: float = 0.0
+        self.today_rx_bytes: int = 0
+        self.today_tx_bytes: int = 0
+        self.recent_domains: list = []
 
     @property
     def activity_status(self) -> str:
@@ -106,6 +111,11 @@ class AgentConnection:
             "last_seen": self.last_seen,
             "stream_quality": self.stream_quality,
             "stream_fps": self.stream_fps,
+            "rx_kbps": self.rx_kbps,
+            "tx_kbps": self.tx_kbps,
+            "today_rx_bytes": self.today_rx_bytes,
+            "today_tx_bytes": self.today_tx_bytes,
+            "recent_domains": self.recent_domains,
         }
         if include_thumbnail and self.thumbnail_b64:
             data["thumbnail"] = self.thumbnail_b64
