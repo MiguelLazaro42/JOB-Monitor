@@ -451,8 +451,15 @@ def build_windows_background_session_frame(
     return img
 
 
+_ZERO_WIDTH_RE = re.compile("[\u200b\u200c\u200d\ufeff]")
+
+
+def strip_zero_width(text: str) -> str:
+    return _ZERO_WIDTH_RE.sub("", text or "")
+
+
 def extract_app_name(window_title: str) -> str:
-    title = (window_title or "Escritorio").strip()
+    title = strip_zero_width(window_title or "Escritorio").strip() or "Escritorio"
     if " - " in title:
         parts = [p.strip() for p in title.split(" - ") if p.strip()]
         if parts:
@@ -1064,7 +1071,7 @@ def classify_domain_ndpi(raw_domain_or_ip: str, app_name: str = "") -> tuple[str
 
     # Limpiar prefijos de CDN y subdominios efímeros comunes
     cdn_mappings = (
-        (("googlevideo.com", "ytimg.com", "youtubei.googleapis.com", "youtu.be", "youtube.com"), "youtube.com", "STREAMING"),
+        (("youtube.com", "googlevideo.com", "ytimg.com", "youtu.be", "yt3.ggpht.com", "ggpht.com", "yt3.googleusercontent.com", "youtubei.googleapis.com", "youtube-nocookie.com"), "youtube.com", "STREAMING"),
         (("nflxvideo.net", "nflxso.net", "nflxext.com", "netflix.com"), "netflix.com", "STREAMING"),
         (("ttwstatic.com", "tiktokcdn.com", "tiktokv.com", "tiktok.com"), "tiktok.com", "SOCIAL"),
         (("scdn.co", "spotifycdn.com", "audio-ak-spotify-com.akamaized.net", "spotify.com"), "spotify.com", "STREAMING"),
@@ -1078,10 +1085,10 @@ def classify_domain_ndpi(raw_domain_or_ip: str, app_name: str = "") -> tuple[str
         (("openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com"), "chatgpt.com", "AI"),
         (("anthropic.com", "claude.ai"), "claude.ai", "AI"),
         (("gemini.google.com", "bard.google.com"), "gemini.google.com", "AI"),
-        (("1e100.net", "gvt1.com", "gvt2.com"), "google.com", "WORK"),
+        (("google.com", "gstatic.com", "googleapis.com", "1e100.net", "gvt1.com", "gvt2.com", "googleusercontent.com"), "google.com", "WORK"),
         (("copilot.microsoft.com",), "copilot.microsoft.com", "AI"),
         (("1drv.com", "onedrive.live.com", "sharepoint.com", "svc.ms", "office.com", "office365.com"), "office365.com", "CLOUD"),
-        (("drive.google.com", "docs.google.com", "googleusercontent.com"), "drive.google.com", "CLOUD"),
+        (("drive.google.com", "docs.google.com", "drive.usercontent.google.com"), "drive.google.com", "CLOUD"),
         (("dropbox.com", "dropboxstatic.com", "dropboxusercontent.com"), "dropbox.com", "CLOUD"),
         (("wetransfer.com", "wetransfer.net"), "wetransfer.com", "CLOUD"),
         (("mega.nz", "mega.co.nz"), "mega.nz", "CLOUD"),
@@ -1184,6 +1191,25 @@ class NetworkTrafficCollector:
                 return True
         return False
 
+    _DNS_SPECIFIC = (
+        "youtube.com", "googlevideo.com", "ytimg.com", "netflix.com", "whatsapp.com", "facebook.com",
+        "instagram.com", "tiktok.com", "spotify.com", "chatgpt.com", "claude.ai", "mail.google.com",
+        "meet.google.com", "drive.google.com",
+    )
+    _DNS_GENERIC = (
+        "google.com", "googleusercontent.com", "gstatic.com", "1e100.net", "gvt1.com", "gvt2.com",
+        "cloudflare.com", "akamai.net", "amazonaws.com",
+    )
+
+    @classmethod
+    def _dns_priority(cls, domain: str) -> int:
+        d = (domain or "").lower()
+        if any(d == k or d.endswith("." + k) for k in cls._DNS_SPECIFIC):
+            return 2
+        if any(d == k or d.endswith("." + k) for k in cls._DNS_GENERIC):
+            return 0
+        return 1
+
     def _refresh_windows_dns_cache(self):
         """Lee silenciosamente ipconfig /displaydns en Windows para mapear IPs a nombres de dominio exactos."""
         if not IS_WINDOWS:
@@ -1209,7 +1235,9 @@ class NetworkTrafficCollector:
                     elif ("a (host)" in kl or "aaaa" in kl or "dirección" in kl or "address" in kl) and v and current_domain:
                         ip_candidate = v.strip()
                         if "." in ip_candidate or ":" in ip_candidate:
-                            self._dns_ip_to_domain[ip_candidate] = current_domain
+                            prev = self._dns_ip_to_domain.get(ip_candidate)
+                            if prev is None or self._dns_priority(current_domain) >= self._dns_priority(prev):
+                                self._dns_ip_to_domain[ip_candidate] = current_domain
                 elif "." in line and " " not in line and not line.startswith("-"):
                     current_domain = line.lower().rstrip(".")
         except Exception:
@@ -1292,7 +1320,8 @@ class NetworkTrafficCollector:
     _GOOGLE_FAMILY_SITES = (
         "youtube.com", "mail.google.com", "drive.google.com", "gemini.google.com", "meet.google.com",
     )
-    _GOOGLE_DOMAIN_KEYS = ("1e100.net", "google.com", "gstatic.com", "googlevideo.com", "gvt1.com", "gvt2.com", "googleapis.com")
+    _GOOGLE_DOMAIN_KEYS = ("1e100.net", "google.com", "gstatic.com", "googlevideo.com", "gvt1.com", "gvt2.com", "googleapis.com",
+                           "googleusercontent.com", "ggpht.com", "ytimg.com", "youtu.be")
     _GOOGLE_IP_PREFIXES = ("142.250.", "142.251.", "172.217.", "216.58.", "74.125.", "172.253.", "209.85.", "108.177.")
     _EXPLICIT_DOMAIN_RE = re.compile(
         r"\b((?:[a-z0-9-]+\.)+(?:com|net|org|io|tv|co|app|dev|ai|edu|gob|gov|mx|ar|es|info|me|us|tech|cloud|xyz))\b",
@@ -1301,13 +1330,14 @@ class NetworkTrafficCollector:
 
     @classmethod
     def _is_browser_name(cls, name: str) -> bool:
-        low = (name or "").lower()
+        low = strip_zero_width(name).lower()
         return bool(low) and any(k in low for k in cls._BROWSER_KEYS)
 
     @classmethod
     def _infer_site_from_window_title(cls, window_title: str, app_name: str = "") -> Optional[tuple[str, str]]:
         """Devuelve (dominio, categoría) deducido del título de ventana, o None."""
-        title = (window_title or "").strip().lower()
+        title = strip_zero_width(window_title).strip().lower()
+        app_name = strip_zero_width(app_name)
         if not title:
             return None
         for keys, domain, cat in cls._TITLE_SITE_RULES:
@@ -1333,7 +1363,7 @@ class NetworkTrafficCollector:
         if (
             site_hint
             and site_hint[0] in self._GOOGLE_FAMILY_SITES
-            and self._is_browser_name(proc_name)
+            and (self._is_browser_name(proc_name) or not (proc_name or "").strip())
             and self._is_google_remote(remote_ip, raw_dom)
         ):
             clean_dom, cat = site_hint
@@ -1455,17 +1485,20 @@ class NetworkTrafficCollector:
                 except Exception:
                     continue
 
-        # Navegadores con QUIC activo (UDP sin IP remota visible): atribuir al sitio de la ventana
-        if site_hint and quic_procs:
-            for pname in quic_procs:
+        # Navegadores con ventana activa en un sitio conocido (QUIC/HTTP3 o conexiones multiplexadas en Edge/Chrome/Safari)
+        if site_hint and (quic_procs or self._is_browser_name(fallback_app) or self._is_browser_name(window_title)):
+            target_procs = quic_procs or {(fallback_app or "Browser")[:40]}
+            for pname in target_procs:
                 k = (site_hint[0], pname)
                 if k not in conns:
-                    conns[k] = {"domain": site_hint[0], "app_name": pname, "category": site_hint[1], "connections": 2}
+                    conns[k] = {"domain": site_hint[0], "app_name": pname, "category": site_hint[1], "connections": 4}
+                else:
+                    conns[k]["connections"] += 2
 
         results = sorted(conns.values(), key=lambda x: x["connections"], reverse=True)
         return results[:15]
 
-    def collect_slice(self, active_app_name: str = "Escritorio", active_window_title: str = "") -> dict:
+    def collect_slice(self, active_app_name: str = "Escritorio", active_window_title: str = "", is_background: bool = False) -> dict:
         """
         Mini-Función NF-1.6: Calcula el diferencial de bytes (RX/TX), la velocidad en Kbps
         y las conexiones a dominios activas para inyectarlas en el paquete de telemetría o bóveda .sitai.
@@ -1487,6 +1520,13 @@ class NetworkTrafficCollector:
         self.last_rx_bytes = rx_now
         self.last_tx_bytes = tx_now
         self.last_sample_ts = now
+
+        if is_background:
+            # Sesión Windows en segundo plano: netstat/contadores son de toda la máquina; no duplicar tráfico
+            return {
+                "delta_rx_bytes": 0, "delta_tx_bytes": 0,
+                "rx_kbps": 0.0, "tx_kbps": 0.0, "domains": [],
+            }
 
         rx_kbps = round((delta_rx * 8.0) / (elapsed * 1000.0), 1)
         tx_kbps = round((delta_tx * 8.0) / (elapsed * 1000.0), 1)
@@ -2261,8 +2301,9 @@ class SilentRemoteAgent:
 
                 # 4. Telemetría de red (en hilo aparte: el escaneo de sockets/DNS puede bloquear)
                 try:
+                    _, _, net_is_bg = get_windows_session_context() if IS_WINDOWS else (None, self.username, False)
                     net_slice = await asyncio.get_running_loop().run_in_executor(
-                        None, self.net_collector.collect_slice, app_name, current_win or ""
+                        None, self.net_collector.collect_slice, app_name, current_win or "", bool(net_is_bg)
                     )
                 except Exception:
                     net_slice = {

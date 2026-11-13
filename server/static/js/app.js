@@ -2600,6 +2600,35 @@
     return `<div class="ntop-bar"><div class="ntop-bar-track"><div class="ntop-bar-fill" style="width:${pct}%"></div></div><span class="ntop-bar-val">${label}</span></div>`;
   }
 
+  // Orden estable de filas de clientes: se fija al inicio y no cambia durante el polling de 4s
+  let netClientOrder = [];
+  let netClientOrderDate = null;
+
+  function netStableClientOrder(clients, dateKey) {
+    const ids = new Set(clients.map((c) => c.agent_id));
+    if (netClientOrderDate !== dateKey) {
+      netClientOrder = [];
+      netClientOrderDate = dateKey;
+    }
+    if (!netClientOrder.length) {
+      // Primera carga: bytes similares (±5%) se desempatan por hostname, usuario y agent_id
+      const bucket = (c) => Math.round(Math.log((c.total_bytes || 0) + 1) / Math.log(1.05));
+      const sorted = clients.slice().sort((a, b) =>
+        (bucket(b) - bucket(a))
+        || String(a.hostname || '').toLowerCase().localeCompare(String(b.hostname || '').toLowerCase())
+        || String(a.username || '').toLowerCase().localeCompare(String(b.username || '').toLowerCase())
+        || String(a.agent_id).localeCompare(String(b.agent_id)));
+      netClientOrder = sorted.map((c) => c.agent_id);
+    } else {
+      // Mantener posiciones existentes, descartar los que ya no existen y añadir nuevos al final
+      netClientOrder = netClientOrder.filter((id) => ids.has(id));
+      const known = new Set(netClientOrder);
+      clients.filter((c) => !known.has(c.agent_id)).forEach((c) => netClientOrder.push(c.agent_id));
+    }
+    const pos = new Map(netClientOrder.map((id, i) => [id, i]));
+    return clients.slice().sort((a, b) => pos.get(a.agent_id) - pos.get(b.agent_id));
+  }
+
   function renderNetworkSummary(data) {
     netState.summary = data;
     // Selector de equipos (conserva la selección)
@@ -2616,11 +2645,12 @@
 
     if (!netClientsTbody) return;
     const selected = netSelectedHost();
-    const clients = data.clients || [];
+    let clients = data.clients || [];
     if (!clients.length) {
       netClientsTbody.innerHTML = '<tr><td colspan="7" class="empty-row">Sin datos de red.</td></tr>';
       return;
     }
+    clients = netStableClientOrder(clients, data.date || ((netDateInput && netDateInput.value) || ''));
     const maxTotal = clients.reduce((m, c) => Math.max(m, c.total_bytes || 0), 0);
     netClientsTbody.innerHTML = clients
       .map((c) => {

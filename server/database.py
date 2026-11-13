@@ -6,7 +6,7 @@ import re
 import secrets
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -986,6 +986,16 @@ class DatabaseManager:
                     """,
                     (day,),
                 ).fetchall()
+                recent_cutoff = (self._now_dt() - timedelta(minutes=2)).strftime("%Y-%m-%d %H:%M:%S")
+                recent_rows = conn.execute(
+                    """
+                    SELECT agent_id, domain, category, MAX(last_seen_at) AS last_seen
+                    FROM network_domains_daily
+                    WHERE date = ? AND last_seen_at >= ?
+                    GROUP BY agent_id, domain, category
+                    """,
+                    (day, recent_cutoff),
+                ).fetchall()
             finally:
                 conn.close()
 
@@ -1003,6 +1013,22 @@ class DatabaseManager:
             c = categories.setdefault(r["category"] or "OTHER", {"category": r["category"] or "OTHER", "hits": 0, "estimated_bytes": 0})
             c["hits"] += r["hits"] or 0
             c["estimated_bytes"] += r["est"] or 0
+
+        generic_domains = {"google.com", "microsoft.com"}
+        priority_cats = {"STREAMING", "SOCIAL", "MESSAGING", "AI", "CLOUD"}
+        recent_by_agent: Dict[str, List[sqlite3.Row]] = {}
+        for r in recent_rows:
+            recent_by_agent.setdefault(r["agent_id"], []).append(r)
+
+        def _recent_top(aid: str) -> str:
+            cands = [r for r in recent_by_agent.get(aid, []) if r["domain"] not in generic_domains]
+            if not cands:
+                return ""
+            cands.sort(key=lambda r: (
+                (r["category"] or "").upper() in priority_cats,
+                r["last_seen"] or "",
+            ), reverse=True)
+            return cands[0]["domain"]
 
         clients = []
         total_rx = total_tx = 0
@@ -1030,9 +1056,14 @@ class DatabaseManager:
                 "peak_rx_kbps": float(u.get("peak_rx_kbps") or 0),
                 "peak_tx_kbps": float(u.get("peak_tx_kbps") or 0),
                 "domains_count": len(doms),
-                "top_domain": top["domain"] if top else "",
+                "top_domain": _recent_top(aid) or (top["domain"] if top else ""),
             })
-        clients.sort(key=lambda c: c["total_bytes"], reverse=True)
+        clients.sort(key=lambda c: (
+            -round(c["total_bytes"] / (1024 * 1024)),
+            (c["hostname"] or "").lower(),
+            (c["username"] or "").lower(),
+            c["agent_id"],
+        ))
         top_domains = sorted(global_domains.values(), key=lambda x: (x["estimated_bytes"], x["hits"]), reverse=True)[:10]
         top_client = clients[0] if clients and clients[0]["total_bytes"] > 0 else None
         return {
