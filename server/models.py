@@ -81,6 +81,7 @@ class AgentConnection:
         self.today_rx_bytes: int = 0
         self.today_tx_bytes: int = 0
         self.recent_domains: list = []
+        self.packet_profile: dict = {}
 
     @property
     def activity_status(self) -> str:
@@ -116,6 +117,7 @@ class AgentConnection:
             "today_rx_bytes": self.today_rx_bytes,
             "today_tx_bytes": self.today_tx_bytes,
             "recent_domains": self.recent_domains,
+            "packet_profile": self.packet_profile,
         }
         if include_thumbnail and self.thumbnail_b64:
             data["thumbnail"] = self.thumbnail_b64

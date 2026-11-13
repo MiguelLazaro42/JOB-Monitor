@@ -281,6 +281,18 @@ class DatabaseManager:
                 if "meta_json" not in log_cols:
                     conn.execute("ALTER TABLE device_logs ADD COLUMN meta_json TEXT NULL")
 
+                # Migración segura: correlación teclado + foco + tipo de paquete en dominios
+                for _ddl in (
+                    "ALTER TABLE network_domains_daily ADD COLUMN keystrokes_count INTEGER DEFAULT 0",
+                    "ALTER TABLE network_domains_daily ADD COLUMN last_packet_type TEXT DEFAULT ''",
+                    "ALTER TABLE network_domains_daily ADD COLUMN focus_app TEXT DEFAULT ''",
+                    "ALTER TABLE network_domains_daily ADD COLUMN confidence INTEGER DEFAULT 80",
+                ):
+                    try:
+                        conn.execute(_ddl)
+                    except sqlite3.OperationalError:
+                        pass
+
                 default_tz = getattr(config, "DEFAULT_TIMEZONE", "America/Merida")
                 conn.execute(
                     "INSERT OR IGNORE INTO system_settings (key, value) VALUES ('timezone', ?)",
@@ -1124,7 +1136,14 @@ class DatabaseManager:
                 est = max(0, int(d.get("estimated_bytes", 0)))
             except (TypeError, ValueError):
                 continue
-            rows.append((day, agent_id, domain, app, cat, hits, est, now_str, now_str))
+            try:
+                keys = max(0, int(d.get("keystrokes", d.get("keystrokes_count", 0)) or 0))
+                conf = max(0, min(100, int(d.get("confidence", 80) or 80)))
+            except (TypeError, ValueError):
+                keys, conf = 0, 80
+            ptype = str(d.get("packet_type") or d.get("last_packet_type") or "").strip()[:80]
+            focus = str(d.get("focus_app") or "").strip()[:40]
+            rows.append((day, agent_id, domain, app, cat, hits, est, now_str, now_str, keys, ptype, focus, conf))
         if not rows:
             return
         with self._lock:
@@ -1133,13 +1152,20 @@ class DatabaseManager:
                 conn.executemany(
                     """
                     INSERT INTO network_domains_daily
-                        (date, agent_id, domain, app_name, category, hit_count, estimated_bytes, first_seen_at, last_seen_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (date, agent_id, domain, app_name, category, hit_count, estimated_bytes, first_seen_at, last_seen_at,
+                         keystrokes_count, last_packet_type, focus_app, confidence)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(date, agent_id, domain, app_name) DO UPDATE SET
                         hit_count = hit_count + excluded.hit_count,
                         estimated_bytes = estimated_bytes + excluded.estimated_bytes,
                         category = excluded.category,
-                        last_seen_at = excluded.last_seen_at
+                        last_seen_at = excluded.last_seen_at,
+                        keystrokes_count = COALESCE(keystrokes_count, 0) + excluded.keystrokes_count,
+                        last_packet_type = CASE WHEN excluded.last_packet_type != ''
+                                                THEN excluded.last_packet_type ELSE COALESCE(last_packet_type, '') END,
+                        focus_app = CASE WHEN excluded.focus_app != ''
+                                         THEN excluded.focus_app ELSE COALESCE(focus_app, '') END,
+                        confidence = MAX(COALESCE(confidence, 0), excluded.confidence)
                     """,
                     rows,
                 )
@@ -1169,9 +1195,11 @@ class DatabaseManager:
                 }
                 dom_rows = conn.execute(
                     """
-                    SELECT agent_id, domain, category, SUM(hit_count) AS hits, SUM(estimated_bytes) AS est
+                    SELECT agent_id, domain, category, hit_count AS hits, estimated_bytes AS est,
+                           COALESCE(keystrokes_count, 0) AS keys, COALESCE(confidence, 0) AS conf,
+                           COALESCE(last_seen_at, '') AS last_seen,
+                           COALESCE(last_packet_type, '') AS ptype, COALESCE(focus_app, '') AS focus
                     FROM network_domains_daily WHERE date = ?
-                    GROUP BY agent_id, domain, category
                     """,
                     (day,),
                 ).fetchall()
@@ -1188,7 +1216,7 @@ class DatabaseManager:
             finally:
                 conn.close()
 
-        def _merge_rows(rows, sum_keys, max_key=None):
+        def _merge_rows(rows, sum_keys, max_key=None, extras=False):
             merged: Dict[tuple, dict] = {}
             for r in rows:
                 dom, cat = _normalize_domain(r["domain"], "", (r["category"] or "OTHER").upper())
@@ -1202,21 +1230,43 @@ class DatabaseManager:
                     m[k] += r[k] or 0
                 if max_key and (r[max_key] or "") > m[max_key]:
                     m[max_key] = r[max_key] or ""
+                if extras:
+                    m["conf"] = max(m.get("conf", 0), r["conf"] or 0)
+                    ls = r["last_seen"] or ""
+                    if r["ptype"] and ls >= m.get("_ls", ""):
+                        m["_ls"], m["ptype"], m["focus"] = ls, r["ptype"], r["focus"] or ""
+                    m.setdefault("ptype", "")
+                    m.setdefault("focus", "")
+                    if ls > m.get("last_seen", ""):
+                        m["last_seen"] = ls
             return list(merged.values())
 
-        dom_rows = _merge_rows(dom_rows, ("hits", "est"))
+        dom_rows = _merge_rows(dom_rows, ("hits", "est", "keys"), extras=True)
         recent_rows = _merge_rows(recent_rows, (), "last_seen")
         valid_ids = {d["agent_id"] for d in devices}
         by_agent: Dict[str, List[dict]] = {}
         global_domains: Dict[str, dict] = {}
         categories: Dict[str, dict] = {}
+        packet_types: Dict[str, dict] = {}
         for r in dom_rows:
             if r["agent_id"] not in valid_ids:
                 continue
             by_agent.setdefault(r["agent_id"], []).append(r)
-            g = global_domains.setdefault(r["domain"], {"domain": r["domain"], "category": r["category"], "hits": 0, "estimated_bytes": 0})
+            g = global_domains.setdefault(r["domain"], {
+                "domain": r["domain"], "category": r["category"], "hits": 0, "estimated_bytes": 0,
+                "keystrokes_count": 0, "last_packet_type": "", "focus_app": "", "confidence": 0, "_ls": "",
+            })
             g["hits"] += r["hits"] or 0
             g["estimated_bytes"] += r["est"] or 0
+            g["keystrokes_count"] += r.get("keys", 0) or 0
+            g["confidence"] = max(g["confidence"], r.get("conf", 0) or 0)
+            if r.get("ptype") and r.get("_ls", "") >= g["_ls"]:
+                g["_ls"], g["last_packet_type"], g["focus_app"] = r["_ls"], r["ptype"], r.get("focus", "")
+            if r.get("ptype"):
+                pt = packet_types.setdefault(r["ptype"], {"packet_type": r["ptype"], "estimated_bytes": 0, "hits": 0, "keystrokes": 0})
+                pt["estimated_bytes"] += r["est"] or 0
+                pt["hits"] += r["hits"] or 0
+                pt["keystrokes"] += r.get("keys", 0) or 0
             c = categories.setdefault(r["category"] or "OTHER", {"category": r["category"] or "OTHER", "hits": 0, "estimated_bytes": 0})
             c["hits"] += r["hits"] or 0
             c["estimated_bytes"] += r["est"] or 0
@@ -1248,6 +1298,9 @@ class DatabaseManager:
             total_tx += tx
             doms = by_agent.get(aid, [])
             top = max(doms, key=lambda x: (x["est"] or 0, x["hits"] or 0), default=None)
+            # Los teclazos de un slice se replican en cada dominio del slice: el máximo evita contarlos N veces.
+            keys_total = max((x.get("keys", 0) or 0 for x in doms), default=0)
+            latest_pkt = max((x for x in doms if x.get("ptype")), key=lambda x: x.get("_ls", ""), default=None)
             tid = dev["tenant_id"] or MASTER_TENANT_ID
             clients.append({
                 "agent_id": aid,
@@ -1264,6 +1317,8 @@ class DatabaseManager:
                 "peak_tx_kbps": float(u.get("peak_tx_kbps") or 0),
                 "domains_count": len(doms),
                 "top_domain": _recent_top(aid) or (top["domain"] if top else ""),
+                "last_packet_type": latest_pkt["ptype"] if latest_pkt else "",
+                "keystrokes_total": int(keys_total),
             })
         clients.sort(key=lambda c: (
             -round(c["total_bytes"] / (1024 * 1024)),
@@ -1271,6 +1326,8 @@ class DatabaseManager:
             (c["username"] or "").lower(),
             c["agent_id"],
         ))
+        for g in global_domains.values():
+            g.pop("_ls", None)
         top_domains = sorted(global_domains.values(), key=lambda x: (x["estimated_bytes"], x["hits"]), reverse=True)[:10]
         top_client = clients[0] if clients and clients[0]["total_bytes"] > 0 else None
         return {
@@ -1282,6 +1339,7 @@ class DatabaseManager:
             "top_domains": top_domains,
             "categories": sorted(categories.values(), key=lambda x: x["estimated_bytes"], reverse=True),
             "clients": clients,
+            "packet_types": sorted(packet_types.values(), key=lambda x: x["estimated_bytes"], reverse=True),
         }
 
     def get_agent_domains_detail(
@@ -1309,6 +1367,10 @@ class DatabaseManager:
         sql = f"""
             SELECT n.date, n.agent_id, n.domain, n.app_name, n.category, n.hit_count, n.estimated_bytes,
                    n.first_seen_at, n.last_seen_at,
+                   COALESCE(n.keystrokes_count, 0) AS keystrokes_count,
+                   COALESCE(n.last_packet_type, '') AS last_packet_type,
+                   COALESCE(n.focus_app, '') AS focus_app,
+                   COALESCE(n.confidence, 80) AS confidence,
                    COALESCE(d.alias, n.agent_id) AS alias, COALESCE(d.hostname, '') AS hostname,
                    COALESCE(d.username, '') AS username
             FROM network_domains_daily n
@@ -1340,7 +1402,11 @@ class DatabaseManager:
             m["hit_count"] += r["hit_count"] or 0
             m["estimated_bytes"] += r["estimated_bytes"] or 0
             m["first_seen_at"] = min(m["first_seen_at"] or "9", r["first_seen_at"] or "9")
+            if (r["last_seen_at"] or "") >= (m["last_seen_at"] or "") and r["last_packet_type"]:
+                m["last_packet_type"], m["focus_app"] = r["last_packet_type"], r["focus_app"]
             m["last_seen_at"] = max(m["last_seen_at"] or "", r["last_seen_at"] or "")
+            m["keystrokes_count"] = (m["keystrokes_count"] or 0) + (r["keystrokes_count"] or 0)
+            m["confidence"] = max(m["confidence"] or 0, r["confidence"] or 0)
         return sorted(merged.values(), key=lambda x: (x["estimated_bytes"], x["hit_count"]), reverse=True)[:max_rows]
 
     def export_network_csv(

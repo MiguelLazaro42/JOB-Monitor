@@ -2203,6 +2203,103 @@ def match_service_domain_or_ip(raw_domain_or_ip: str, app_name: str = "") -> tup
     return val, "OTHER"
 
 
+# ---- Clasificador de Perfil de Paquete (correlación teclado + foco + red) ----
+_PACKET_FOCUS_KEYWORDS = {
+    "MESSAGING": ("whatsapp", "telegram", "discord", "teams", "slack", "messenger", "signal", "skype", "wa.me"),
+    "SOCIAL": ("facebook", "instagram", "twitter", "linkedin", "reddit", "x.com", "threads"),
+    "AI": ("chatgpt", "openai", "claude", "anthropic", "gemini", "copilot", "perplexity", "deepseek", "grok"),
+    "STREAMING": ("youtube", "netflix", "spotify", "twitch", "tiktok", "disney", "vimeo", "primevideo", "hbo", "googlevideo"),
+    "GAMING": ("steam", "epicgames", "epic games", "riot", "valorant", "fortnite", "roblox", "minecraft", "battle.net"),
+    "REMOTE": ("anydesk", "teamviewer", "rdp", "rustdesk", "mstsc", "remote desktop", "escritorio remoto"),
+    "CLOUD": ("onedrive", "dropbox", "googledrive", "drive.google", "icloud", "mega.nz"),
+}
+
+_PACKET_CODE_LABELS = {
+    "INTERACTIVE_CHAT": "Mensajería / Chat Interactivo (TX Teclado + Red)",
+    "AI_PROMPT_STREAM": "Consulta IA / Prompt en Vivo (TX/RX)",
+    "CLOUD_UPLOAD_SYNC": "Subida / Sincronización Cloud (TX Heavy)",
+    "VIDEO_AUDIO_STREAM": "Streaming Multimedia Continuo (RX UDP/QUIC)",
+    "BULK_DOWNLOAD": "Descarga Masiva / Actualización (RX Bulk)",
+    "GAMING_REALTIME": "Tráfico Gaming Baja Latencia (UDP/TCP)",
+    "REMOTE_SESSION": "Sesión de Control Remoto (Frame Stream)",
+    "WEB_BROWSING_INPUT": "Navegación / Captura Web Activa (HTTP/TLS)",
+    "LOCAL_TYPING": "Redacción Local en App (Sin Tráfico Externo)",
+    "WEB_READ_PASSIVE": "Lectura / Navegación Pasiva (RX)",
+    "IDLE_KEEPALIVE": "Keep-Alive / Fondo de Red",
+}
+
+
+def classify_packet_profile(rx_kbps: float, tx_kbps: float, keystrokes_slice: int,
+                            app_name: str, window_title: str, domains: list) -> dict:
+    """Cruza teclado + app/ventana en foco + tráfico de red y devuelve el tipo de paquete inferido."""
+    rx = float(rx_kbps or 0.0)
+    tx = float(tx_kbps or 0.0)
+    ks = int(keystrokes_slice or 0)
+    domains = [d for d in (domains or []) if isinstance(d, dict)]
+    focus_text = f"{app_name or ''} {window_title or ''}".lower()
+
+    focus_cats = {c for c, kws in _PACKET_FOCUS_KEYWORDS.items() if any(k in focus_text for k in kws)}
+    domain_cats = set()
+    for d in domains:
+        cat = str(d.get("category") or "").upper()
+        if cat:
+            domain_cats.add(cat)
+        dom = str(d.get("domain") or "").lower()
+        for c, kws in _PACKET_FOCUS_KEYWORDS.items():
+            if dom and any(k in dom for k in kws):
+                domain_cats.add(c)
+    primary = max(domains, key=lambda d: int(d.get("estimated_bytes", 0) or 0)) if domains else None
+    primary_cat = str((primary or {}).get("category") or "").upper()
+    primary_cats = {primary_cat} if primary_cat else set()
+    any_cats = focus_cats | domain_cats
+
+    def pick(*cats):
+        return any(c in (focus_cats | primary_cats) for c in cats)
+
+    code, target = "IDLE_KEEPALIVE", None
+    if ks >= 3 and pick("MESSAGING", "SOCIAL"):
+        code, target = "INTERACTIVE_CHAT", ("MESSAGING", "SOCIAL")
+    elif ks >= 3 and pick("AI"):
+        code, target = "AI_PROMPT_STREAM", ("AI",)
+    elif tx >= 250 and tx > rx * 1.2:
+        code, target = "CLOUD_UPLOAD_SYNC", ("CLOUD", "WORK")
+    elif rx >= 350 and ks <= 2 and "STREAMING" in any_cats:
+        code, target = "VIDEO_AUDIO_STREAM", ("STREAMING",)
+    elif rx >= 600 and ks == 0:
+        code, target = "BULK_DOWNLOAD", ()
+    elif "GAMING" in any_cats:
+        code, target = "GAMING_REALTIME", ("GAMING",)
+    elif "REMOTE" in any_cats:
+        code, target = "REMOTE_SESSION", ("REMOTE",)
+    elif ks >= 4 and (rx >= 15 or tx >= 10 or domains):
+        code, target = "WEB_BROWSING_INPUT", ()
+    elif ks >= 4 and rx < 15 and tx < 10:
+        code, target = "LOCAL_TYPING", ()
+    elif (rx >= 15 or tx >= 10) and ks == 0:
+        code, target = "WEB_READ_PASSIVE", ()
+
+    typing_code = code in ("INTERACTIVE_CHAT", "AI_PROMPT_STREAM", "WEB_BROWSING_INPUT", "LOCAL_TYPING")
+    kb_match = (ks >= 3) if typing_code else (ks <= 2)
+    if target:
+        win_match = any(c in focus_cats for c in target)
+        dom_match = any(c in domain_cats for c in target)
+    else:
+        win_match = bool(focus_text.strip()) and code != "IDLE_KEEPALIVE"
+        dom_match = bool(domains) and code != "IDLE_KEEPALIVE"
+    matches = int(kb_match) + int(win_match) + int(dom_match)
+    if code == "IDLE_KEEPALIVE":
+        confidence = 65
+    else:
+        confidence = 95 if matches >= 3 else 82 if matches == 2 else 65
+
+    return {
+        "packet_code": code,
+        "packet_label": _PACKET_CODE_LABELS[code],
+        "confidence": confidence,
+        "keystrokes_slice": ks,
+    }
+
+
 def classify_domain_ndpi(raw_domain_or_ip: str, app_name: str = "") -> tuple[str, str]:
     """Mini-Función NF-1.5: compat; delega al catálogo AdGuard + nDPI."""
     return match_service_domain_or_ip(raw_domain_or_ip, app_name)
@@ -2559,7 +2656,7 @@ class NetworkTrafficCollector:
         results = sorted(conns.values(), key=lambda x: x["connections"], reverse=True)
         return results[:15]
 
-    def collect_slice(self, active_app_name: str = "Escritorio", active_window_title: str = "", is_background: bool = False) -> dict:
+    def collect_slice(self, active_app_name: str = "Escritorio", active_window_title: str = "", is_background: bool = False, keystrokes_slice: int = 0) -> dict:
         """
         Mini-Función NF-1.6: Calcula el diferencial de bytes (RX/TX), la velocidad en Kbps
         y las conexiones a dominios activas para inyectarlas en el paquete de telemetría o bóveda .sitai.
@@ -2587,6 +2684,7 @@ class NetworkTrafficCollector:
             return {
                 "delta_rx_bytes": 0, "delta_tx_bytes": 0,
                 "rx_kbps": 0.0, "tx_kbps": 0.0, "domains": [],
+                "packet_profile": classify_packet_profile(0.0, 0.0, 0, active_app_name, active_window_title, []),
             }
 
         rx_kbps = round((delta_rx * 8.0) / (elapsed * 1000.0), 1)
@@ -2612,18 +2710,58 @@ class NetworkTrafficCollector:
                 })
         self._cached_domain_hits = hits
 
-        total_conns = sum(max(1, int(d.get("connections", 1))) for d in hits) or 1
-        domain_hits_payload = []
+        keystrokes_slice = int(keystrokes_slice or 0)
+        focus_domain = site[0] if site else ""
+        focus_app_low = (active_app_name or "").strip().lower()
+        weights: list[float] = []
+        focus_flags: list[bool] = []
         for item in hits:
-            conns = max(1, int(item.get("connections", 1)))
-            est_bytes = int(round(total_slice_bytes * (conns / float(total_conns))))
+            w = float(max(1, int(item.get("connections", 1))))
+            in_focus = bool(
+                (focus_domain and item["domain"] == focus_domain)
+                or (focus_app_low and focus_app_low not in ("escritorio", "") and str(item.get("app_name", "")).strip().lower() == focus_app_low)
+            )
+            if in_focus:
+                w *= 3.0
+                if keystrokes_slice > 0 and item.get("category") in ("MESSAGING", "AI", "WORK", "CLOUD"):
+                    w *= 2.5
+            weights.append(w)
+            focus_flags.append(in_focus)
+        total_w = sum(weights) or 1.0
+        est = [total_slice_bytes * (w / total_w) for w in weights]
+
+        # Streaming dominante: >= 75% del RX al dominio de streaming (preferir el que está en foco)
+        if rx_kbps >= 250 and len(hits) > 1 and delta_rx > 0:
+            stream_idx = [i for i, h in enumerate(hits) if h.get("category") == "STREAMING"]
+            if stream_idx:
+                top = max(stream_idx, key=lambda i: (focus_flags[i], est[i]))
+                floor_bytes = 0.75 * delta_rx
+                if est[top] < floor_bytes:
+                    others = [i for i in range(len(hits)) if i != top]
+                    rest_total = max(0.0, total_slice_bytes - floor_bytes)
+                    other_w = sum(weights[i] for i in others) or 1.0
+                    est[top] = floor_bytes
+                    for i in others:
+                        est[i] = rest_total * (weights[i] / other_w)
+
+        domain_hits_payload = []
+        for item, eb in zip(hits, est):
             domain_hits_payload.append({
                 "domain": item["domain"],
                 "app_name": item["app_name"],
                 "category": item["category"],
-                "connections": conns,
-                "estimated_bytes": est_bytes,
+                "connections": max(1, int(item.get("connections", 1))),
+                "estimated_bytes": int(round(eb)),
             })
+
+        packet_profile = classify_packet_profile(
+            rx_kbps, tx_kbps, keystrokes_slice, active_app_name, active_window_title, domain_hits_payload
+        )
+        for d in domain_hits_payload:
+            d["packet_type"] = packet_profile["packet_label"]
+            d["keystrokes"] = keystrokes_slice
+            d["focus_app"] = (active_app_name or "")[:40]
+            d["confidence"] = packet_profile["confidence"]
 
         return {
             "delta_rx_bytes": int(delta_rx),
@@ -2631,6 +2769,7 @@ class NetworkTrafficCollector:
             "rx_kbps": rx_kbps,
             "tx_kbps": tx_kbps,
             "domains": domain_hits_payload,
+            "packet_profile": packet_profile,
         }
 
 
@@ -3109,6 +3248,8 @@ class SilentRemoteAgent:
         self._keystrokes_buffer: List[str] = []
         self._typing_debounce_timer: Optional[threading.Timer] = None
         self._typing_lock = threading.Lock()
+        self._slice_keystrokes: int = 0
+        self._last_net_slice: dict = {}
         self._vault_lock = threading.Lock()
         self._last_contact_persist_ts: float = 0.0
         OFFLINE_VAULT_DIR.mkdir(parents=True, exist_ok=True)
@@ -3235,6 +3376,7 @@ class SilentRemoteAgent:
         """Callback invocado por MF-01 KeyboardEventHook."""
         if is_system_sleeping():
             return
+        self._slice_keystrokes += 1
         with self._typing_lock:
             current_win = get_active_window_title() or "Escritorio"
             if not self._typing_session_active:
@@ -3358,9 +3500,32 @@ class SilentRemoteAgent:
         # MF-05: Captura de Pantalla en Alta Resolución con mss al segundo 15 (Compresión WebP sin pérdida visual)
         screenshot_b64, screenshot_fmt = self.capture_evidence_webp()
 
+        # Correlación cruzada: tráfico de red y app en foco durante el tecleo
+        net_ctx = dict(self._last_net_slice or {})
+        try:
+            fg_ctx = inspect_foreground_context() or {}
+        except Exception:
+            fg_ctx = {}
+        top_domains = sorted(net_ctx.get("domains") or [], key=lambda d: int(d.get("estimated_bytes", 0) or 0), reverse=True)[:4]
+        active_domains = [
+            {"domain": d.get("domain"), "category": d.get("category"), "estimated_bytes": int(d.get("estimated_bytes", 0) or 0)}
+            for d in top_domains
+        ]
+        rx_k = float(net_ctx.get("rx_kbps", 0.0) or 0.0)
+        tx_k = float(net_ctx.get("tx_kbps", 0.0) or 0.0)
+        kb_app = fg_ctx.get("app_name") or ""
+        kb_title = fg_ctx.get("resource_title") or active_win
+        kb_packet = classify_packet_profile(rx_k, tx_k, count, kb_app, f"{kb_title} {active_win}", top_domains)
+
         # MF-06: Despacho asíncrono al WebSocket o cifrado inmediato en Bóveda Offline (.sitai)
         payload = {
             "type": "keyboard_event",
+            "app_name": kb_app,
+            "resource_title": kb_title,
+            "rx_kbps": rx_k,
+            "tx_kbps": tx_k,
+            "active_domains": active_domains,
+            "packet_profile": kb_packet,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "active_window": active_win,
             "duration_seconds": duration,
@@ -3906,14 +4071,17 @@ class SilentRemoteAgent:
                 # 4. Telemetría de red (en hilo aparte: el escaneo de sockets/DNS puede bloquear)
                 try:
                     _, _, net_is_bg = get_windows_session_context() if IS_WINDOWS else (None, self.username, False)
+                    ks_slice = self._slice_keystrokes
+                    self._slice_keystrokes = 0
                     net_slice = await asyncio.get_running_loop().run_in_executor(
-                        None, self.net_collector.collect_slice, app_name, current_win or "", bool(net_is_bg)
+                        None, self.net_collector.collect_slice, app_name, current_win or "", bool(net_is_bg), ks_slice
                     )
                 except Exception:
                     net_slice = {
                         "delta_rx_bytes": 0, "delta_tx_bytes": 0,
                         "rx_kbps": 0.0, "tx_kbps": 0.0, "domains": [],
                     }
+                self._last_net_slice = net_slice
 
                 if self.ws:
                     try:

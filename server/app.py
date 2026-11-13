@@ -25,6 +25,7 @@ from fastapi.templating import Jinja2Templates
 
 import config
 from database import AVAILABLE_TIMEZONES, MASTER_TENANT_ID, db
+from service_catalog import classify_packet_profile
 from models import (
     AgentConnection,
     AliasUpdateRequest,
@@ -1699,6 +1700,18 @@ async def _ingest_network_telemetry_slice(
         domains = []
     domains = domains[:100]
 
+    # Perfil de paquete: usar el del agente o calcularlo aquí (agentes sin actualizar)
+    packet_profile = net_data.get("packet_profile")
+    if not isinstance(packet_profile, dict) or not packet_profile.get("packet_label"):
+        packet_profile = classify_packet_profile(
+            rx_kbps, tx_kbps, 0, "",
+            str(getattr(agent, "active_window", "") or ""), domains,
+        )
+        for d in domains:
+            if isinstance(d, dict) and not d.get("packet_type"):
+                d["packet_type"] = packet_profile["packet_label"]
+                d["confidence"] = packet_profile["confidence"]
+
     if d_rx or d_tx or rx_kbps or tx_kbps:
         db.record_network_slice(agent_id, d_rx, d_tx, rx_kbps, tx_kbps, custom_date=custom_date)
     if domains:
@@ -1713,6 +1726,12 @@ async def _ingest_network_telemetry_slice(
             agent.today_tx_bytes = 0
         agent.rx_kbps = rx_kbps
         agent.tx_kbps = tx_kbps
+        agent.packet_profile = {
+            "packet_code": str(packet_profile.get("packet_code") or ""),
+            "packet_label": str(packet_profile.get("packet_label") or ""),
+            "confidence": int(packet_profile.get("confidence") or 0),
+            "keystrokes_slice": int(packet_profile.get("keystrokes_slice") or 0),
+        }
         agent.today_rx_bytes += d_rx
         agent.today_tx_bytes += d_tx
         agent.recent_domains = [
@@ -1786,8 +1805,49 @@ async def _ingest_keyboard_event_payload(
         "offline_vault": is_offline_replay,
     }
 
+    # Correlación cruzada teclado + app en foco + red (agentes sin actualizar: usar telemetría en vivo)
+    kb_app = str(data.get("app_name") or "").strip()[:60]
+    kb_title = str(data.get("resource_title") or "").strip()[:115]
+    try:
+        kb_rx = max(0.0, float(data.get("rx_kbps", agent.rx_kbps if not is_offline_replay else 0.0) or 0.0))
+        kb_tx = max(0.0, float(data.get("tx_kbps", agent.tx_kbps if not is_offline_replay else 0.0) or 0.0))
+    except (TypeError, ValueError):
+        kb_rx = kb_tx = 0.0
+    kb_domains = data.get("active_domains")
+    if not isinstance(kb_domains, list):
+        kb_domains = [] if is_offline_replay else list(agent.recent_domains or [])[:4]
+    kb_domains = [
+        {
+            "domain": str(d.get("domain") or "")[:120],
+            "category": str(d.get("category") or "OTHER").upper(),
+            "estimated_bytes": int(d.get("estimated_bytes") or 0),
+        }
+        for d in kb_domains[:4] if isinstance(d, dict) and d.get("domain")
+    ]
+    kb_packet = data.get("packet_profile")
+    if not isinstance(kb_packet, dict) or not kb_packet.get("packet_label"):
+        kb_packet = classify_packet_profile(kb_rx, kb_tx, keystrokes_cnt, kb_app, f"{kb_title} {active_win}", kb_domains)
+    meta.update({
+        "app_name": kb_app,
+        "resource_title": kb_title,
+        "rx_kbps": kb_rx,
+        "tx_kbps": kb_tx,
+        "active_domains": kb_domains,
+        "packet_profile": {
+            "packet_code": str(kb_packet.get("packet_code") or ""),
+            "packet_label": str(kb_packet.get("packet_label") or ""),
+            "confidence": int(kb_packet.get("confidence") or 0),
+            "keystrokes_slice": int(kb_packet.get("keystrokes_slice") or 0),
+        },
+    })
+
     preview_txt = f"'{txt_content[:70]}...'" if len(txt_content) > 70 else (f"'{txt_content}'" if txt_content else "(Pulsaciones de navegación)")
     msg_txt = f"Redacción en '{active_win}' (Pulsaciones: {preview_txt} • {keystrokes_cnt} teclas • Duración: {dur_secs}s • Idioma: {kb_layout})"
+    if kb_domains or kb_rx >= 15 or kb_tx >= 10:
+        dom_txt = " / ".join(d["domain"] for d in kb_domains[:3]) or "tráfico sin dominio"
+        rate_txt = f"↓ {kb_rx / 1000.0:.1f} Mbps" if kb_rx >= kb_tx else f"↑ {kb_tx / 1000.0:.1f} Mbps"
+        short_pkt = str(meta["packet_profile"]["packet_label"]).split(" (")[0].split(" / ")[-1]
+        msg_txt += f" • Red: {dom_txt} ({rate_txt}, {short_pkt})"
 
     log_entry = db.add_log(
         agent_id=agent_id,

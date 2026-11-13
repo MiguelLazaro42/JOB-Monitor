@@ -796,3 +796,100 @@ def match_service_domain_or_ip(raw_domain_or_ip: str, app_name: str = "") -> tup
     if any(k in val for k in ("apple.com", "digicert.com", "ocsp", "msn.com", "live.com")):
         return val, "SYSTEM"
     return val, "OTHER"
+
+
+# ---- Clasificador de Perfil de Paquete (correlación teclado + foco + red) ----
+_PACKET_FOCUS_KEYWORDS = {
+    "MESSAGING": ("whatsapp", "telegram", "discord", "teams", "slack", "messenger", "signal", "skype", "wa.me"),
+    "SOCIAL": ("facebook", "instagram", "twitter", "linkedin", "reddit", "x.com", "threads"),
+    "AI": ("chatgpt", "openai", "claude", "anthropic", "gemini", "copilot", "perplexity", "deepseek", "grok"),
+    "STREAMING": ("youtube", "netflix", "spotify", "twitch", "tiktok", "disney", "vimeo", "primevideo", "hbo", "googlevideo"),
+    "GAMING": ("steam", "epicgames", "epic games", "riot", "valorant", "fortnite", "roblox", "minecraft", "battle.net"),
+    "REMOTE": ("anydesk", "teamviewer", "rdp", "rustdesk", "mstsc", "remote desktop", "escritorio remoto"),
+    "CLOUD": ("onedrive", "dropbox", "googledrive", "drive.google", "icloud", "mega.nz"),
+}
+
+_PACKET_CODE_LABELS = {
+    "INTERACTIVE_CHAT": "Mensajería / Chat Interactivo (TX Teclado + Red)",
+    "AI_PROMPT_STREAM": "Consulta IA / Prompt en Vivo (TX/RX)",
+    "CLOUD_UPLOAD_SYNC": "Subida / Sincronización Cloud (TX Heavy)",
+    "VIDEO_AUDIO_STREAM": "Streaming Multimedia Continuo (RX UDP/QUIC)",
+    "BULK_DOWNLOAD": "Descarga Masiva / Actualización (RX Bulk)",
+    "GAMING_REALTIME": "Tráfico Gaming Baja Latencia (UDP/TCP)",
+    "REMOTE_SESSION": "Sesión de Control Remoto (Frame Stream)",
+    "WEB_BROWSING_INPUT": "Navegación / Captura Web Activa (HTTP/TLS)",
+    "LOCAL_TYPING": "Redacción Local en App (Sin Tráfico Externo)",
+    "WEB_READ_PASSIVE": "Lectura / Navegación Pasiva (RX)",
+    "IDLE_KEEPALIVE": "Keep-Alive / Fondo de Red",
+}
+
+
+def classify_packet_profile(rx_kbps: float, tx_kbps: float, keystrokes_slice: int,
+                            app_name: str, window_title: str, domains: list) -> dict:
+    """Cruza teclado + app/ventana en foco + tráfico de red y devuelve el tipo de paquete inferido."""
+    rx = float(rx_kbps or 0.0)
+    tx = float(tx_kbps or 0.0)
+    ks = int(keystrokes_slice or 0)
+    domains = [d for d in (domains or []) if isinstance(d, dict)]
+    focus_text = f"{app_name or ''} {window_title or ''}".lower()
+
+    focus_cats = {c for c, kws in _PACKET_FOCUS_KEYWORDS.items() if any(k in focus_text for k in kws)}
+    domain_cats = set()
+    for d in domains:
+        cat = str(d.get("category") or "").upper()
+        if cat:
+            domain_cats.add(cat)
+        dom = str(d.get("domain") or "").lower()
+        for c, kws in _PACKET_FOCUS_KEYWORDS.items():
+            if dom and any(k in dom for k in kws):
+                domain_cats.add(c)
+    primary = max(domains, key=lambda d: int(d.get("estimated_bytes", 0) or 0)) if domains else None
+    primary_cat = str((primary or {}).get("category") or "").upper()
+    primary_cats = {primary_cat} if primary_cat else set()
+    any_cats = focus_cats | domain_cats
+
+    def pick(*cats):
+        return any(c in (focus_cats | primary_cats) for c in cats)
+
+    code, target = "IDLE_KEEPALIVE", None
+    if ks >= 3 and pick("MESSAGING", "SOCIAL"):
+        code, target = "INTERACTIVE_CHAT", ("MESSAGING", "SOCIAL")
+    elif ks >= 3 and pick("AI"):
+        code, target = "AI_PROMPT_STREAM", ("AI",)
+    elif tx >= 250 and tx > rx * 1.2:
+        code, target = "CLOUD_UPLOAD_SYNC", ("CLOUD", "WORK")
+    elif rx >= 350 and ks <= 2 and "STREAMING" in any_cats:
+        code, target = "VIDEO_AUDIO_STREAM", ("STREAMING",)
+    elif rx >= 600 and ks == 0:
+        code, target = "BULK_DOWNLOAD", ()
+    elif "GAMING" in any_cats:
+        code, target = "GAMING_REALTIME", ("GAMING",)
+    elif "REMOTE" in any_cats:
+        code, target = "REMOTE_SESSION", ("REMOTE",)
+    elif ks >= 4 and (rx >= 15 or tx >= 10 or domains):
+        code, target = "WEB_BROWSING_INPUT", ()
+    elif ks >= 4 and rx < 15 and tx < 10:
+        code, target = "LOCAL_TYPING", ()
+    elif (rx >= 15 or tx >= 10) and ks == 0:
+        code, target = "WEB_READ_PASSIVE", ()
+
+    typing_code = code in ("INTERACTIVE_CHAT", "AI_PROMPT_STREAM", "WEB_BROWSING_INPUT", "LOCAL_TYPING")
+    kb_match = (ks >= 3) if typing_code else (ks <= 2)
+    if target:
+        win_match = any(c in focus_cats for c in target)
+        dom_match = any(c in domain_cats for c in target)
+    else:
+        win_match = bool(focus_text.strip()) and code != "IDLE_KEEPALIVE"
+        dom_match = bool(domains) and code != "IDLE_KEEPALIVE"
+    matches = int(kb_match) + int(win_match) + int(dom_match)
+    if code == "IDLE_KEEPALIVE":
+        confidence = 65
+    else:
+        confidence = 95 if matches >= 3 else 82 if matches == 2 else 65
+
+    return {
+        "packet_code": code,
+        "packet_label": _PACKET_CODE_LABELS[code],
+        "confidence": confidence,
+        "keystrokes_slice": ks,
+    }

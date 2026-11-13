@@ -1674,6 +1674,7 @@
                 <span class="log-kb-pill layout-pill">${escapeHtml(layout)}</span>
               </div>
               <div class="log-kb-quote">${kbMain}</div>
+              ${buildCorrelationHtml(meta)}
             </div>`;
           thumbHtml = buildLogThumbHtml(row, 'KEYBOARD', activeWin, prevWin, durSecs, keystrokesCount, layout, textContent, evidencePath);
         } else {
@@ -1689,6 +1690,7 @@
             <div class="log-normal-body">
               ${winChipsHtml}
               <div class="log-msg-line">${formatSpecialKeysHtml(row.message)}</div>
+              ${cat === 'NETWORK' ? buildCorrelationHtml(meta) : ''}
             </div>`;
           thumbHtml = buildLogThumbHtml(row, cat, activeWin, prevWin, durSecs, 0, '', '', evidencePath);
         }
@@ -3028,6 +3030,59 @@
     return clients.slice().sort((a, b) => pos.get(a.agent_id) - pos.get(b.agent_id));
   }
 
+  function pktTone(label) {
+    const l = String(label || '').toLowerCase();
+    if (l.includes('chat') || l.includes('mensajer')) return 'chat';
+    if (l.includes(' ia') || l.includes('prompt') || l.includes('consulta')) return 'ai';
+    if (l.includes('subida') || l.includes('sincroniz')) return 'up';
+    if (l.includes('streaming') || l.includes('multimedia')) return 'stream';
+    if (l.includes('descarga')) return 'bulk';
+    if (l.includes('gaming')) return 'game';
+    if (l.includes('remoto')) return 'remote';
+    if (l.includes('captura web') || l.includes('navegaci')) return l.includes('pasiva') ? 'passive' : 'web';
+    if (l.includes('redacci')) return 'local';
+    if (l.includes('lectura') || l.includes('pasiv')) return 'passive';
+    return 'idle';
+  }
+
+  function pktBadgeHtml(label) {
+    if (!label) return '<span class="pkt-badge pkt-idle">Sin clasificar</span>';
+    return `<span class="pkt-badge pkt-${pktTone(label)}" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
+  }
+
+  function netCrossContextHtml(d) {
+    const keys = Number(d.keystrokes_count || 0);
+    const kbPill = keys > 0
+      ? `<span class="pkt-pill pkt-pill-kb">Teclas: ${keys}</span>`
+      : '<span class="pkt-pill">Sin teclado / Pasivo</span>';
+    const conf = Number(d.confidence || 0);
+    const confPill = conf > 0 && d.last_packet_type
+      ? `<span class="pkt-pill pkt-pill-conf ${conf >= 90 ? 'high' : conf >= 80 ? 'mid' : 'low'}">${conf}% match</span>`
+      : '';
+    const focus = d.focus_app ? `<span class="pkt-pill">Foco: ${escapeHtml(d.focus_app)}</span>` : '';
+    return `<div class="pkt-context">${pktBadgeHtml(d.last_packet_type)}<div class="pkt-pills">${focus}${kbPill}${confPill}</div></div>`;
+  }
+
+  function buildCorrelationHtml(meta) {
+    if (!meta || typeof meta !== 'object') return '';
+    const doms = Array.isArray(meta.active_domains) ? meta.active_domains : [];
+    const pp = meta.packet_profile && typeof meta.packet_profile === 'object' ? meta.packet_profile : null;
+    const rx = Number(meta.rx_kbps || 0);
+    const tx = Number(meta.tx_kbps || 0);
+    if (!doms.length && !pp && !rx && !tx) return '';
+    const domChips = doms
+      .map((d) => `<span class="pkt-pill">${escapeHtml(d.domain || '')}</span>`)
+      .join('');
+    const rate = (rx || tx) ? `<span class="pkt-pill">Red: RX ${escapeHtml(formatBitrate(rx))} / TX ${escapeHtml(formatBitrate(tx))}</span>` : '';
+    const focus = meta.app_name ? `<span class="pkt-pill">Foco: ${escapeHtml(meta.app_name)}</span>` : '';
+    const pkt = pp && pp.packet_label ? pktBadgeHtml(pp.packet_label) : '';
+    const conf = pp && pp.confidence ? `<span class="pkt-pill pkt-pill-conf ${pp.confidence >= 90 ? 'high' : pp.confidence >= 80 ? 'mid' : 'low'}">${Number(pp.confidence)}% match</span>` : '';
+    return `<div class="pkt-corr">
+      <div class="pkt-corr-title">Correlación Cruzada (Teclado + App en Foco + Tráfico de Red)</div>
+      <div class="pkt-pills">${pkt}${conf}${focus}${rate}${domChips}</div>
+    </div>`;
+  }
+
   function renderNetworkSummary(data) {
     netState.summary = data;
     // Selector de equipos (conserva la selección)
@@ -3061,9 +3116,14 @@
         const liveRate = online && (rxk || txk)
           ? `<div class="net-kpi-sub">↓ ${formatBitrate(rxk)} · ↑ ${formatBitrate(txk)} ahora</div>`
           : '';
+        const livePkt = liveAg && liveAg.packet_profile && liveAg.packet_profile.packet_label ? liveAg.packet_profile.packet_label : '';
+        const pktLabel = livePkt || c.last_packet_type || '';
+        const pktLine = pktLabel || c.keystrokes_total
+          ? `<div class="net-kpi-sub pkt-client-line">Teclas: ${Number(c.keystrokes_total || 0)} · ${pktBadgeHtml(pktLabel)}</div>`
+          : '';
         const topBadge = c.top_domain ? `<span class="ntop-badge">${escapeHtml(c.top_domain)}</span>` : '---';
         return `<tr class="net-client-row ${c.agent_id === selected ? 'selected' : ''}" data-agent-id="${escapeHtml(c.agent_id)}">
-          <td>${dot}<strong>${escapeHtml(c.alias)}</strong><div class="net-kpi-sub">${escapeHtml(c.hostname || '')}${c.username ? ' · ' + escapeHtml(c.username) : ''}</div>${liveRate}</td>
+          <td>${dot}<strong>${escapeHtml(c.alias)}</strong><div class="net-kpi-sub">${escapeHtml(c.hostname || '')}${c.username ? ' · ' + escapeHtml(c.username) : ''}</div>${liveRate}${pktLine}</td>
           <td class="net-num">${formatBytes(c.rx_bytes)}</td>
           <td class="net-num">${formatBytes(c.tx_bytes)}</td>
           <td>${netBar(c.total_bytes, maxTotal, formatBytes(c.total_bytes))}</td>
@@ -3090,7 +3150,7 @@
     if (netCounterBadge) netCounterBadge.textContent = `${domains.length} dominios`;
     if (!netDomainsTbody) return;
     if (!domains.length) {
-      netDomainsTbody.innerHTML = '<tr><td colspan="7" class="empty-row">Sin dominios registrados.</td></tr>';
+      netDomainsTbody.innerHTML = '<tr><td colspan="8" class="empty-row">Sin dominios registrados.</td></tr>';
       return;
     }
     const isToday = ((netDateInput && netDateInput.value) || netTodayStr()) === netTodayStr();
@@ -3110,6 +3170,7 @@
           <td>${escapeHtml(d.alias || d.agent_id)}</td>
           <td><strong>${escapeHtml(d.domain)}</strong>${isLive ? ' <span class="ntop-badge ntop-badge-live">EN VIVO</span>' : ''}</td>
           <td><span class="ntop-badge ntop-badge-off">${escapeHtml(d.app_name || '---')}</span></td>
+          <td>${netCrossContextHtml(d)}</td>
           <td><span class="net-cat-pill cat-${escapeHtml(cat)}">${escapeHtml(NET_CATEGORY_LABELS[cat] || cat)}</span></td>
           <td class="net-num">${d.hit_count}</td>
           <td>${netBar(d.estimated_bytes || 0, maxBytes, formatBytes(d.estimated_bytes))}</td>
@@ -4603,13 +4664,14 @@
     const prevWin = (meta && meta.previous_window) || '';
     const dur = meta && meta.duration_seconds !== undefined ? meta.duration_seconds : (ev.duration_seconds || 0);
     const capStatus = resolved.cap ? (resolved.exact ? 'Captura exacta' : `Captura previa (${resolved.capTime})`) : 'Sin captura';
-    let bodyHtml = `<div class="dvr-detail-body">${formatSpecialKeysHtml(ev.message || '')}</div>`;
+    let bodyHtml = `<div class="dvr-detail-body">${formatSpecialKeysHtml(ev.message || '')}${cat === 'NETWORK' ? buildCorrelationHtml(meta) : ''}</div>`;
     if (cat === 'KEYBOARD') {
       const parsed = analyzeKeyboardTranscript((meta && meta.text_content) || '');
       const cnt = (meta && meta.keystrokes_count) || dur || 0;
       bodyHtml = `<div class="dvr-detail-body">
         ${parsed.cleanText ? `<div class="log-kb-clean-text" style="margin-bottom:6px;">${escapeHtml(parsed.cleanText)}</div>` : ''}
         ${parsed.sequenceHtml ? `<details class="log-kb-details" ${!parsed.cleanText ? 'open' : ''}><summary>Secuencia de teclas (${escapeHtml(String(cnt))})</summary><div class="log-kb-seq">${parsed.sequenceHtml}</div></details>` : ''}
+        ${buildCorrelationHtml(meta)}
       </div>`;
     }
     dvrDetailCard.innerHTML = `
