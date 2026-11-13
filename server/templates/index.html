@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=20261113-v12" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261113-v13" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -1372,6 +1372,16 @@
             <option value="OTHER">Otros</option>
           </select>
         </div>
+        <div class="control-select-wrap net-sort-wrap">
+          <span class="net-sort-label">Ordenar</span>
+          <select id="net-flow-sort-select" class="toolbar-select" title="Criterio de ordenamiento de flujos">
+            <option value="TOTAL">Mayor Tráfico Total</option>
+            <option value="RX">Mayor Descarga (RX)</option>
+            <option value="TX">Mayor Subida (TX)</option>
+            <option value="RECENT">Más Recientes</option>
+            <option value="KEYS">Mayor Teclado / Interactividad</option>
+          </select>
+        </div>
         <label class="ntop-switch" title="Mostrar tráfico interno del sistema y flujos de 0 B">
           <input id="net-show-sys-toggle" type="checkbox" />
           <span class="ntop-switch-track"></span>
@@ -1391,12 +1401,12 @@
           <table class="data-table net-table net-flows-matrix-table">
             <thead>
               <tr>
-                <th>Sitio / Destino</th>
-                <th>Equipo · Aplicación</th>
-                <th>Categoría / Actividad</th>
-                <th style="min-width:210px">Tráfico (↓ Entrante / ↑ Saliente)</th>
-                <th style="width:130px; text-align:right">Última vez</th>
-                <th style="width:110px; text-align:right">Inspector</th>
+                <th class="net-col-dest">Destino &amp; Red</th>
+                <th class="net-col-host">Equipo &amp; Proceso</th>
+                <th class="net-col-dpi">nDPI &amp; Perfil</th>
+                <th class="net-col-traffic">Tráfico RX / TX</th>
+                <th class="net-col-activity">Actividad</th>
+                <th class="net-col-inspector">Inspector</th>
               </tr>
             </thead>
             <tbody id="net-domains-tbody">
@@ -1668,6 +1678,6 @@
 
   <script src="/static/js/audio.js?v=20261111-v9"></script>
   <script src="/static/js/viewer.js?v=20261111-v9"></script>
-  <script src="/static/js/app.js?v=20261113-v12"></script>
+  <script src="/static/js/app.js?v=20261113-v13"></script>
 </body>
 </html>

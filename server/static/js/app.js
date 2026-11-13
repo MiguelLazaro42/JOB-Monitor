@@ -2694,6 +2694,7 @@
   const netDeviceFilter = document.getElementById('net-device-filter');
   const netCategoryFilter = document.getElementById('net-category-filter');
   const netDirectionFilter = document.getElementById('net-direction-filter');
+  const netFlowSortSelect = document.getElementById('net-flow-sort-select');
   const netSearchInput = document.getElementById('net-search-input');
   const refreshNetBtn = document.getElementById('refresh-net-btn');
   const exportNetCsvBtn = document.getElementById('export-net-csv-btn');
@@ -3662,9 +3663,78 @@
       if (!q) return true;
       return `${d.domain} ${d.raw_target || ''} ${d.resolved_domain || ''} ${d.asn || ''} ${d.org_name || ''} ${d.whois_org || ''} ${d.country_code || ''} ${d.app_name} ${d.alias} ${d.hostname}`.toLowerCase().includes(q);
     });
-    if (dir === 'RX_HEAVY') flows.sort((a, b) => (b.rx_bytes || 0) - (a.rx_bytes || 0));
-    else if (dir === 'TX_HEAVY') flows.sort((a, b) => (b.tx_bytes || 0) - (a.tx_bytes || 0));
+    const sortBy = (netFlowSortSelect && netFlowSortSelect.value) || 'TOTAL';
+    const num = (v) => Number(v) || 0;
+    const total = (d) => num(d.estimated_bytes) || (num(d.rx_bytes) + num(d.tx_bytes));
+    const comparators = {
+      TOTAL: (a, b) => total(b) - total(a),
+      RX: (a, b) => num(b.rx_bytes) - num(a.rx_bytes) || total(b) - total(a),
+      TX: (a, b) => num(b.tx_bytes) - num(a.tx_bytes) || total(b) - total(a),
+      RECENT: (a, b) => String(b.last_seen_at || '').localeCompare(String(a.last_seen_at || '')) || total(b) - total(a),
+      KEYS: (a, b) => num(b.keystrokes_count) - num(a.keystrokes_count)
+        || num(b.confidence) - num(a.confidence)
+        || total(b) - total(a),
+    };
+    flows.sort(comparators[sortBy] || comparators.TOTAL);
     return flows;
+  }
+
+  // ---- Helpers de presentación multi-capa para la matriz de flujos ----
+  function netParseTs(ts) {
+    const m = String(ts || '').match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+    if (!m) return null;
+    return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
+  }
+
+  function netDurationLabel(first, last) {
+    const a = netParseTs(first);
+    const b = netParseTs(last);
+    if (a === null || b === null || b < a) return '';
+    const sec = Math.round((b - a) / 1000);
+    if (sec < 60) return `${sec}s`;
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min} min`;
+    const h = Math.floor(min / 60);
+    return `${h} h ${min % 60} min`;
+  }
+
+  function netHiResFavicon(url) {
+    if (!url) return '';
+    return String(url).replace(/([?&]sz=)\d+/, (m0, prefix) => `${prefix}64`);
+  }
+
+  function netPortBadgeHtml(port, inbound) {
+    const p = Number(port) || (inbound ? 0 : 443);
+    const tone = p === 443 ? 'tls' : p === 80 ? 'http' : 'custom';
+    const title = p === 443 ? 'HTTPS / TLS' : p === 80 ? 'HTTP sin cifrar' : 'Puerto personalizado';
+    return p ? `<span class="net-port-badge net-port-${tone}" title="${title}">:${p}</span>` : '';
+  }
+
+  function netDirBadgeHtml(inbound) {
+    return inbound
+      ? '<span class="net-dir-badge net-dir-in" title="Conexión entrante al equipo">&darr; Entrante</span>'
+      : '<span class="net-dir-badge net-dir-out" title="Conexión saliente desde el equipo">&uarr; Saliente</span>';
+  }
+
+  function netDualBarHtml(rx, tx, maxBytes) {
+    const r = Math.max(0, Number(rx) || 0);
+    const t = Math.max(0, Number(tx) || 0);
+    const sum = r + t;
+    const scale = maxBytes > 0 ? Math.max(sum > 0 ? 3 : 0, (sum / maxBytes) * 100) : 0;
+    const rxPct = sum > 0 ? (r / sum) * scale : 0;
+    const txPct = sum > 0 ? (t / sum) * scale : 0;
+    const rxShare = sum > 0 ? Math.round((r / sum) * 100) : 0;
+    return `<div class="net-dual-bar" title="RX ${rxShare}% / TX ${sum > 0 ? 100 - rxShare : 0}%">
+      <div class="net-dual-rx" style="width:${rxPct.toFixed(2)}%"></div><div class="net-dual-tx" style="width:${txPct.toFixed(2)}%"></div>
+    </div>`;
+  }
+
+  function netOnlineMap() {
+    const map = new Map();
+    const clients = (netState.summary && netState.summary.clients) || [];
+    clients.forEach((c) => map.set(c.agent_id, !!c.is_online));
+    state.agents.forEach((a, id) => map.set(a.agent_id || id, true));
+    return map;
   }
 
   function netActivityTag(d) {
@@ -3736,27 +3806,90 @@
       });
     }
     const shown = domains.slice(0, 300);
-    const maxBytes = shown.reduce((m, d) => Math.max(m, d.estimated_bytes || 0), 0);
+    const maxBytes = shown.reduce((m, d) => Math.max(m, (Number(d.rx_bytes) || 0) + (Number(d.tx_bytes) || 0), Number(d.estimated_bytes) || 0), 0);
+    const onlineMap = netOnlineMap();
     netDomainsTbody.innerHTML = shown
       .map((d) => {
         const cat = d.category || 'OTHER';
+        const catColor = NET_CATEGORY_COLORS[cat] || NET_CATEGORY_COLORS.OTHER;
         const key = netFlowKey(d);
         const isLive = liveSet.has(key);
+        const inbound = d.direction === 'INBOUND';
         const raw = d.raw_target || '';
         const displayDom = (d.resolved_domain && d.resolved_domain !== d.raw_target) ? d.resolved_domain : d.domain;
-        const rawSub = raw && raw !== displayDom ? `<div class="net-kpi-sub">${escapeHtml(raw)}</div>` : '';
+        const targetTxt = raw && raw !== displayDom ? raw : (raw || d.domain || '');
         const cc = String(d.country_code || '').toUpperCase();
         const flag = /^[A-Z]{2}$/.test(cc)
-          ? `<span class="net-intel-chip" title="${escapeHtml(d.country_name || cc)}"><img class="net-flag-img" src="https://flagcdn.com/w20/${cc.toLowerCase()}.png" alt="${cc}" loading="lazy" onerror="this.style.display='none'" /><span class="net-cc-badge">[${cc}]</span></span>`
+          ? `<span class="net-intel-chip net-geo-chip" title="${escapeHtml(d.country_name || cc)}"><img class="net-flag-img" src="https://flagcdn.com/w40/${cc.toLowerCase()}.png" alt="${cc}" loading="lazy" onerror="this.style.display='none'" /><span class="net-cc-badge">[${cc}]</span></span>`
           : '';
-        const est = d.estimated_bytes || 0;
+        const org = d.whois_org || d.org_name || '';
+        const asnChip = d.asn || org
+          ? `<span class="net-net-chip" title="${escapeHtml([d.asn, org].filter(Boolean).join(' / '))}">${d.asn ? `<span class="net-net-chip-asn">${escapeHtml(d.asn)}</span>` : ''}${org ? `<span class="net-net-chip-org">${escapeHtml(org)}</span>` : ''}</span>`
+          : '';
+        const fav = d.favicon_url
+          ? `<img class="net-favicon-hd" src="${escapeHtml(netHiResFavicon(d.favicon_url))}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.visibility='hidden'" />`
+          : `<span class="net-favicon-fallback">${escapeHtml(String(displayDom || '?').charAt(0).toUpperCase())}</span>`;
+
+        const online = !!onlineMap.get(d.agent_id);
+        const proc = d.focus_app || d.app_name || '';
+        const apps = d.apps_list && d.apps_list !== proc ? d.apps_list : '';
+        const keys = Number(d.keystrokes_count || 0);
+        const kbHtml = keys > 0
+          ? `<span class="net-kb-ind net-kb-active">${keys.toLocaleString('es-MX')} teclas</span>`
+          : '<span class="net-kb-ind net-kb-passive">Navegación pasiva</span>';
+
+        const conf = Number(d.confidence || 0);
+        const confTone = conf >= 90 ? 'high' : conf >= 80 ? 'mid' : 'low';
+        const pkt = d.last_packet_type ? pktBadgeHtml(d.last_packet_type) : `<span class="pkt-badge pkt-${pktTone(netActivityTag(d))}">${escapeHtml(netActivityTag(d))}</span>`;
+        const confHtml = conf > 0
+          ? `<span class="net-conf-meter ${confTone}" title="Certeza de correlación"><span class="net-conf-track"><span class="net-conf-fill" style="width:${Math.min(100, conf)}%"></span></span><span class="net-conf-val">${conf}%</span></span>`
+          : '';
+
+        const rx = Number(d.rx_bytes || 0);
+        const tx = Number(d.tx_bytes || 0);
+        const est = Number(d.estimated_bytes || 0) || rx + tx;
+        const hits = Number(d.hit_count || 0);
+        const dur = netDurationLabel(d.first_seen_at, d.last_seen_at);
+
         return `<tr class="net-flow-row ${isLive ? 'net-live-row' : ''}" data-flow-key="${escapeHtml(key)}">
-          <td>${netFaviconHtml(d.favicon_url)}<strong>${escapeHtml(displayDom)}</strong> ${flag}${isLive ? ' <span class="ntop-badge ntop-badge-live">EN VIVO</span>' : ''}${d.direction === 'INBOUND' ? ' <span class="net-dir-badge net-dir-in">↓ ENTRANTE</span>' : ''}${rawSub}</td>
-          <td><strong>${escapeHtml(d.alias || d.agent_id)}</strong><div class="net-kpi-sub">${escapeHtml(d.app_name || '---')}</div></td>
-          <td><span class="net-cat-pill cat-${escapeHtml(cat)}">${escapeHtml(NET_CATEGORY_LABELS[cat] || cat)}</span><div class="net-kpi-sub">${netActivityTag(d)}</div></td>
-          <td>${netBar(est, maxBytes, formatBytes(est))}<div class="net-kpi-sub">↓ ${formatBytes(d.rx_bytes || 0)} entrante · ↑ ${formatBytes(d.tx_bytes || 0)} saliente</div></td>
-          <td class="net-num" style="text-align:right">${escapeHtml(netShortTime(d.last_seen_at))}</td>
-          <td style="text-align:right"><button type="button" class="net-inspect-btn net-inspect-flow-btn" data-flow-key="${escapeHtml(key)}">Detalle &rarr;</button></td>
+          <td class="net-cell-dest">
+            <div class="net-dest-wrap">
+              <div class="net-fav-box">${fav}</div>
+              <div class="net-stack">
+                <div class="net-dest-main"><strong class="net-dest-domain" title="${escapeHtml(displayDom)}">${escapeHtml(displayDom)}</strong>${isLive ? '<span class="ntop-badge ntop-badge-live">EN VIVO</span>' : ''}</div>
+                <div class="net-dest-sub"><span class="net-target-txt" title="${escapeHtml(targetTxt)}">${escapeHtml(targetTxt)}</span>${netPortBadgeHtml(d.port, inbound)}${netDirBadgeHtml(inbound)}</div>
+                ${asnChip || flag ? `<div class="net-dest-sub net-dest-intel">${flag}${asnChip}</div>` : ''}
+              </div>
+            </div>
+          </td>
+          <td class="net-cell-host">
+            <div class="net-stack">
+              <div class="net-host-main"><span class="status-dot ${online ? 'dot-emerald' : 'dot-gray'}" title="${online ? 'En línea' : 'Fuera de línea'}"></span><strong>${escapeHtml(d.alias || d.agent_id)}</strong></div>
+              <div><span class="net-proc-badge" title="${escapeHtml(apps ? `${proc} (${apps})` : proc)}">${escapeHtml(proc || 'Proceso desconocido')}</span></div>
+              <div>${kbHtml}</div>
+            </div>
+          </td>
+          <td class="net-cell-dpi">
+            <div class="net-stack">
+              <div><span class="net-cat-pill cat-${escapeHtml(cat)}" style="--cat-color:${catColor}"><span class="net-cat-dot"></span>${escapeHtml(NET_CATEGORY_LABELS[cat] || cat)}</span></div>
+              <div class="net-dpi-row">${pkt}${confHtml}</div>
+            </div>
+          </td>
+          <td class="net-cell-traffic">
+            <div class="net-stack">
+              ${netDualBarHtml(rx, tx, maxBytes)}
+              <div class="net-rxtx-figs"><span class="net-fig-rx">&darr; ${formatBytes(rx)}</span><span class="net-fig-tx">&uarr; ${formatBytes(tx)}</span></div>
+              <div class="net-total-line"><strong>${formatBytes(est)}</strong><span class="net-hits">${hits.toLocaleString('es-MX')} hits</span></div>
+            </div>
+          </td>
+          <td class="net-cell-activity">
+            <div class="net-stack net-time-stack">
+              <div class="net-time-row"><span class="net-time-k">Última</span><span class="net-time-v">${escapeHtml(netShortTime(d.last_seen_at))}</span></div>
+              <div class="net-time-row"><span class="net-time-k">Primera</span><span class="net-time-v muted">${escapeHtml(netShortTime(d.first_seen_at))}</span></div>
+              ${dur ? `<div class="net-time-row"><span class="net-time-k">Duración</span><span class="net-time-v muted">${dur}</span></div>` : ''}
+            </div>
+          </td>
+          <td class="net-cell-inspector"><button type="button" class="net-inspect-btn net-inspect-flow-btn" data-flow-key="${escapeHtml(key)}">Inspeccionar</button></td>
         </tr>`;
       })
       .join('');
@@ -4013,6 +4146,7 @@
   if (netDeviceFilter) netDeviceFilter.addEventListener('change', () => loadNetworkDashboard({ silent: true }));
   if (netCategoryFilter) netCategoryFilter.addEventListener('change', renderNetworkDomains);
   if (netDirectionFilter) netDirectionFilter.addEventListener('change', renderNetworkDomains);
+  if (netFlowSortSelect) netFlowSortSelect.addEventListener('change', renderNetworkDomains);
   let netSearchTimer = null;
   if (netSearchInput) {
     netSearchInput.addEventListener('input', () => {
@@ -4042,7 +4176,16 @@
     chip.addEventListener('click', () => {
       netCategoryChipBtns.forEach((c) => c.classList.remove('active'));
       chip.classList.add('active');
-      if (netCategoryFilter) netCategoryFilter.value = chip.dataset.category;
+      const cat = chip.dataset.category || 'ALL';
+      if (cat === 'INBOUND') {
+        if (netCategoryFilter) netCategoryFilter.value = 'ALL';
+        if (netDirectionFilter) netDirectionFilter.value = 'INBOUND';
+      } else {
+        if (netCategoryFilter) netCategoryFilter.value = cat;
+        if (netDirectionFilter && netDirectionFilter.value === 'INBOUND') {
+          netDirectionFilter.value = 'ALL';
+        }
+      }
       renderNetworkDomains();
     });
   });

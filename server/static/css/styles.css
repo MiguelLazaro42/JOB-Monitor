@@ -3891,3 +3891,164 @@ body {
 .drawer-ratio-work { background: var(--emerald); height: 100%; }
 .drawer-ratio-leisure { background: var(--rose); height: 100%; }
 .drawer-ratio-other { background: #94a3b8; height: 100%; }
+
+/* ===== Matriz de flujos multi-capa (estilo ntopng / Wireshark) ===== */
+.net-sort-wrap { display: inline-flex; align-items: center; gap: 6px; }
+.net-sort-label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); }
+
+.net-flows-matrix-table { table-layout: auto; border-collapse: separate; border-spacing: 0; }
+.net-flows-matrix-table thead th {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+.net-flows-matrix-table tbody td { vertical-align: top; padding-top: 11px; padding-bottom: 11px; border-bottom: 1px solid var(--border-light); }
+.net-flows-matrix-table .net-flow-row.net-live-row td:first-child { box-shadow: inset 3px 0 0 var(--emerald); }
+.net-col-dest { min-width: 280px; }
+.net-col-host { min-width: 170px; }
+.net-col-dpi { min-width: 170px; }
+.net-col-traffic { min-width: 200px; }
+.net-col-activity { width: 140px; }
+.net-col-inspector, .net-cell-inspector { width: 110px; text-align: right; }
+.net-cell-inspector { vertical-align: middle !important; }
+
+.net-stack { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+
+/* Destino & Red */
+.net-dest-wrap { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.net-fav-box {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.net-favicon-hd { width: 20px; height: 20px; object-fit: contain; image-rendering: auto; }
+.net-favicon-fallback { font-family: var(--font-display); font-size: 14px; font-weight: 700; color: var(--text-muted); }
+.net-dest-main { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.net-dest-domain { font-size: 13.5px; color: var(--sitai-navy); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.net-dest-sub { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; min-width: 0; }
+.net-dest-sub .net-dir-badge { margin-left: 0; }
+.net-target-txt {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.net-dir-out { background: #fff1e0; color: #b45309; box-shadow: 0 0 0 1px #fdba74 inset; }
+
+/* Badges de puertos */
+.net-port-badge {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.6;
+  border: 1px solid transparent;
+}
+.net-port-tls { background: #e8f0fe; color: var(--sitai-blue); border-color: #c7d7fb; }
+.net-port-http { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
+.net-port-custom { background: #f3e8ff; color: #7e22ce; border-color: #e9d5ff; }
+
+/* Chips de red (ASN / WHOIS) */
+.net-net-chip {
+  display: inline-flex;
+  align-items: stretch;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  font-size: 10.5px;
+  font-weight: 600;
+  max-width: 240px;
+}
+.net-net-chip-asn {
+  padding: 1px 6px;
+  background: #ede9fe;
+  color: #6d28d9;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: nowrap;
+}
+.net-net-chip-org {
+  padding: 1px 7px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.net-geo-chip { background: var(--bg-card); border: 1px solid var(--border-color); }
+.net-geo-chip .net-flag-img { width: 18px; height: 13px; }
+
+/* Equipo & Proceso */
+.net-host-main { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--sitai-navy); }
+.net-host-main .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.net-host-main .status-dot.dot-emerald { box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2); }
+.net-host-main .status-dot.dot-gray { background: #cbd5e1; }
+.net-proc-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  font-weight: 600;
+  background: var(--sitai-navy);
+  color: #ffffff;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.net-kb-ind { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 600; }
+.net-kb-ind::before { content: ""; width: 6px; height: 6px; border-radius: 2px; background: currentColor; opacity: .8; }
+.net-kb-active { color: #0369a1; }
+.net-kb-passive { color: var(--text-muted); }
+
+/* nDPI & Perfil */
+.net-cat-pill .net-cat-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; background: var(--cat-color, currentColor); }
+.net-dpi-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.net-conf-meter { display: inline-flex; align-items: center; gap: 5px; }
+.net-conf-track { width: 38px; height: 4px; border-radius: 999px; background: var(--border-color); overflow: hidden; }
+.net-conf-fill { display: block; height: 100%; border-radius: 999px; background: #94a3b8; }
+.net-conf-meter.high .net-conf-fill { background: #16a34a; }
+.net-conf-meter.mid .net-conf-fill { background: #ca8a04; }
+.net-conf-val { font-size: 10.5px; font-weight: 700; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+
+/* Barra dual RX / TX */
+.net-dual-bar {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+.net-dual-rx { height: 100%; background: linear-gradient(90deg, #124fae, #06b6d4); }
+.net-dual-tx { height: 100%; background: linear-gradient(90deg, #fb923c, #f87b02); }
+.net-rxtx-figs { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.net-fig-rx { color: #0e7490; }
+.net-fig-tx { color: #c2410c; }
+.net-total-line { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12px; color: var(--sitai-navy); font-variant-numeric: tabular-nums; }
+.net-hits { font-size: 10.5px; font-weight: 600; color: var(--text-muted); }
+
+/* Actividad */
+.net-time-stack { gap: 3px; }
+.net-time-row { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; }
+.net-time-k { color: var(--text-muted); font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.net-time-v { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 700; color: var(--sitai-navy); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.net-time-v.muted { color: var(--text-secondary); font-weight: 500; }
