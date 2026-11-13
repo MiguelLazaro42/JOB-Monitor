@@ -2699,6 +2699,7 @@
   const exportNetCsvBtn = document.getElementById('export-net-csv-btn');
   const netClientsTbody = document.getElementById('net-clients-tbody');
   const netDomainsTbody = document.getElementById('net-domains-tbody');
+  const netShowSysToggle = document.getElementById('net-show-sys-toggle');
   const netCounterBadge = document.getElementById('net-counter-badge');
   const netAutoToggle = document.getElementById('net-auto-toggle');
   const netLiveInd = document.querySelector('.ntop-live-ind');
@@ -2735,6 +2736,7 @@
     liveDomains: new Map(),
     refreshTimer: null,
     lastRender: 0,
+    expandedFlowKeys: new Set(),
   };
 
   function formatBytes(bytes) {
@@ -3115,16 +3117,11 @@
         const txk = liveAg ? liveAg.tx_kbps : c.tx_kbps;
         const dot = online ? '<span class="status-dot dot-emerald"></span> ' : '';
         const liveRate = online && (rxk || txk)
-          ? `<div class="net-kpi-sub">↓ ${formatBitrate(rxk)} · ↑ ${formatBitrate(txk)} ahora</div>`
+          ? `<div class="net-kpi-sub">↓ ${formatBitrate(rxk)} · ↑ ${formatBitrate(txk)}</div>`
           : '';
-        const livePkt = liveAg && liveAg.packet_profile && liveAg.packet_profile.packet_label ? liveAg.packet_profile.packet_label : '';
-        const pktLabel = livePkt || c.last_packet_type || '';
-        const pktLine = pktLabel || c.keystrokes_total
-          ? `<div class="net-kpi-sub pkt-client-line">Teclas: ${Number(c.keystrokes_total || 0)} · ${pktBadgeHtml(pktLabel)}</div>`
-          : '';
-        const topBadge = c.top_domain ? `${netFaviconHtml(c.top_domain_favicon)}<span class="ntop-badge">${escapeHtml(c.top_domain)}</span>` : '---';
+                const topBadge = c.top_domain ? `${netFaviconHtml(c.top_domain_favicon)}<span class="ntop-badge">${escapeHtml(c.top_domain)}</span>` : '---';
         return `<tr class="net-client-row ${c.agent_id === selected ? 'selected' : ''}" data-agent-id="${escapeHtml(c.agent_id)}">
-          <td>${dot}<strong>${escapeHtml(c.alias)}</strong><div class="net-kpi-sub">${escapeHtml(c.hostname || '')}${c.username ? ' · ' + escapeHtml(c.username) : ''}</div>${liveRate}${pktLine}</td>
+          <td>${dot}<strong>${escapeHtml(c.alias)}</strong><div class="net-kpi-sub">${escapeHtml(c.hostname || '')}${c.username ? ' · ' + escapeHtml(c.username) : ''}</div>${liveRate}</td>
           <td class="net-num">${formatBytes(c.rx_bytes)}</td>
           <td class="net-num">${formatBytes(c.tx_bytes)}</td>
           <td>${netBar(c.total_bytes, maxTotal, formatBytes(c.total_bytes))}</td>
@@ -3184,11 +3181,26 @@
     }
   }
 
+  const NET_BG_DAEMONS = ['system idle process', 'svchost.exe', 'msmpeng.exe', 'smartscreen.exe', 'parsecd', 'cloudd', 'rapportd', 'searchtoold', 'assistantd', 'com.apple.geod'];
+  const NET_USER_CATS = ['STREAMING', 'SOCIAL', 'MESSAGING', 'AI', 'SHOPPING', 'GAMING', 'REMOTE'];
+
+  function netIsSystemNoise(d, catFilter, q) {
+    const cat = d.category || 'OTHER';
+    if (d.direction === 'INBOUND' || NET_USER_CATS.includes(cat)) return false;
+    if ((d.estimated_bytes || 0) === 0 && cat === 'OTHER') return true;
+    if (catFilter === 'SYSTEM' || (q && 'system'.includes(q))) return false;
+    if (!['OTHER', 'SYSTEM', 'CLOUD'].includes(cat)) return false;
+    const apps = String(d.apps_list || d.app_name || '').split(',').map((a) => a.trim().toLowerCase()).filter(Boolean);
+    return apps.length > 0 && apps.every((a) => NET_BG_DAEMONS.includes(a));
+  }
+
   function netFilteredFlows() {
     const cat = (netCategoryFilter && netCategoryFilter.value) || 'ALL';
     const q = netSearchInput ? netSearchInput.value.trim().toLowerCase() : '';
     const dir = (netDirectionFilter && netDirectionFilter.value) || 'ALL';
+    const showSys = !!(netShowSysToggle && netShowSysToggle.checked);
     const flows = netState.domains.filter((d) => {
+      if (!showSys && netIsSystemNoise(d, cat, q)) return false;
       if (cat !== 'ALL' && (d.category || 'OTHER') !== cat) return false;
       if (dir === 'INBOUND' && d.direction !== 'INBOUND') return false;
       if (dir === 'RX_HEAVY' && !((d.rx_bytes || 0) > (d.tx_bytes || 0))) return false;
@@ -3201,17 +3213,57 @@
     return flows;
   }
 
-  function netDirectionBadgeHtml(d) {
-    const port = escapeHtml(String(d.port || 443));
-    if (d.direction === 'INBOUND') {
-      return `<span class="net-dir-badge net-dir-in" title="Conexión entrante al puerto local ${port}">↓ ENTRANTE :${port}</span>`;
-    }
-    return `<span class="net-dir-badge net-dir-std" title="Flujo iniciado por el equipo (puerto remoto ${port})">↓ RX / ↑ TX :${port}</span>`;
+  function netActivityTag(d) {
+    const cat = d.category || 'OTHER';
+    const keys = Number(d.keystrokes_count || 0);
+    if (cat === 'MESSAGING') return keys > 0 ? 'Chat Activo' : 'Chat Pasivo';
+    if (cat === 'STREAMING') return 'Streaming';
+    if (cat === 'AI') return 'Consulta IA';
+    if (keys > 0) return 'Navegación Activa';
+    return 'Pasivo';
   }
 
-  function netBytesBreakdownHtml(d, maxBytes) {
-    const est = d.estimated_bytes || 0;
-    return `${netBar(est, maxBytes, formatBytes(est))}<div class="net-rxtx"><span class="net-rx">↓ ${formatBytes(d.rx_bytes || 0)}</span><span class="net-tx">↑ ${formatBytes(d.tx_bytes || 0)}</span></div>`;
+  function netShortTime(ts) {
+    const t = String(ts || '').trim();
+    if (!t) return '---';
+    const m = t.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/);
+    if (!m) return t;
+    return m[1] === netTodayStr() ? m[2] : `${m[1].slice(5)} ${m[2]}`;
+  }
+
+  function netFlowKey(d) {
+    return `${d.agent_id}|${d.domain}`;
+  }
+
+  function netDetailRowHtml(d) {
+    const inbound = d.direction === 'INBOUND';
+    const flag = netFlagHtml(d.country_code, '');
+    const countryTxt = d.country_name || d.country_code || 'Global / Anycast';
+    const keys = Number(d.keystrokes_count || 0);
+    const apps = d.apps_list && d.apps_list !== d.app_name ? d.apps_list : '';
+    const focus = d.focus_app || d.app_name || '---';
+    const kv = (k, v) => `<div class="net-detail-kv"><span class="net-detail-k">${k}</span><span class="net-detail-v">${v}</span></div>`;
+    return `<tr class="net-flow-detail-row"><td colspan="5"><div class="net-detail-grid">
+      <div class="net-detail-col"><h4>Identidad de Red (ASN / WHOIS / País)</h4>
+        ${kv('Destino Original / IP', escapeHtml(d.raw_target || d.domain))}
+        ${kv('Puerto', `:${escapeHtml(String(d.port || 443))} (${inbound ? 'Entrante al equipo' : 'Saliente'})`)}
+        ${kv('ASN', escapeHtml(d.asn || 'Local / Catálogo Directo'))}
+        ${kv('Organización WHOIS / ISP', escapeHtml(d.whois_org || d.org_name || 'Servicio verificado en catálogo'))}
+        ${kv('País Origen/Destino', `${flag} ${escapeHtml(countryTxt)}`)}
+      </div>
+      <div class="net-detail-col"><h4>Correlación Cruzada (Teclado + Foco + Paquete)</h4>
+        ${kv('Tipo de Paquete Inferido', d.last_packet_type ? pktBadgeHtml(d.last_packet_type) : '<span class="pkt-pill">Lectura / Navegación Pasiva (RX)</span>')}
+        ${kv('Actividad de Teclado', keys > 0 ? `${keys} teclas registradas durante el flujo` : '0 teclas (Consumo pasivo / lectura)')}
+        ${kv('App en Foco / Procesos', escapeHtml(focus) + (apps ? ` <span class="net-kpi-sub">${escapeHtml(apps)}</span>` : ''))}
+        ${kv('Certeza de Correlación', `${Number(d.confidence || 80)}% de coincidencia (Foco + Teclado + Red)`)}
+      </div>
+      <div class="net-detail-col"><h4>Desglose de Consumo y Tiempos</h4>
+        ${kv('Tráfico Entrante (↓ RX)', formatBytes(d.rx_bytes))}
+        ${kv('Tráfico Saliente (↑ TX)', formatBytes(d.tx_bytes))}
+        ${kv('Total Acumulado', `${formatBytes(d.estimated_bytes)} en ${d.hit_count || 0} conexiones`)}
+        ${kv('Ventana de Actividad', `Primera vez: ${escapeHtml(d.first_seen_at || '---')} · Última vez: ${escapeHtml(d.last_seen_at || '---')}`)}
+      </div>
+    </div></td></tr>`;
   }
 
   function renderNetworkDomains() {
@@ -3219,7 +3271,7 @@
     if (netCounterBadge) netCounterBadge.textContent = `${domains.length} dominios`;
     if (!netDomainsTbody) return;
     if (!domains.length) {
-      netDomainsTbody.innerHTML = '<tr><td colspan="8" class="empty-row">Sin dominios registrados.</td></tr>';
+      netDomainsTbody.innerHTML = '<tr><td colspan="5" class="empty-row">Sin dominios registrados.</td></tr>';
       return;
     }
     const isToday = ((netDateInput && netDateInput.value) || netTodayStr()) === netTodayStr();
@@ -3234,17 +3286,24 @@
     netDomainsTbody.innerHTML = shown
       .map((d) => {
         const cat = d.category || 'OTHER';
-        const isLive = liveSet.has(`${d.agent_id}|${d.domain}`);
-        return `<tr class="${isLive ? 'net-live-row' : ''}">
-          <td>${escapeHtml(d.alias || d.agent_id)}</td>
-          <td>${netDomainCellHtml(d)} ${netDirectionBadgeHtml(d)}${isLive ? ' <span class="ntop-badge ntop-badge-live">EN VIVO</span>' : ''}${netIntelHtml(d)}</td>
-          <td><span class="ntop-badge ntop-badge-off">${escapeHtml(d.app_name || '---')}</span></td>
-          <td>${netCrossContextHtml(d)}</td>
-          <td><span class="net-cat-pill cat-${escapeHtml(cat)}">${escapeHtml(NET_CATEGORY_LABELS[cat] || cat)}</span></td>
-          <td class="net-num">${d.hit_count}</td>
-          <td>${netBytesBreakdownHtml(d, maxBytes)}</td>
-          <td class="net-num">${escapeHtml(d.last_seen_at || '')}</td>
+        const key = netFlowKey(d);
+        const open = netState.expandedFlowKeys.has(key);
+        const isLive = liveSet.has(key);
+        const raw = d.raw_target || '';
+        const rawSub = raw && raw !== d.domain ? `<div class="net-kpi-sub">${escapeHtml(raw)}</div>` : '';
+        const cc = String(d.country_code || '').toUpperCase();
+        const flag = /^[A-Z]{2}$/.test(cc)
+          ? `<span class="net-intel-chip" title="${escapeHtml(d.country_name || cc)}"><img class="net-flag-img" src="https://flagcdn.com/w20/${cc.toLowerCase()}.png" alt="${cc}" loading="lazy" onerror="this.style.display='none'" /><span class="net-cc-badge">[${cc}]</span></span>`
+          : '';
+        const est = d.estimated_bytes || 0;
+        const row = `<tr class="net-flow-row ${isLive ? 'net-live-row' : ''} ${open ? 'expanded' : ''}" data-flow-key="${escapeHtml(key)}">
+          <td>${netFaviconHtml(d.favicon_url)}<strong>${escapeHtml(d.domain)}</strong> ${flag}${isLive ? ' <span class="ntop-badge ntop-badge-live">EN VIVO</span>' : ''}${d.direction === 'INBOUND' ? ' <span class="net-dir-badge net-dir-in">↓ ENTRANTE</span>' : ''}${rawSub}</td>
+          <td><strong>${escapeHtml(d.alias || d.agent_id)}</strong><div class="net-kpi-sub">${escapeHtml(d.app_name || '---')}</div></td>
+          <td><span class="net-cat-pill cat-${escapeHtml(cat)}">${escapeHtml(NET_CATEGORY_LABELS[cat] || cat)}</span><div class="net-kpi-sub">${netActivityTag(d)}</div></td>
+          <td>${netBar(est, maxBytes, formatBytes(est))}<div class="net-kpi-sub">↓ ${formatBytes(d.rx_bytes || 0)} entrante · ↑ ${formatBytes(d.tx_bytes || 0)} saliente</div></td>
+          <td class="net-num" style="text-align:right">${escapeHtml(netShortTime(d.last_seen_at))}<div><span class="net-expand-btn">${open ? 'Detalle ▴' : 'Detalle ▾'}</span></div></td>
         </tr>`;
+        return open ? row + netDetailRowHtml(d) : row;
       })
       .join('');
   }
@@ -3346,6 +3405,17 @@
       loadNetworkDashboard({ silent: true });
     });
   }
+  if (netDomainsTbody) {
+    netDomainsTbody.addEventListener('click', (ev) => {
+      const tr = ev.target.closest('tr.net-flow-row');
+      if (!tr) return;
+      const key = tr.dataset.flowKey;
+      if (netState.expandedFlowKeys.has(key)) netState.expandedFlowKeys.delete(key);
+      else netState.expandedFlowKeys.add(key);
+      renderNetworkDomains();
+    });
+  }
+  if (netShowSysToggle) netShowSysToggle.addEventListener('change', renderNetworkDomains);
   if (netDateInput) netDateInput.addEventListener('change', () => loadNetworkDashboard());
   if (netDeviceFilter) netDeviceFilter.addEventListener('change', () => loadNetworkDashboard({ silent: true }));
   if (netCategoryFilter) netCategoryFilter.addEventListener('change', renderNetworkDomains);

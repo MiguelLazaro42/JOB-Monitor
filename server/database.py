@@ -30,6 +30,17 @@ DB_PATH: Path = config.DATA_DIR / "remote_assist.db"
 MASTER_TENANT_ID = "sitai-master"
 
 
+_NOISE_APPS = {
+    "system idle process", "svchost.exe", "backgroundtaskhost.exe", "msmpeng.exe", "smartscreen.exe",
+    "parsecd", "cloudd", "rapportd", "searchtoold", "assistantd", "com.apple.geod", "system",
+}
+
+
+def _app_noise_rank(app: str) -> int:
+    """0 = app de usuario (navegador, mensajería...), 1 = proceso de fondo del SO."""
+    return 1 if (app or "").strip().lower() in _NOISE_APPS else 0
+
+
 @lru_cache(maxsize=8192)
 def _normalize_domain(domain: str, app_name: str = "", agent_cat: str = "OTHER") -> tuple:
     """Traduce dominio CDN/IP crudo al servicio canónico (catálogo AdGuard + nDPI).
@@ -1583,11 +1594,14 @@ class DatabaseManager:
                 continue
             if q_low and not any(q_low in str(v or "").lower() for v in (dom, r["domain"], r["app_name"], r["alias"], r["hostname"])):
                 continue
-            key = (r["agent_id"], dom, r["app_name"])
+            key = (r["agent_id"], dom)
+            app = (r["app_name"] or "").strip()
             m = merged.get(key)
             if m is None:
-                merged[key] = {**r, "domain": dom, "category": cat}
+                merged[key] = {**r, "domain": dom, "category": cat, "_apps": {app: r["estimated_bytes"] or 0} if app else {}}
                 continue
+            if app:
+                m["_apps"][app] = m["_apps"].get(app, 0) + (r["estimated_bytes"] or 0)
             m["hit_count"] += r["hit_count"] or 0
             m["estimated_bytes"] += r["estimated_bytes"] or 0
             m["rx_bytes"] = (m["rx_bytes"] or 0) + (r["rx_bytes"] or 0)
@@ -1600,6 +1614,12 @@ class DatabaseManager:
             m["last_seen_at"] = max(m["last_seen_at"] or "", r["last_seen_at"] or "")
             m["keystrokes_count"] = (m["keystrokes_count"] or 0) + (r["keystrokes_count"] or 0)
             m["confidence"] = max(m["confidence"] or 0, r["confidence"] or 0)
+        for m in merged.values():
+            apps = m.pop("_apps", {})
+            ranked = sorted(apps.items(), key=lambda kv: (_app_noise_rank(kv[0]), -kv[1]))
+            if ranked:
+                m["app_name"] = ranked[0][0]
+            m["apps_list"] = ", ".join(a for a, _ in ranked)
         out = sorted(merged.values(), key=lambda x: (x["estimated_bytes"], x["hit_count"]), reverse=True)[:max_rows]
         for row in out:
             entry = get_or_enqueue_intel(row["domain"], row.get("app_name") or "")

@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=20261113-v8" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261113-v9" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -1249,6 +1249,7 @@
           <span class="ntop-switch-track"></span>
           <span class="ntop-switch-label">Auto-Refresh 4s</span>
         </label>
+        <label class="ntop-switch" title="Mostrar tráfico interno del sistema y flujos de 0 B"><input id="net-show-sys-toggle" type="checkbox" /><span class="ntop-switch-track"></span><span class="ntop-switch-label">Ruido de Sistema</span></label>
         <button id="refresh-net-btn" type="button" class="btn btn-primary btn-sm ntop-refresh-btn">
           <svg class="icon-sm ntop-refresh-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
           <span>Refrescar Ahora</span>
@@ -1295,18 +1296,15 @@
         <table class="data-table net-table">
           <thead>
             <tr>
-              <th>Equipo</th>
-              <th>Dominio</th>
-              <th>Aplicación</th>
-              <th style="min-width:230px">Contexto Cruzado (Foco + Teclado + Tipo de Paquete)</th>
-              <th>Categoría (nDPI)</th>
-              <th>Conexiones</th>
-              <th style="min-width:230px">Bytes: ↓ Entrante (RX) / ↑ Saliente (TX)</th>
-              <th>Última vez</th>
+              <th>Sitio / Destino</th>
+              <th>Equipo · Aplicación</th>
+              <th>Categoría / Actividad</th>
+              <th style="min-width:210px">Tráfico (↓ Entrante / ↑ Saliente)</th>
+              <th style="width:130px; text-align:right">Última vez</th>
             </tr>
           </thead>
           <tbody id="net-domains-tbody">
-            <tr><td colspan="8" class="empty-row">Sin dominios registrados.</td></tr>
+            <tr><td colspan="5" class="empty-row">Sin dominios registrados.</td></tr>
           </tbody>
         </table>
       </div>
@@ -1558,6 +1556,6 @@
 
   <script src="/static/js/audio.js?v=20261111-v9"></script>
   <script src="/static/js/viewer.js?v=20261111-v9"></script>
-  <script src="/static/js/app.js?v=20261113-v8"></script>
+  <script src="/static/js/app.js?v=20261113-v9"></script>
 </body>
 </html>
