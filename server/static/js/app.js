@@ -3290,14 +3290,17 @@
         const open = netState.expandedFlowKeys.has(key);
         const isLive = liveSet.has(key);
         const raw = d.raw_target || '';
-        const rawSub = raw && raw !== d.domain ? `<div class="net-kpi-sub">${escapeHtml(raw)}</div>` : '';
+        const displayDom = (d.resolved_domain && d.resolved_domain !== d.raw_target) ? d.resolved_domain : d.domain;
+        const rawSub = raw && raw !== displayDom
+          ? `<div class="net-kpi-sub">${escapeHtml(d.org_name ? d.org_name + ' · ' + raw : raw)}</div>`
+          : (d.org_name ? `<div class="net-kpi-sub">${escapeHtml(d.org_name)}</div>` : '');
         const cc = String(d.country_code || '').toUpperCase();
         const flag = /^[A-Z]{2}$/.test(cc)
           ? `<span class="net-intel-chip" title="${escapeHtml(d.country_name || cc)}"><img class="net-flag-img" src="https://flagcdn.com/w20/${cc.toLowerCase()}.png" alt="${cc}" loading="lazy" onerror="this.style.display='none'" /><span class="net-cc-badge">[${cc}]</span></span>`
           : '';
         const est = d.estimated_bytes || 0;
         const row = `<tr class="net-flow-row ${isLive ? 'net-live-row' : ''} ${open ? 'expanded' : ''}" data-flow-key="${escapeHtml(key)}">
-          <td>${netFaviconHtml(d.favicon_url)}<strong>${escapeHtml(d.domain)}</strong> ${flag}${isLive ? ' <span class="ntop-badge ntop-badge-live">EN VIVO</span>' : ''}${d.direction === 'INBOUND' ? ' <span class="net-dir-badge net-dir-in">↓ ENTRANTE</span>' : ''}${rawSub}</td>
+          <td>${netFaviconHtml(d.favicon_url)}<strong>${escapeHtml(displayDom)}</strong> ${flag}${isLive ? ' <span class="ntop-badge ntop-badge-live">EN VIVO</span>' : ''}${d.direction === 'INBOUND' ? ' <span class="net-dir-badge net-dir-in">↓ ENTRANTE</span>' : ''}${rawSub}</td>
           <td><strong>${escapeHtml(d.alias || d.agent_id)}</strong><div class="net-kpi-sub">${escapeHtml(d.app_name || '---')}</div></td>
           <td><span class="net-cat-pill cat-${escapeHtml(cat)}">${escapeHtml(NET_CATEGORY_LABELS[cat] || cat)}</span><div class="net-kpi-sub">${netActivityTag(d)}</div></td>
           <td>${netBar(est, maxBytes, formatBytes(est))}<div class="net-kpi-sub">↓ ${formatBytes(d.rx_bytes || 0)} entrante · ↑ ${formatBytes(d.tx_bytes || 0)} saliente</div></td>

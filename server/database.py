@@ -138,6 +138,27 @@ def _csv_safe(value) -> str:
     return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
 
 
+
+def _canonical_intel(dom: str, cat: str, app: str = ""):
+    """Si dom es una IP cruda o categoría OTHER y la inteligencia ya resolvió un dominio, devuelve (dominio, categoría, entry, ip_cruda)."""
+    if not dom:
+        return dom, cat, None, ""
+    try:
+        import ipaddress
+        ipaddress.ip_address(dom)
+        is_ip = True
+    except ValueError:
+        is_ip = False
+    if not (is_ip or cat == "OTHER"):
+        return dom, cat, None, ""
+    entry = get_or_enqueue_intel(dom, app) or {}
+    rd = (entry.get("resolved_domain") or "").strip().lower()
+    if rd and rd != dom:
+        raw = dom if (is_ip or entry.get("is_ip")) else ""
+        return rd, (entry.get("category") or cat), entry, raw
+    return dom, cat, entry, ""
+
+
 class DatabaseManager:
     """Capa de persistencia SQLite para Equipos, Bitácora de Logs y Métricas Estilo Teams."""
 
@@ -1397,6 +1418,7 @@ class DatabaseManager:
                 dom, cat = _normalize_domain(r["domain"], "", (r["category"] or "OTHER").upper())
                 if not dom:
                     continue
+                dom, cat, _e, _raw = _canonical_intel(dom, cat)
                 m = merged.setdefault((r["agent_id"], dom, cat), {
                     "agent_id": r["agent_id"], "domain": dom, "category": cat, **{k: 0 for k in sum_keys},
                     **({max_key: ""} if max_key else {}),
@@ -1590,16 +1612,23 @@ class DatabaseManager:
             dom, cat = _normalize_domain(r["domain"], r["app_name"] or "", (r["category"] or "OTHER").upper())
             if not dom:
                 continue
+            orig_dom = dom
+            dom, cat, _entry, _raw = _canonical_intel(dom, cat, r["app_name"] or "")
             if category and category != "ALL" and cat != category:
                 continue
-            if q_low and not any(q_low in str(v or "").lower() for v in (dom, r["domain"], r["app_name"], r["alias"], r["hostname"])):
+            if q_low and not any(q_low in str(v or "").lower() for v in (dom, orig_dom, r["domain"], r["app_name"], r["alias"], r["hostname"])):
                 continue
             key = (r["agent_id"], dom)
             app = (r["app_name"] or "").strip()
             m = merged.get(key)
             if m is None:
-                merged[key] = {**r, "domain": dom, "category": cat, "_apps": {app: r["estimated_bytes"] or 0} if app else {}}
+                merged[key] = {**r, "domain": dom, "category": cat, "_apps": {app: r["estimated_bytes"] or 0} if app else {},
+                               "_raws": {_raw} if _raw else set(), "_intel": _entry if _raw else None}
                 continue
+            if _raw:
+                m["_raws"].add(_raw)
+                if not m.get("_intel"):
+                    m["_intel"] = _entry
             if app:
                 m["_apps"][app] = m["_apps"].get(app, 0) + (r["estimated_bytes"] or 0)
             m["hit_count"] += r["hit_count"] or 0
@@ -1622,10 +1651,23 @@ class DatabaseManager:
             m["apps_list"] = ", ".join(a for a, _ in ranked)
         out = sorted(merged.values(), key=lambda x: (x["estimated_bytes"], x["hit_count"]), reverse=True)[:max_rows]
         for row in out:
+            raws = sorted(row.pop("_raws", set()))
+            ip_entry = row.pop("_intel", None)
             entry = get_or_enqueue_intel(row["domain"], row.get("app_name") or "")
             row.update(intel_public_view(entry))
-            if not row["raw_target"] and entry.get("is_ip"):
+            if ip_entry:
+                pv = intel_public_view(ip_entry)
+                for k, v in pv.items():
+                    if k != "raw_target" and v and not row.get(k):
+                        row[k] = v
+                if not row.get("org_name") and ip_entry.get("org_name"):
+                    row["org_name"] = ip_entry["org_name"]
+            if raws:
+                row["raw_target"] = ", ".join(raws)
+            elif not row["raw_target"] and entry.get("is_ip"):
                 row["raw_target"] = row["domain"]
+            if raws and not row.get("resolved_domain"):
+                row["resolved_domain"] = row["domain"]
             if (row.get("category") or "OTHER") == "OTHER" and entry.get("category") not in (None, "", "OTHER"):
                 row["category"] = entry["category"]
         return out
