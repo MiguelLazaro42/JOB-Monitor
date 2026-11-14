@@ -1644,7 +1644,7 @@ async def ota_update_agents(request: Request):
             s_key = f"ota_sh_{ag.agent_id[:12]}"
             await hub.send_to_agent(ag.agent_id, {"type": "shell_open", "session_key": s_key, "shell_type": "sh"})
             async def _legacy_restart(aid: str, sk: str):
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(2.5)
                 cmd = (
                     "STAGE=$(ls -t /tmp/agent_ota_stage*.py 2>/dev/null | head -n 1); "
                     "if [ -n \"$STAGE\" ] && [ -s \"$STAGE\" ]; then "
@@ -1653,17 +1653,12 @@ async def ota_update_agents(request: Request):
                     "if [ -d \"/Applications/JOB-Monitor Agent.app/Contents/Resources\" ]; then "
                     "cp -f \"$STAGE\" \"/Applications/JOB-Monitor Agent.app/Contents/Resources/agent.py\" 2>/dev/null; "
                     "rm -f \"/Applications/JOB-Monitor Agent.app/Contents/Resources/agent_\"*.py 2>/dev/null; fi; "
-                    "for p in $(pgrep -f 'JOBMonitorAgent|agent\\.py' 2>/dev/null); do "
-                    "f=$(lsof -p $p 2>/dev/null | awk '/agent\\.py/{print $NF; exit}'); "
-                    "if [ -n \"$f\" ] && [ -f \"$f\" ]; then cp -f \"$STAGE\" \"$f\" 2>/dev/null; fi; "
-                    "done; "
                     "rm -f /tmp/agent_ota_stage*.py 2>/dev/null; "
-                    "(sleep 0.6 && pkill -f 'JOBMonitorAgent|agent\\.py') >/dev/null 2>&1 & "
+                    "killall -9 JOBMonitorAgent >/dev/null 2>&1; "
+                    "pkill -9 -f 'agent\\.py' >/dev/null 2>&1; "
                     "fi\n"
                 )
                 await hub.send_to_agent(aid, {"type": "shell_input", "session_key": sk, "data": cmd})
-                await asyncio.sleep(1.2)
-                await hub.send_to_agent(aid, {"type": "shell_close", "session_key": sk})
             asyncio.create_task(_legacy_restart(ag.agent_id, s_key))
         results.append({
             "agent_id": ag.agent_id,
