@@ -1334,7 +1334,7 @@ async def get_metrics(
 
     metrics = db.get_daily_metrics(date_str=date, allowed_tenant_id=allowed_tid)
     for item in metrics:
-        live_ag = hub.agents.get(item["agent_id"])
+        live_ag = _live_member(item)
         if live_ag:
             item["is_online"] = True
             item["activity_status"] = live_ag.activity_status
@@ -1440,6 +1440,29 @@ async def export_logs_csv(
     )
 
 
+_ACTIVITY_RANK = {"active": 3, "idle": 2, "away": 1}
+
+
+def _live_members(item: dict) -> list:
+    """Agentes en vivo de un equipo fisico consolidado (todas sus sesiones / usuarios del SO)."""
+    ids = item.get("member_agent_ids") or [item.get("agent_id")]
+    out = []
+    for aid in ids:
+        ag = hub.agents.get(aid) if aid else None
+        if ag is not None and ag not in out:
+            out.append(ag)
+    return out
+
+
+def _live_member(item: dict):
+    """Agente en vivo representativo del equipo fisico: el de mayor actividad, prefiriendo el principal."""
+    lives = _live_members(item)
+    if not lives:
+        return None
+    primary = item.get("agent_id")
+    return max(lives, key=lambda a: (_ACTIVITY_RANK.get(a.activity_status, 0), a.agent_id == primary))
+
+
 @app.get("/api/network/summary")
 async def get_network_summary(
     request: Request,
@@ -1453,10 +1476,10 @@ async def get_network_summary(
         allowed_tid = user["tenant_id"]
     summary = db.get_network_dashboard_summary(date_str=date, allowed_tenant_id=allowed_tid)
     for c in summary["clients"]:
-        live = hub.agents.get(c["agent_id"])
-        c["is_online"] = bool(live)
-        c["rx_kbps"] = live.rx_kbps if live else 0.0
-        c["tx_kbps"] = live.tx_kbps if live else 0.0
+        lives = _live_members(c)
+        c["is_online"] = bool(lives)
+        c["rx_kbps"] = sum(a.rx_kbps for a in lives)
+        c["tx_kbps"] = sum(a.tx_kbps for a in lives)
     return {"ok": True, **summary}
 
 
@@ -1481,45 +1504,70 @@ async def get_command_dashboard(
     net_summary = db.get_network_dashboard_summary(date_str=date, allowed_tenant_id=allowed_tid)
     recent_events = db.query_logs(agent_id="ALL", category="ALL", search_q="", limit=20, allowed_tenant_id=allowed_tid)
 
-    net_by_agent = {c["agent_id"]: c for c in net_summary.get("clients", [])}
+    net_by_agent: Dict[str, dict] = {}
+    for c in net_summary.get("clients", []):
+        for mid in (c.get("member_agent_ids") or [c["agent_id"]]):
+            net_by_agent.setdefault(mid, c)
+        net_by_agent[c["agent_id"]] = c
 
-    # 1. Estado en vivo de la flota
+    # 1. Estado en vivo de la flota (sobre equipos fisicos consolidados)
     is_super = user["role"] == "superadmin"
     live_agents = [
         a for a in hub.agents.values()
         if is_super or a.tenant_id == allowed_tid
     ]
-    online_ids = {a.agent_id for a in live_agents}
     status_counts = {"active": 0, "idle": 0, "away": 0}
-    for a in live_agents:
-        status_counts[a.activity_status] = status_counts.get(a.activity_status, 0) + 1
-    known_devices = db.get_all_known_devices(allowed_tenant_id=allowed_tid)
-    multi_session = sum(1 for a in live_agents if "-S" in a.agent_id)
+    online_physical = 0
+    multi_session = 0
+    for m in metrics:
+        lives = _live_members(m)
+        if lives:
+            online_physical += 1
+            rep = _live_member(m)
+            status_counts[rep.activity_status] = status_counts.get(rep.activity_status, 0) + 1
+        if int(m.get("sessions_count") or 1) > 1 or any("-S" in a.agent_id for a in lives):
+            multi_session += 1
     recent_thumbs = [
         {"agent_id": a.agent_id, "alias": a.alias, "thumbnail": a.thumbnail_b64, "activity_status": a.activity_status}
         for a in sorted(live_agents, key=lambda x: x.last_seen, reverse=True)[:8]
         if a.thumbnail_b64
     ]
     fleet = {
-        "total_devices": len(known_devices),
-        "online": len(online_ids),
+        "total_devices": len(metrics),
+        "online": online_physical,
         "active": status_counts.get("active", 0),
         "idle": status_counts.get("idle", 0),
         "away": status_counts.get("away", 0),
-        "offline": sum(1 for d in known_devices if d["agent_id"] not in online_ids),
+        "offline": max(0, len(metrics) - online_physical),
         "multi_session": multi_session,
         "recent_thumbnails": recent_thumbs,
     }
 
-    # 2. Matriz Productividad + Red por colaborador
+    # 2. Matriz Productividad + Red por colaborador (un registro por equipo fisico)
     collaborators_matrix = []
     for m in metrics:
         aid = m["agent_id"]
-        live = hub.agents.get(aid)
+        lives = _live_members(m)
+        live = _live_member(m)
         nc = net_by_agent.get(aid, {})
         top_protos = (nc.get("protocols_l7") or [])[:4]
+        top_flows = nc.get("top_flows") or []
+        top_apps = (m.get("top_apps") or [])[:5]
+        if not top_apps and top_flows:
+            app_bytes: Dict[str, int] = {}
+            for f in top_flows:
+                app_bytes[f["app_name"]] = app_bytes.get(f["app_name"], 0) + int(f.get("rx_bytes", 0)) + int(f.get("tx_bytes", 0))
+            tot = sum(app_bytes.values()) or 1
+            top_apps = [
+                {"app_name": n, "seconds": 0, "percent": max(1, round(100 * b / tot)),
+                 "category": "Navegacion General", "switches_count": 0, "source": "network", "net_bytes": b}
+                for n, b in sorted(app_bytes.items(), key=lambda kv: kv[1], reverse=True)[:5]
+            ]
         collaborators_matrix.append({
             "agent_id": aid,
+            "member_agent_ids": m.get("member_agent_ids") or [aid],
+            "sessions_count": int(m.get("sessions_count") or 1),
+            "session_users": m.get("session_users") or ([m["username"]] if m.get("username") else []),
             "alias": m["alias"],
             "hostname": m["hostname"],
             "username": m["username"],
@@ -1531,11 +1579,12 @@ async def get_command_dashboard(
             "idle_seconds": m["idle_seconds"],
             "focus_score": m["focus_score"],
             "switches_count": m["switches_count"],
-            "top_apps": (m.get("top_apps") or [])[:5],
+            "top_apps": top_apps,
+            "apps_source": m.get("apps_source", "screen"),
             "net_rx_bytes": m.get("net_rx_bytes", 0),
             "net_tx_bytes": m.get("net_tx_bytes", 0),
-            "rx_kbps": live.rx_kbps if live else 0.0,
-            "tx_kbps": live.tx_kbps if live else 0.0,
+            "rx_kbps": sum(a.rx_kbps for a in lives),
+            "tx_kbps": sum(a.tx_kbps for a in lives),
             "primary_iface": nc.get("primary_iface", ""),
             "top_protocols": top_protos,
             "protocols_l7": nc.get("protocols_l7", []),
@@ -1543,27 +1592,112 @@ async def get_command_dashboard(
             "net_total_bytes": nc.get("total_bytes", 0),
             "keystrokes_total": nc.get("keystrokes_total", 0),
             "top_domain": nc.get("top_domain", ""),
+            "top_flows": top_flows,
         })
 
-    # 3. Servicios principales: cruce de Tiempo en Pantalla + Tráfico de Red + Teclas
-    services: Dict[str, dict] = {}
-    for m in metrics:
-        for app in (m.get("top_apps") or []):
-            name = str(app.get("app_name") or "").strip()
+    # 3. Servicios principales: dominios reales de red enriquecidos + apps de pantalla no representadas
+    iface_names = {"WIFI": "Wi-Fi", "ETH": "Ethernet", "VPN": "VPN", "VIRTUAL": "Virtual", "OTHER": "Red"}
+    screen_by_app: Dict[str, dict] = {}
+    for col in collaborators_matrix:
+        for app_item in col["top_apps"]:
+            name = str(app_item.get("app_name") or "").strip()
             if not name:
                 continue
-            s = services.setdefault(name.lower(), {"service": name, "screen_seconds": 0, "net_bytes": 0, "keystrokes": 0})
-            s["screen_seconds"] += int(app.get("seconds") or 0)
-            s["keystrokes"] += int(app.get("keystrokes_count") or 0)
+            sa = screen_by_app.setdefault(name.lower(), {"name": name, "seconds": 0, "category": app_item.get("category") or "", "users": []})
+            if app_item.get("source") != "network":
+                sa["seconds"] += int(app_item.get("seconds") or 0)
+            sa["users"].append(col)
+
+    def _user_ref(col: dict, b: int = 0) -> dict:
+        return {"agent_id": col["agent_id"], "alias": col["alias"] or col["hostname"] or col["agent_id"],
+                "username": col["username"] or "", "bytes": int(b)}
+
+    def _col_proto(col: dict) -> str:
+        protos = [p for p in (col.get("protocols_l7") or []) if p.get("proto_l7") and p["proto_l7"] != "Desconocido"]
+        return protos[0]["proto_l7"] if protos else "Local"
+
+    def _col_iface(col: dict) -> tuple:
+        kind = col.get("primary_iface") or "OTHER"
+        ifs = col.get("interfaces") or []
+        iname = ifs[0].get("iface", "") if ifs else ""
+        alias = col["alias"] or col["hostname"] or col["agent_id"]
+        lbl = iface_names.get(kind, "Red")
+        show_name = iname and iname != "lan0" and iname.strip().lower() not in (lbl.lower(), kind.lower())
+        return kind, (f"{alias} · {iname} ({lbl})" if show_name else f"{alias} · {lbl}")
+
+    col_by_id = {c["agent_id"]: c for c in collaborators_matrix}
+    top_services: List[dict] = []
+    used_screen_apps: Set[str] = set()
     for dom in (net_summary.get("top_domains") or []):
         name = str(dom.get("domain") or "").strip()
         if not name:
             continue
-        s = services.setdefault(name.lower(), {"service": name, "screen_seconds": 0, "net_bytes": 0, "keystrokes": 0})
-        s["net_bytes"] += int(dom.get("estimated_bytes") or 0)
+        app_name = str(dom.get("app_name") or "").strip() or "Servicios del Sistema"
+        users = [u for u in (dom.get("users") or []) if u.get("agent_id")]
+        if not users:
+            continue
+        first_col = col_by_id.get(users[0]["agent_id"]) or {}
+        screen_secs = 0
+        sa = screen_by_app.get(app_name.lower())
+        if sa and app_name.lower() not in used_screen_apps:
+            screen_secs = sa["seconds"]
+            used_screen_apps.add(app_name.lower())
+        rx = int(dom.get("rx_bytes") or 0)
+        tx = int(dom.get("tx_bytes") or 0)
+        kind = dom.get("iface_kind") or first_col.get("primary_iface") or "OTHER"
+        iface_client = dom.get("iface_client") or (_col_iface(first_col)[1] if first_col else "")
+        proto = dom.get("proto_l7") or ""
+        if not proto or proto == "Desconocido":
+            proto = _col_proto(first_col) if first_col else "Desconocido"
+        top_services.append({
+            "service": name,
+            "kind": "domain",
+            "app_name": app_name,
+            "category": dom.get("category_label") or "Otros",
+            "category_code": dom.get("category_code") or "OTHER",
+            "proto_l7": proto,
+            "iface_kind": kind,
+            "iface_client": iface_client,
+            "users": users,
+            "rx_bytes": rx,
+            "tx_bytes": tx,
+            "net_bytes": rx + tx or int(dom.get("estimated_bytes") or 0),
+            "screen_seconds": screen_secs,
+            "keystrokes": int(dom.get("keystrokes_count") or 0),
+            "favicon_url": dom.get("favicon_url", ""),
+        })
+    represented_apps = {s["app_name"].lower() for s in top_services}
+    for key, sa in screen_by_app.items():
+        if key in represented_apps or not sa["users"]:
+            continue
+        owner = max(sa["users"], key=lambda c: int(c.get("active_seconds") or 0))
+        flows = [f for c in sa["users"] for f in (c.get("top_flows") or []) if str(f.get("app_name") or "").lower() == key]
+        rx = sum(int(f.get("rx_bytes") or 0) for f in flows)
+        tx = sum(int(f.get("tx_bytes") or 0) for f in flows)
+        best_flow = max(flows, key=lambda f: int(f.get("rx_bytes") or 0) + int(f.get("tx_bytes") or 0), default=None)
+        kind, iface_client = _col_iface(owner)
+        if best_flow and best_flow.get("iface_kind"):
+            kind = best_flow["iface_kind"]
+        top_services.append({
+            "service": (best_flow or {}).get("domain") or owner.get("top_domain") or sa["name"],
+            "kind": "app",
+            "app_name": sa["name"],
+            "category": sa["category"] or "Productividad y Gestion",
+            "category_code": "",
+            "proto_l7": (best_flow or {}).get("proto_l7") or _col_proto(owner),
+            "iface_kind": kind,
+            "iface_client": iface_client,
+            "users": [_user_ref(c) for c in sa["users"]],
+            "rx_bytes": rx,
+            "tx_bytes": tx,
+            "net_bytes": rx + tx,
+            "screen_seconds": sa["seconds"],
+            "keystrokes": 0,
+            "favicon_url": "",
+        })
     top_services = sorted(
-        services.values(), key=lambda x: (x["net_bytes"] + x["screen_seconds"] * 1024), reverse=True
-    )[:15]
+        top_services, key=lambda x: (x["net_bytes"] + x["screen_seconds"] * 1024), reverse=True
+    )[:20]
 
     # 4. Protocolos L7 e interfaces + alertas de seguridad
     security_alerts = []

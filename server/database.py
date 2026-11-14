@@ -93,6 +93,187 @@ def _merge_shared_cdn_rows(rows: list) -> list:
     return [r for i, r in enumerate(out) if i not in drop]
 
 
+# ---------------------------------------------------------------------------
+# Consolidacion de equipo fisico (varias sesiones / usuarios del SO en la misma maquina)
+# ---------------------------------------------------------------------------
+_GENERIC_HOSTNAMES = {"", "localhost", "localhost.localdomain", "equipo registrado", "unknown", "---", "none", "null", "n/a"}
+
+
+def _dev_get(dev, key: str, default=""):
+    try:
+        val = dev[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+    return default if val is None else val
+
+
+def _physical_device_keys(dev) -> List[str]:
+    """Claves que identifican al equipo fisico: hostname no generico y/o (alias, local_ip)."""
+    tid = str(_dev_get(dev, "tenant_id") or MASTER_TENANT_ID).strip().lower()
+    keys = []
+    host = str(_dev_get(dev, "hostname")).strip().lower()
+    if host and host not in _GENERIC_HOSTNAMES:
+        keys.append(f"{tid}|h:{host}")
+    alias = str(_dev_get(dev, "alias")).strip().lower()
+    ip = str(_dev_get(dev, "local_ip")).strip().lower()
+    if alias and alias not in _GENERIC_HOSTNAMES and ip and ip not in ("0.0.0.0", "127.0.0.1", "---"):
+        keys.append(f"{tid}|a:{alias}|{ip}")
+    return keys
+
+
+def _physical_device_key(dev) -> str:
+    """Clave principal del equipo fisico (hostname normalizado o alias+IP; si no, el propio agent_id)."""
+    keys = _physical_device_keys(dev)
+    return keys[0] if keys else f"id:{_dev_get(dev, 'agent_id')}"
+
+
+def _group_physical_devices(devices_rows) -> dict:
+    """Agrupa filas de `devices` del mismo equipo fisico.
+    Devuelve {"groups": {primary_id: info}, "alias_to_primary_id": {agent_id: primary_id}, "order": [primary_id...]}.
+    info = {primary_dev, member_agent_ids, session_users, sessions_count, username, is_online, last_seen_at}."""
+    devs = [dict(d) for d in devices_rows]
+    parent = list(range(len(devs)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    owner: Dict[str, int] = {}
+    for i, d in enumerate(devs):
+        for k in _physical_device_keys(d):
+            if k in owner:
+                ra, rb = find(owner[k]), find(i)
+                if ra != rb:
+                    parent[rb] = ra
+            else:
+                owner[k] = i
+
+    clusters: Dict[int, List[dict]] = {}
+    for i, d in enumerate(devs):
+        clusters.setdefault(find(i), []).append(d)
+
+    groups: Dict[str, dict] = {}
+    alias_map: Dict[str, str] = {}
+    order: List[str] = []
+    for root in sorted(clusters):
+        members = clusters[root]
+        # Representante: en linea primero, luego last_seen_at mas reciente; desempate estable por agent_id
+        ranked = sorted(
+            members,
+            key=lambda m: (int(_dev_get(m, "is_online", 0) or 0), str(_dev_get(m, "last_seen_at")), str(_dev_get(m, "agent_id"))),
+            reverse=True,
+        )
+        primary = ranked[0]
+        pid = primary["agent_id"]
+        users: List[str] = []
+        seen_u = set()
+        for m in members:  # orden original de `devices` (alias ASC)
+            u = str(_dev_get(m, "username")).strip()
+            if u and u != "---" and u.lower() not in seen_u:
+                seen_u.add(u.lower())
+                users.append(u)
+        member_ids = [m["agent_id"] for m in ranked]
+        for mid in member_ids:
+            alias_map[mid] = pid
+        groups[pid] = {
+            "primary_dev": primary,
+            "member_agent_ids": member_ids,
+            "session_users": users,
+            "sessions_count": len(member_ids),
+            "username": " / ".join(users) if users else str(_dev_get(primary, "username")),
+            "is_online": any(int(_dev_get(m, "is_online", 0) or 0) for m in members),
+            "last_seen_at": max(str(_dev_get(m, "last_seen_at")) for m in members),
+        }
+        order.append(pid)
+    order.sort(key=lambda p: (str(_dev_get(groups[p]["primary_dev"], "alias")).lower(), p))
+    return {"groups": groups, "alias_to_primary_id": alias_map, "order": order}
+
+
+_FRIENDLY_APP_RULES = (
+    # (predicado sobre el nombre en minusculas, nombre limpio)
+    (lambda a: a in ("chrome.exe", "chrome", "google chrome") or a.startswith("google chrome helper"), "Google Chrome"),
+    (lambda a: a in ("msedge.exe", "msedgewebview2.exe", "msedge", "microsoft edge") or a.startswith("microsoft edge helper"), "Microsoft Edge"),
+    (lambda a: a.startswith("com.apple.webkit") or a.startswith("com.apple.safari") or a == "safari", "Safari"),
+    (lambda a: a in ("spotify.exe", "spotify") or a.startswith("spotify helper"), "Spotify"),
+    (lambda a: a.replace("‎", "").strip() in ("whatsapp.exe", "whatsapp") or a.replace("‎", "").startswith("whatsapp helper"), "WhatsApp"),
+    (lambda a: a in ("agy", "electron", "antigravity") or a.startswith("code helper") or a.startswith("antigravity helper")
+        or bool(re.fullmatch(r"\d+\.\d+\.\d+", a)), "Antigravity IDE"),
+    (lambda a: a in ("googledrivefs.exe", "googledrivefs", "google drive"), "Google Drive"),
+    (lambda a: a in ("pythonw.exe", "python.exe", "jobmonitoragent", "job-monitor agent", "python3", "python") or a.startswith("python3."), "Agente JOB-Monitor"),
+    (lambda a: a in ("cloudd", "nsurlsessiond", "rapportd", "apsd", "mdnsresponder", "trustd", "svchost.exe", "system",
+                     "backgroundtaskhost.exe", "searchhost.exe", "runtimebroker.exe", "lsass.exe", "services.exe",
+                     "akd", "identityservicesd", "parsecd", "assistantd", "com.apple.geod", "searchtoold"), "Servicios del Sistema"),
+)
+
+
+@lru_cache(maxsize=4096)
+def _friendly_app_name(raw_app: str, domain: str = "") -> str:
+    """Normaliza procesos tecnicos/sistema a un nombre de aplicacion legible."""
+    raw = (raw_app or "").replace("‎", "").replace("‏", "").strip()
+    low = raw.lower()
+    if not low:
+        return ""
+    for pred, name in _FRIENDLY_APP_RULES:
+        try:
+            if pred(low):
+                return name
+        except Exception:
+            continue
+    if low.endswith(".exe"):
+        base = raw[:-4]
+        return base[:1].upper() + base[1:] if base else raw
+    return raw
+
+
+_NET_CATEGORY_LABELS = {
+    "STREAMING": "Streaming / Video",
+    "SOCIAL": "Redes Sociales",
+    "MESSAGING": "Mensajería",
+    "AI": "Inteligencia Artificial",
+    "GAMING": "Videojuegos",
+    "SHOPPING": "Compras / E-commerce",
+    "CLOUD": "Almacenamiento Cloud",
+    "REMOTE": "Acceso Remoto",
+    "WORK": "Desarrollo / Trabajo",
+    "SYSTEM": "Sistema / Actualizaciones",
+    "OTHER": "Otros",
+}
+
+# Categoria de red -> categoria de productividad (Tiempo en Pantalla)
+_NET_TO_FOCUS_CATEGORY = {
+    "STREAMING": "Entretenimiento y Redes",
+    "SOCIAL": "Entretenimiento y Redes",
+    "GAMING": "Entretenimiento y Redes",
+    "SHOPPING": "Entretenimiento y Redes",
+    "MESSAGING": "Comunicacion",
+    "AI": "Desarrollo y Sistemas",
+    "WORK": "Desarrollo y Sistemas",
+    "REMOTE": "Desarrollo y Sistemas",
+    "CLOUD": "Productividad y Gestion",
+    "SYSTEM": "Navegacion General",
+    "OTHER": "Navegacion General",
+}
+
+_IFACE_KIND_LABELS = {"WIFI": "Wi-Fi", "ETH": "Ethernet", "VPN": "VPN", "VIRTUAL": "Virtual", "OTHER": "Red"}
+_BACKGROUND_FRIENDLY_APPS = {"Servicios del Sistema", "Agente JOB-Monitor"}
+
+
+def _net_category_label(cat: str) -> str:
+    c = (cat or "OTHER").upper()
+    return _NET_CATEGORY_LABELS.get(c, c.title() if c else "Otros")
+
+
+def _top_weighted(d: Dict[str, float], skip=()) -> str:
+    """Clave con mayor peso de un dict {clave: peso}, priorizando claves no vacias ni de fondo."""
+    items = [(k, v) for k, v in d.items() if k]
+    if not items:
+        return ""
+    items.sort(key=lambda kv: (kv[0] in skip, -kv[1]))
+    return items[0][0]
+
+
 def hash_password(plain: str) -> str:
     salt = secrets.token_hex(16)
     dk = hashlib.pbkdf2_hmac("sha256", plain.encode("utf-8"), salt.encode("utf-8"), 120_000)
@@ -1566,6 +1747,65 @@ class DatabaseManager:
             print(f"[Network] Backfill de sitios desde logs WINDOW falló: {e}")
         return inserted
 
+    def _load_physical_groups(self, conn, allowed_tenant_id: Optional[str] = None):
+        """Carga `devices` (filtrado por tenant) y los agrupa por equipo fisico."""
+        if allowed_tenant_id:
+            devices = conn.execute(
+                "SELECT * FROM devices WHERE tenant_id = ? ORDER BY alias ASC", (allowed_tenant_id,)
+            ).fetchall()
+        else:
+            devices = conn.execute("SELECT * FROM devices ORDER BY alias ASC").fetchall()
+        return devices, _group_physical_devices(devices)
+
+    @staticmethod
+    def _merge_interfaces(lists: List[List[dict]]) -> List[dict]:
+        """Une las interfaces de varias sesiones del mismo equipo fisico (por nombre de adaptador)."""
+        merged: Dict[str, dict] = {}
+        for lst in lists:
+            for it in lst or []:
+                key = it.get("iface") or it.get("label") or "iface"
+                m = merged.get(key)
+                if m is None:
+                    merged[key] = dict(it)
+                    continue
+                m["rx_bytes"] += int(it.get("rx_bytes") or 0)
+                m["tx_bytes"] += int(it.get("tx_bytes") or 0)
+                m["total_bytes"] += int(it.get("total_bytes") or 0)
+                m["peak_rx_kbps"] = max(float(m.get("peak_rx_kbps") or 0), float(it.get("peak_rx_kbps") or 0))
+                m["peak_tx_kbps"] = max(float(m.get("peak_tx_kbps") or 0), float(it.get("peak_tx_kbps") or 0))
+                for k in ("ip", "mac", "label"):
+                    if not m.get(k) and it.get(k):
+                        m[k] = it[k]
+                if (m.get("kind") or "OTHER") == "OTHER" and it.get("kind"):
+                    m["kind"] = it["kind"]
+                if (it.get("last_seen_at") or "") > (m.get("last_seen_at") or ""):
+                    m["last_seen_at"] = it.get("last_seen_at") or ""
+        out = list(merged.values())
+        out.sort(key=lambda x: x["total_bytes"], reverse=True)
+        return out
+
+    @staticmethod
+    def _inferred_interface(dev: dict, rx: int, tx: int) -> dict:
+        """Interfaz por defecto cuando el agente aun no reporto network_interfaces_daily."""
+        local_ip = str(_dev_get(dev, "local_ip")).strip()
+        os_ver = str(_dev_get(dev, "os_version")).lower()
+        host = str(_dev_get(dev, "hostname")).lower()
+        kind = "WIFI" if ("mac" in os_ver or "darwin" in os_ver or "laptop" in host or "macbook" in host) else "ETH"
+        return {
+            "iface": "lan0",
+            "label": f"Adaptador LAN/Wi-Fi ({local_ip})" if local_ip else "Adaptador LAN/Wi-Fi",
+            "kind": kind,
+            "ip": local_ip,
+            "mac": "",
+            "rx_bytes": int(rx),
+            "tx_bytes": int(tx),
+            "total_bytes": int(rx) + int(tx),
+            "peak_rx_kbps": 0.0,
+            "peak_tx_kbps": 0.0,
+            "last_seen_at": str(_dev_get(dev, "last_seen_at")),
+            "inferred": True,
+        }
+
     def get_network_dashboard_summary(
         self,
         date_str: Optional[str] = None,
@@ -1578,16 +1818,8 @@ class DatabaseManager:
         with self._lock:
             conn = self._get_conn()
             try:
-                if allowed_tenant_id:
-                    devices = conn.execute(
-                        "SELECT * FROM devices WHERE tenant_id = ? ORDER BY alias ASC", (allowed_tenant_id,)
-                    ).fetchall()
-                else:
-                    devices = conn.execute("SELECT * FROM devices ORDER BY alias ASC").fetchall()
-                usage = {
-                    r["agent_id"]: dict(r)
-                    for r in conn.execute("SELECT * FROM network_usage_daily WHERE date = ?", (day,)).fetchall()
-                }
+                devices, grouping = self._load_physical_groups(conn, allowed_tenant_id)
+                usage_raw = conn.execute("SELECT * FROM network_usage_daily WHERE date = ?", (day,)).fetchall()
                 dom_rows = conn.execute(
                     """
                     SELECT agent_id, domain, category, hit_count AS hits, estimated_bytes AS est,
@@ -1598,7 +1830,10 @@ class DatabaseManager:
                                 THEN CAST(estimated_bytes * 0.85 AS INTEGER) ELSE COALESCE(rx_bytes, 0) END AS rx,
                            CASE WHEN COALESCE(rx_bytes, 0) + COALESCE(tx_bytes, 0) = 0 AND estimated_bytes > 0
                                 THEN estimated_bytes - CAST(estimated_bytes * 0.85 AS INTEGER) ELSE COALESCE(tx_bytes, 0) END AS tx,
-                           COALESCE(direction, 'OUTBOUND') AS direction, COALESCE(port, 443) AS port
+                           COALESCE(direction, 'OUTBOUND') AS direction, COALESCE(port, 443) AS port,
+                           COALESCE(app_name, '') AS app,
+                           COALESCE(NULLIF(proto_l7, ''), 'Desconocido') AS proto,
+                           COALESCE(iface, '') AS iface, COALESCE(iface_kind, '') AS iface_kind
                     FROM network_domains_daily WHERE date = ?
                     """,
                     (day,),
@@ -1628,15 +1863,34 @@ class DatabaseManager:
             finally:
                 conn.close()
 
+        amap: Dict[str, str] = grouping["alias_to_primary_id"]
+        groups: Dict[str, dict] = grouping["groups"]
+
+        # Consumo diario consolidado por equipo fisico
+        usage: Dict[str, dict] = {}
+        for r in usage_raw:
+            pid = amap.get(r["agent_id"])
+            if not pid:
+                continue
+            u = usage.setdefault(pid, {"rx_bytes": 0, "tx_bytes": 0, "peak_rx_kbps": 0.0, "peak_tx_kbps": 0.0})
+            u["rx_bytes"] += int(r["rx_bytes"] or 0)
+            u["tx_bytes"] += int(r["tx_bytes"] or 0)
+            u["peak_rx_kbps"] = max(u["peak_rx_kbps"], float(r["peak_rx_kbps"] or 0))
+            u["peak_tx_kbps"] = max(u["peak_tx_kbps"], float(r["peak_tx_kbps"] or 0))
+
         def _merge_rows(rows, sum_keys, max_key=None, extras=False):
             merged: Dict[tuple, dict] = {}
             for r in rows:
-                dom, cat = _normalize_domain(r["domain"], "", (r["category"] or "OTHER").upper())
+                pid = amap.get(r["agent_id"])
+                if not pid:
+                    continue
+                app_raw = r["app"] if extras else ""
+                dom, cat = _normalize_domain(r["domain"], app_raw or "", (r["category"] or "OTHER").upper())
                 if not dom:
                     continue
                 dom, cat, _e, _raw = _canonical_intel(dom, cat)
-                m = merged.setdefault((r["agent_id"], dom, cat), {
-                    "agent_id": r["agent_id"], "domain": dom, "category": cat, **{k: 0 for k in sum_keys},
+                m = merged.setdefault((pid, dom, cat), {
+                    "agent_id": pid, "domain": dom, "category": cat, **{k: 0 for k in sum_keys},
                     **({max_key: ""} if max_key else {}),
                 })
                 for k in sum_keys:
@@ -1644,6 +1898,18 @@ class DatabaseManager:
                 if max_key and (r[max_key] or "") > m[max_key]:
                     m[max_key] = r[max_key] or ""
                 if extras:
+                    w = (r["rx"] or 0) + (r["tx"] or 0) or (r["est"] or 0) or (r["hits"] or 0) or 1
+                    fa = _friendly_app_name(app_raw or "", dom)
+                    if fa:
+                        apps = m.setdefault("_apps", {})
+                        apps[fa] = apps.get(fa, 0) + w
+                    protos = m.setdefault("_protos", {})
+                    pr = r["proto"] or "Desconocido"
+                    protos[pr] = protos.get(pr, 0) + w
+                    ifs = m.setdefault("_ifaces", {})
+                    ik = (r["iface"] or "", (r["iface_kind"] or "").upper())
+                    if ik != ("", ""):
+                        ifs[ik] = ifs.get(ik, 0) + w
                     if r["direction"] == "INBOUND":
                         m["direction"], m["port"] = "INBOUND", r["port"] or 443
                     else:
@@ -1657,56 +1923,34 @@ class DatabaseManager:
                     m.setdefault("focus", "")
                     if ls > m.get("last_seen", ""):
                         m["last_seen"] = ls
+            for m in merged.values():
+                if extras:
+                    m.setdefault("_apps", {})
+                    m.setdefault("_protos", {})
+                    m.setdefault("_ifaces", {})
+                    m["app_name"] = _top_weighted(m["_apps"], _BACKGROUND_FRIENDLY_APPS)
+                    m["proto_l7"] = _top_weighted(m["_protos"], ("Desconocido",)) or "Desconocido"
+                    best_if = _top_weighted({f"{k[0]}\x1f{k[1]}": v for k, v in m["_ifaces"].items()})
+                    m["iface"], m["iface_kind"] = (best_if.split("\x1f", 1) if best_if else ("", ""))
             return list(merged.values())
 
         dom_rows = _merge_rows(dom_rows, ("hits", "est", "keys", "rx", "tx"), extras=True)
         recent_rows = _merge_rows(recent_rows, (), "last_seen")
-        valid_ids = {d["agent_id"] for d in devices}
         by_agent: Dict[str, List[dict]] = {}
-        global_domains: Dict[str, dict] = {}
-        categories: Dict[str, dict] = {}
-        packet_types: Dict[str, dict] = {}
-        inbound_flows_count = 0
         for r in dom_rows:
-            if r["agent_id"] not in valid_ids:
-                continue
             by_agent.setdefault(r["agent_id"], []).append(r)
-            g = global_domains.setdefault(r["domain"], {
-                "domain": r["domain"], "category": r["category"], "hits": 0, "estimated_bytes": 0,
-                "keystrokes_count": 0, "last_packet_type": "", "focus_app": "", "confidence": 0, "_ls": "",
-                "rx_bytes": 0, "tx_bytes": 0, "direction": "OUTBOUND", "port": r.get("port", 443),
-            })
-            g["rx_bytes"] += r.get("rx", 0) or 0
-            g["tx_bytes"] += r.get("tx", 0) or 0
-            if r.get("direction") == "INBOUND":
-                g["direction"], g["port"] = "INBOUND", r.get("port", 443)
-                inbound_flows_count += 1
-            g["hits"] += r["hits"] or 0
-            g["estimated_bytes"] += r["est"] or 0
-            g["keystrokes_count"] += r.get("keys", 0) or 0
-            g["confidence"] = max(g["confidence"], r.get("conf", 0) or 0)
-            if r.get("ptype") and r.get("_ls", "") >= g["_ls"]:
-                g["_ls"], g["last_packet_type"], g["focus_app"] = r["_ls"], r["ptype"], r.get("focus", "")
-            if r.get("ptype"):
-                pt = packet_types.setdefault(r["ptype"], {"packet_type": r["ptype"], "estimated_bytes": 0, "hits": 0, "keystrokes": 0})
-                pt["estimated_bytes"] += r["est"] or 0
-                pt["hits"] += r["hits"] or 0
-                pt["keystrokes"] += r.get("keys", 0) or 0
-            c = categories.setdefault(r["category"] or "OTHER", {"category": r["category"] or "OTHER", "hits": 0, "estimated_bytes": 0})
-            c["hits"] += r["hits"] or 0
-            c["estimated_bytes"] += r["est"] or 0
 
-        # MF-06: agregación de protocolos L7 (por agente y global)
+        # MF-06: agregación de protocolos L7 (por equipo fisico y global)
         proto_by_agent: Dict[str, Dict[str, dict]] = {}
         global_protocols: Dict[str, dict] = {}
         for pr in proto_rows:
-            aid = pr["agent_id"]
-            if aid not in valid_ids:
+            pid = amap.get(pr["agent_id"])
+            if not pid:
                 continue
             proto = pr["proto"] or "Desconocido"
             pbytes = int(pr["bytes"] or 0)
             phits = int(pr["hits"] or 0)
-            a_map = proto_by_agent.setdefault(aid, {})
+            a_map = proto_by_agent.setdefault(pid, {})
             pe = a_map.setdefault(proto, {"proto_l7": proto, "bytes": 0, "connections": 0})
             pe["bytes"] += pbytes
             pe["connections"] += phits
@@ -1721,12 +1965,20 @@ class DatabaseManager:
                 it["percent"] = round(100.0 * it["bytes"] / tot, 1)
             return items
 
-        # MF-06: interfaces de red por agente y global (consulta fuera del lock anterior)
-        iface_by_agent = self.get_network_interfaces_summary(date_str=day, allowed_tenant_id=allowed_tenant_id)
+        # MF-06: interfaces de red por equipo fisico (consulta fuera del lock anterior)
+        iface_raw = self.get_network_interfaces_summary(date_str=day, allowed_tenant_id=allowed_tenant_id)
+        iface_by_agent: Dict[str, List[dict]] = {}
+        for pid, info in groups.items():
+            lists = [iface_raw.get(mid, []) for mid in info["member_agent_ids"]]
+            merged_ifs = self._merge_interfaces(lists)
+            u = usage.get(pid, {})
+            rx, tx = int(u.get("rx_bytes") or 0), int(u.get("tx_bytes") or 0)
+            if not merged_ifs and (rx + tx > 0 or str(_dev_get(info["primary_dev"], "local_ip")).strip() or by_agent.get(pid)):
+                merged_ifs = [self._inferred_interface(info["primary_dev"], rx, tx)]
+            iface_by_agent[pid] = merged_ifs
+
         global_interfaces: Dict[str, dict] = {}
-        for aid, ifs in iface_by_agent.items():
-            if aid not in valid_ids:
-                continue
+        for pid, ifs in iface_by_agent.items():
             for it in ifs:
                 kind = it["kind"]
                 gi = global_interfaces.setdefault(kind, {
@@ -1753,51 +2005,156 @@ class DatabaseManager:
             ), reverse=True)
             return cands[0]["domain"]
 
+        def _iface_text(alias: str, iface: str, kind: str) -> str:
+            lbl = _IFACE_KIND_LABELS.get((kind or "").upper(), "Red")
+            if iface and iface != "lan0" and iface.strip().lower() not in (lbl.lower(), (kind or "").lower()):
+                return f"{alias} · {iface} ({lbl})"
+            return f"{alias} · {lbl}"
+
         clients = []
+        client_by_id: Dict[str, dict] = {}
         total_rx = total_tx = 0
-        for dev in devices:
-            aid = dev["agent_id"]
-            u = usage.get(aid, {})
+        for pid in grouping["order"]:
+            info = groups[pid]
+            dev = info["primary_dev"]
+            u = usage.get(pid, {})
             rx = int(u.get("rx_bytes") or 0)
             tx = int(u.get("tx_bytes") or 0)
             total_rx += rx
             total_tx += tx
-            doms = by_agent.get(aid, [])
+            doms = by_agent.get(pid, [])
             top = max(doms, key=lambda x: (x["est"] or 0, x["hits"] or 0), default=None)
             # Los teclazos de un slice se replican en cada dominio del slice: el máximo evita contarlos N veces.
             keys_total = max((x.get("keys", 0) or 0 for x in doms), default=0)
             latest_pkt = max((x for x in doms if x.get("ptype")), key=lambda x: x.get("_ls", ""), default=None)
-            tid = dev["tenant_id"] or MASTER_TENANT_ID
-            clients.append({
-                "agent_id": aid,
-                "alias": dev["alias"],
-                "hostname": dev["hostname"],
-                "username": dev["username"],
+            tid = dev.get("tenant_id") or MASTER_TENANT_ID
+            ifaces = iface_by_agent.get(pid, [])
+            primary_kind = ifaces[0].get("kind", "") if ifaces else ""
+            primary_name = ifaces[0].get("iface", "") if ifaces else ""
+
+            flows = []
+            for x in sorted(doms, key=lambda x: ((x["rx"] or 0) + (x["tx"] or 0), x["est"] or 0, x["hits"] or 0), reverse=True):
+                flows.append({
+                    "domain": x["domain"],
+                    "app_name": x.get("app_name") or _friendly_app_name(x.get("focus") or "", x["domain"]) or "Servicios del Sistema",
+                    "category": _net_category_label(x["category"]),
+                    "category_code": (x["category"] or "OTHER").upper(),
+                    "proto_l7": x.get("proto_l7") or "Desconocido",
+                    "iface": x.get("iface") or primary_name,
+                    "iface_kind": x.get("iface_kind") or primary_kind or "OTHER",
+                    "rx_bytes": int(x["rx"] or 0),
+                    "tx_bytes": int(x["tx"] or 0),
+                    "estimated_bytes": int(x["est"] or 0),
+                    "hits": int(x["hits"] or 0),
+                })
+            client = {
+                "agent_id": pid,
+                "member_agent_ids": list(info["member_agent_ids"]),
+                "sessions_count": info["sessions_count"],
+                "session_users": list(info["session_users"]),
+                "alias": dev.get("alias"),
+                "hostname": dev.get("hostname"),
+                "username": info["username"],
+                "local_ip": dev.get("local_ip") or "",
+                "os_version": dev.get("os_version") or "",
                 "tenant_id": tid,
                 "tenant_name": tenant_names.get(tid, tid),
-                "is_online": bool(dev["is_online"]),
+                "is_online": bool(info["is_online"]),
                 "rx_bytes": rx,
                 "tx_bytes": tx,
                 "total_bytes": rx + tx,
                 "peak_rx_kbps": float(u.get("peak_rx_kbps") or 0),
                 "peak_tx_kbps": float(u.get("peak_tx_kbps") or 0),
                 "domains_count": len(doms),
-                "top_domain": _recent_top(aid) or (top["domain"] if top else ""),
+                "top_domain": _recent_top(pid) or (top["domain"] if top else ""),
                 "last_packet_type": latest_pkt["ptype"] if latest_pkt else "",
                 "keystrokes_total": int(keys_total),
-                "protocols_l7": _proto_list_with_pct({k: dict(v) for k, v in proto_by_agent.get(aid, {}).items()}),
-                "interfaces": iface_by_agent.get(aid, []),
-                "primary_iface": (iface_by_agent.get(aid, [{}])[0] or {}).get("kind", "") if iface_by_agent.get(aid) else "",
-            })
+                "protocols_l7": _proto_list_with_pct({k: dict(v) for k, v in proto_by_agent.get(pid, {}).items()}),
+                "interfaces": ifaces,
+                "primary_iface": primary_kind,
+                "top_flows": flows[:8],
+            }
+            clients.append(client)
+            client_by_id[pid] = client
         clients.sort(key=lambda c: (
             -round(c["total_bytes"] / (1024 * 1024)),
             (c["hostname"] or "").lower(),
             (c["username"] or "").lower(),
             c["agent_id"],
         ))
+
+        # Dominios globales enriquecidos con app, protocolo, interfaz y colaboradores
+        global_domains: Dict[str, dict] = {}
+        categories: Dict[str, dict] = {}
+        packet_types: Dict[str, dict] = {}
+        inbound_flows_count = 0
+        for r in dom_rows:
+            pid = r["agent_id"]
+            w = (r["rx"] or 0) + (r["tx"] or 0) or (r["est"] or 0)
+            g = global_domains.setdefault(r["domain"], {
+                "domain": r["domain"], "category": r["category"], "hits": 0, "estimated_bytes": 0,
+                "keystrokes_count": 0, "last_packet_type": "", "focus_app": "", "confidence": 0, "_ls": "",
+                "rx_bytes": 0, "tx_bytes": 0, "direction": "OUTBOUND", "port": r.get("port", 443),
+                "_apps": {}, "_protos": {}, "_ifaces": {}, "_users": {},
+            })
+            g["rx_bytes"] += r.get("rx", 0) or 0
+            g["tx_bytes"] += r.get("tx", 0) or 0
+            if r.get("direction") == "INBOUND":
+                g["direction"], g["port"] = "INBOUND", r.get("port", 443)
+                inbound_flows_count += 1
+            g["hits"] += r["hits"] or 0
+            g["estimated_bytes"] += r["est"] or 0
+            g["keystrokes_count"] += r.get("keys", 0) or 0
+            g["confidence"] = max(g["confidence"], r.get("conf", 0) or 0)
+            if r.get("ptype") and r.get("_ls", "") >= g["_ls"]:
+                g["_ls"], g["last_packet_type"], g["focus_app"] = r["_ls"], r["ptype"], r.get("focus", "")
+            for k, v in r["_apps"].items():
+                g["_apps"][k] = g["_apps"].get(k, 0) + v
+            for k, v in r["_protos"].items():
+                g["_protos"][k] = g["_protos"].get(k, 0) + v
+            cl = client_by_id.get(pid, {})
+            ik = r.get("iface_kind") or cl.get("primary_iface") or "OTHER"
+            iname = r.get("iface") or ((cl.get("interfaces") or [{}])[0].get("iface", "") if cl.get("interfaces") else "")
+            ikey = f"{pid}\x1f{iname}\x1f{ik}"
+            g["_ifaces"][ikey] = g["_ifaces"].get(ikey, 0) + (w or 1)
+            g["_users"][pid] = g["_users"].get(pid, 0) + w
+            if r.get("ptype"):
+                pt = packet_types.setdefault(r["ptype"], {"packet_type": r["ptype"], "estimated_bytes": 0, "hits": 0, "keystrokes": 0})
+                pt["estimated_bytes"] += r["est"] or 0
+                pt["hits"] += r["hits"] or 0
+                pt["keystrokes"] += r.get("keys", 0) or 0
+            c = categories.setdefault(r["category"] or "OTHER", {"category": r["category"] or "OTHER", "hits": 0, "estimated_bytes": 0})
+            c["hits"] += r["hits"] or 0
+            c["estimated_bytes"] += r["est"] or 0
+
         for g in global_domains.values():
             g.pop("_ls", None)
-        top_domains = sorted(global_domains.values(), key=lambda x: (x["estimated_bytes"], x["hits"]), reverse=True)[:10]
+            apps = g.pop("_apps", {})
+            protos = g.pop("_protos", {})
+            ifs = g.pop("_ifaces", {})
+            users = g.pop("_users", {})
+            g["category_code"] = (g["category"] or "OTHER").upper()
+            g["category_label"] = _net_category_label(g["category"])
+            g["app_name"] = _top_weighted(apps, _BACKGROUND_FRIENDLY_APPS) or _friendly_app_name(g.get("focus_app") or "", g["domain"]) or "Servicios del Sistema"
+            g["proto_l7"] = _top_weighted(protos, ("Desconocido",)) or "Desconocido"
+            best_if = _top_weighted(ifs)
+            if best_if:
+                upid, iname, ikind = best_if.split("\x1f", 2)
+                alias = (client_by_id.get(upid) or {}).get("alias") or upid
+                g["iface_kind"] = ikind or "OTHER"
+                g["iface_client"] = _iface_text(alias, iname, ikind)
+            else:
+                g["iface_kind"], g["iface_client"] = "OTHER", ""
+            g["users"] = [
+                {
+                    "agent_id": upid,
+                    "alias": (client_by_id.get(upid) or {}).get("alias") or upid,
+                    "username": (client_by_id.get(upid) or {}).get("username") or "",
+                    "bytes": int(b),
+                }
+                for upid, b in sorted(users.items(), key=lambda kv: kv[1], reverse=True)
+            ]
+        top_domains = sorted(global_domains.values(), key=lambda x: (x["rx_bytes"] + x["tx_bytes"], x["estimated_bytes"], x["hits"]), reverse=True)[:15]
         for g in top_domains:
             g.update(intel_public_view(get_or_enqueue_intel(g["domain"])))
         # Favicon del dominio destacado de cada cliente (sin consultas externas si ya es conocido).
@@ -1831,14 +2188,25 @@ class DatabaseManager:
         day = self._clean_date(date_str) or self._now_dt().strftime("%Y-%m-%d")
         self.backfill_window_sites_today()
         intel_seed()
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                _devs, grouping = self._load_physical_groups(conn, allowed_tenant_id)
+            finally:
+                conn.close()
+        amap: Dict[str, str] = grouping["alias_to_primary_id"]
+        pgroups: Dict[str, dict] = grouping["groups"]
         clauses = ["n.date = ?"]
         params: list = [day]
         if allowed_tenant_id:
             clauses.append("n.agent_id IN (SELECT agent_id FROM devices WHERE tenant_id = ?)")
             params.append(allowed_tenant_id)
         if agent_id and agent_id != "ALL":
-            clauses.append("n.agent_id = ?")
-            params.append(agent_id)
+            # Un equipo fisico incluye todas sus sesiones / usuarios del SO
+            pid = amap.get(agent_id, agent_id)
+            members = (pgroups.get(pid) or {}).get("member_agent_ids") or [agent_id]
+            clauses.append(f"n.agent_id IN ({','.join('?' for _ in members)})")
+            params.extend(members)
         # Categoría y búsqueda se aplican tras normalizar (filas históricas guardan dominios CDN crudos).
         q_low = (search_q or "").strip().lower()
         max_rows = max(1, min(5000, int(limit)))
@@ -1873,6 +2241,16 @@ class DatabaseManager:
                 conn.close()
         merged: Dict[tuple, dict] = {}
         for r in raw:
+            pid = amap.get(r["agent_id"], r["agent_id"])
+            pinfo = pgroups.get(pid)
+            if pinfo:
+                pdev = pinfo["primary_dev"]
+                r["agent_id"] = pid
+                r["alias"] = pdev.get("alias") or r["alias"]
+                r["hostname"] = pdev.get("hostname") or r["hostname"]
+                r["username"] = pinfo["username"] or r["username"]
+                r["sessions_count"] = pinfo["sessions_count"]
+            r["raw_app_name"] = r["app_name"] or ""
             dom, cat = _normalize_domain(r["domain"], r["app_name"] or "", (r["category"] or "OTHER").upper())
             if not dom:
                 continue
@@ -1883,7 +2261,7 @@ class DatabaseManager:
             if q_low and not any(q_low in str(v or "").lower() for v in (dom, orig_dom, r["domain"], r["app_name"], r["alias"], r["hostname"])):
                 continue
             key = (r["agent_id"], dom)
-            app = (r["app_name"] or "").strip()
+            app = _friendly_app_name((r["app_name"] or "").strip(), dom)
             m = merged.get(key)
             if m is None:
                 merged[key] = {**r, "domain": dom, "category": cat, "_apps": {app: r["estimated_bytes"] or 0} if app else {},
@@ -1914,9 +2292,11 @@ class DatabaseManager:
             m["confidence"] = max(m["confidence"] or 0, r["confidence"] or 0)
         for m in merged.values():
             apps = m.pop("_apps", {})
-            ranked = sorted(apps.items(), key=lambda kv: (_app_noise_rank(kv[0]), -kv[1]))
+            ranked = sorted(apps.items(), key=lambda kv: (kv[0] in _BACKGROUND_FRIENDLY_APPS, _app_noise_rank(kv[0]), -kv[1]))
             if ranked:
                 m["app_name"] = ranked[0][0]
+            elif not m.get("app_name"):
+                m["app_name"] = _friendly_app_name(m.get("focus_app") or "", m.get("domain") or "") or "Servicios del Sistema"
             m["apps_list"] = ", ".join(a for a, _ in ranked)
         out = sorted(merged.values(), key=lambda x: (x["estimated_bytes"], x["hit_count"]), reverse=True)[:max_rows]
         for row in out:
@@ -1975,31 +2355,15 @@ class DatabaseManager:
         with self._lock:
             conn = self._get_conn()
             try:
-                if allowed_tenant_id:
-                    devices_rows = conn.execute(
-                        "SELECT * FROM devices WHERE tenant_id = ? ORDER BY alias ASC",
-                        (allowed_tenant_id,),
-                    ).fetchall()
-                else:
-                    devices_rows = conn.execute("SELECT * FROM devices ORDER BY alias ASC").fetchall()
+                _devices_rows, grouping = self._load_physical_groups(conn, allowed_tenant_id)
                 summary_rows = conn.execute(
                     "SELECT * FROM daily_activity_summary WHERE date = ?",
                     (target_date,),
                 ).fetchall()
-                summary_map = {r["agent_id"]: dict(r) for r in summary_rows}
-
                 apps_rows = conn.execute(
                     "SELECT agent_id, app_name, total_seconds FROM window_usage_daily WHERE date = ? ORDER BY total_seconds DESC",
                     (target_date,),
                 ).fetchall()
-
-                apps_by_agent: Dict[str, List[dict]] = {}
-                for ar in apps_rows:
-                    apps_by_agent.setdefault(ar["agent_id"], []).append({
-                        "app_name": ar["app_name"],
-                        "seconds": ar["total_seconds"] or 0,
-                    })
-
                 # MF-BE01: agregacion horaria y switches por agente
                 hourly_rows = conn.execute(
                     """
@@ -2010,20 +2374,6 @@ class DatabaseManager:
                     """,
                     (target_date,),
                 ).fetchall()
-                hourly_by_agent: Dict[str, dict] = {}
-                for hr in hourly_rows:
-                    h = hr["hour"]
-                    if h is None or not (0 <= int(h) <= 23):
-                        continue
-                    slot = hourly_by_agent.setdefault(hr["agent_id"], {
-                        "active": [0] * 24,
-                        "idle": [0] * 24,
-                        "switches": 0,
-                    })
-                    slot["active"][int(h)] += int(hr["act"] or 0)
-                    slot["idle"][int(h)] += int(hr["idl"] or 0)
-                    slot["switches"] += int(hr["sw"] or 0)
-
                 # MF-BE02: categorias y top apps categorizadas
                 res_rows = conn.execute(
                     """
@@ -2036,15 +2386,6 @@ class DatabaseManager:
                     """,
                     (target_date,),
                 ).fetchall()
-                res_by_agent: Dict[str, List[dict]] = {}
-                for rr in res_rows:
-                    res_by_agent.setdefault(rr["agent_id"], []).append({
-                        "app_name": rr["app_name"],
-                        "category": rr["cat"] or "Productividad y Gestion",
-                        "seconds": int(rr["secs"] or 0),
-                        "switches_count": int(rr["sw"] or 0),
-                    })
-
                 # MF-BE03: consumo de red diario
                 net_rows = conn.execute(
                     """
@@ -2055,121 +2396,253 @@ class DatabaseManager:
                     """,
                     (target_date,),
                 ).fetchall()
-                net_by_agent = {
-                    nr["agent_id"]: (int(nr["rx"] or 0), int(nr["tx"] or 0)) for nr in net_rows
-                }
-
-                productive_cats = {
-                    "Productividad y Gestion",
-                    "Desarrollo y Sistemas",
-                    "Comunicacion",
-                    "Diseno y Creatividad",
-                }
-                distractor_cats = {"Entretenimiento y Redes"}
-
-                result = []
-                for dev in devices_rows:
-                    aid = dev["agent_id"]
-                    tid = dev["tenant_id"] or MASTER_TENANT_ID
-                    s = summary_map.get(aid, {
-                        "first_seen_at": "---",
-                        "active_seconds": 0,
-                        "idle_seconds": 0,
-                        "away_alerts_count": 0,
-                    })
-
-                    # Horario
-                    hslot = hourly_by_agent.get(aid)
-                    hourly_active = list(hslot["active"]) if hslot else [0] * 24
-                    hourly_idle = list(hslot["idle"]) if hslot else [0] * 24
-                    switches_total = hslot["switches"] if hslot else 0
-                    agent_res = res_by_agent.get(aid, [])
-                    if switches_total == 0 and agent_res:
-                        switches_total = sum(x["switches_count"] for x in agent_res)
-                    peak_hour = None
-                    peak_val = 0
-                    for h_idx, val in enumerate(hourly_active):
-                        if val > peak_val:
-                            peak_val = val
-                            peak_hour = h_idx
-
-                    # Apps categorizadas (fallback a window_usage_daily)
-                    if agent_res:
-                        app_items = agent_res
-                    else:
-                        app_items = [
-                            {
-                                "app_name": x["app_name"],
-                                "category": "Productividad y Gestion",
-                                "seconds": x["seconds"],
-                                "switches_count": 0,
-                            }
-                            for x in apps_by_agent.get(aid, [])
-                        ]
-                    total_app_secs = sum(x["seconds"] for x in app_items)
-                    denom = total_app_secs or 1
-
-                    cat_totals: Dict[str, int] = {}
-                    for x in app_items:
-                        cat_totals[x["category"]] = cat_totals.get(x["category"], 0) + x["seconds"]
-                    categories = [
-                        {
-                            "category": c,
-                            "seconds": secs,
-                            "percent": round((secs * 100.0) / denom) if total_app_secs else 0,
-                        }
-                        for c, secs in sorted(cat_totals.items(), key=lambda kv: kv[1], reverse=True)
-                    ]
-                    productive_seconds = sum(v for c, v in cat_totals.items() if c in productive_cats)
-                    distractor_seconds = sum(v for c, v in cat_totals.items() if c in distractor_cats)
-                    neutral_seconds = max(0, total_app_secs - productive_seconds - distractor_seconds)
-                    pd_sum = productive_seconds + distractor_seconds
-                    focus_score = round(productive_seconds * 100.0 / pd_sum) if pd_sum > 0 else None
-
-                    top_apps = []
-                    for item in app_items[:6]:
-                        pct = round((item["seconds"] * 100.0) / denom)
-                        top_apps.append({
-                            "app_name": item["app_name"],
-                            "seconds": item["seconds"],
-                            "percent": max(1, pct),
-                            "category": item["category"],
-                            "switches_count": item["switches_count"],
-                        })
-
-                    net_rx, net_tx = net_by_agent.get(aid, (0, 0))
-
-                    result.append({
-                        "agent_id": aid,
-                        "alias": dev["alias"],
-                        "hostname": dev["hostname"],
-                        "username": dev["username"],
-                        "tenant_id": tid,
-                        "tenant_name": tenant_names.get(tid, tid),
-                        "is_online": bool(dev["is_online"]),
-                        "last_seen_at": dev["last_seen_at"],
-                        "date": target_date,
-                        "first_seen_at": s["first_seen_at"],
-                        "active_seconds": s["active_seconds"],
-                        "idle_seconds": s["idle_seconds"],
-                        "away_alerts_count": s["away_alerts_count"],
-                        "top_apps": top_apps,
-                        "hourly_active": hourly_active,
-                        "hourly_idle": hourly_idle,
-                        "switches_count": switches_total,
-                        "peak_hour": peak_hour,
-                        "categories": categories,
-                        "productive_seconds": productive_seconds,
-                        "distractor_seconds": distractor_seconds,
-                        "neutral_seconds": neutral_seconds,
-                        "focus_score": focus_score,
-                        "net_rx_bytes": net_rx,
-                        "net_tx_bytes": net_tx,
-                        "net_total_bytes": net_rx + net_tx,
-                    })
-                return result
+                # Respaldo: aplicaciones reales vistas en red cuando no hubo ventana en primer plano
+                netapp_rows = conn.execute(
+                    """
+                    SELECT agent_id, COALESCE(app_name, '') AS app, COALESCE(focus_app, '') AS focus,
+                           UPPER(COALESCE(category, 'OTHER')) AS cat, domain,
+                           SUM(hit_count) AS hits,
+                           SUM(CASE WHEN COALESCE(rx_bytes,0)+COALESCE(tx_bytes,0)=0 THEN COALESCE(estimated_bytes,0)
+                                    ELSE COALESCE(rx_bytes,0)+COALESCE(tx_bytes,0) END) AS bytes
+                    FROM network_domains_daily
+                    WHERE date = ?
+                    GROUP BY agent_id, app, focus, cat, domain
+                    """,
+                    (target_date,),
+                ).fetchall()
             finally:
                 conn.close()
+
+        amap: Dict[str, str] = grouping["alias_to_primary_id"]
+        groups: Dict[str, dict] = grouping["groups"]
+
+        # Resumen diario consolidado por equipo fisico
+        summary_map: Dict[str, dict] = {}
+        for r in summary_rows:
+            pid = amap.get(r["agent_id"])
+            if not pid:
+                continue
+            s = summary_map.setdefault(pid, {"first_seen_at": "", "active_seconds": 0, "idle_seconds": 0, "away_alerts_count": 0})
+            fs = r["first_seen_at"] or ""
+            if fs and fs != "---" and (not s["first_seen_at"] or fs < s["first_seen_at"]):
+                s["first_seen_at"] = fs
+            s["active_seconds"] += int(r["active_seconds"] or 0)
+            s["idle_seconds"] += int(r["idle_seconds"] or 0)
+            s["away_alerts_count"] += int(r["away_alerts_count"] or 0)
+
+        apps_by_agent: Dict[str, Dict[str, int]] = {}
+        for ar in apps_rows:
+            pid = amap.get(ar["agent_id"])
+            name = _friendly_app_name(ar["app_name"] or "")
+            if not pid or not name:
+                continue
+            bucket = apps_by_agent.setdefault(pid, {})
+            bucket[name] = bucket.get(name, 0) + int(ar["total_seconds"] or 0)
+
+        hourly_by_agent: Dict[str, dict] = {}
+        for hr in hourly_rows:
+            pid = amap.get(hr["agent_id"])
+            h = hr["hour"]
+            if not pid or h is None or not (0 <= int(h) <= 23):
+                continue
+            slot = hourly_by_agent.setdefault(pid, {"active": [0] * 24, "idle": [0] * 24, "switches": 0})
+            slot["active"][int(h)] += int(hr["act"] or 0)
+            slot["idle"][int(h)] += int(hr["idl"] or 0)
+            slot["switches"] += int(hr["sw"] or 0)
+
+        res_by_agent: Dict[str, Dict[str, dict]] = {}
+        for rr in res_rows:
+            pid = amap.get(rr["agent_id"])
+            name = _friendly_app_name(rr["app_name"] or "")
+            if not pid or not name:
+                continue
+            bucket = res_by_agent.setdefault(pid, {})
+            item = bucket.get(name)
+            secs = int(rr["secs"] or 0)
+            if item is None:
+                bucket[name] = {
+                    "app_name": name,
+                    "category": rr["cat"] or "Productividad y Gestion",
+                    "seconds": secs,
+                    "switches_count": int(rr["sw"] or 0),
+                    "_cat_secs": secs,
+                }
+            else:
+                item["seconds"] += secs
+                item["switches_count"] += int(rr["sw"] or 0)
+                if secs > item["_cat_secs"]:
+                    item["category"], item["_cat_secs"] = rr["cat"] or item["category"], secs
+
+        net_by_agent: Dict[str, list] = {}
+        for nr in net_rows:
+            pid = amap.get(nr["agent_id"])
+            if not pid:
+                continue
+            acc = net_by_agent.setdefault(pid, [0, 0])
+            acc[0] += int(nr["rx"] or 0)
+            acc[1] += int(nr["tx"] or 0)
+
+        netapps_by_agent: Dict[str, Dict[str, dict]] = {}
+        for nr in netapp_rows:
+            pid = amap.get(nr["agent_id"])
+            if not pid:
+                continue
+            name = _friendly_app_name(nr["app"] or "", nr["domain"] or "") or _friendly_app_name(nr["focus"] or "", nr["domain"] or "")
+            if not name:
+                continue
+            bucket = netapps_by_agent.setdefault(pid, {})
+            item = bucket.setdefault(name, {"bytes": 0, "hits": 0, "cats": {}})
+            b = int(nr["bytes"] or 0)
+            item["bytes"] += b
+            item["hits"] += int(nr["hits"] or 0)
+            item["cats"][nr["cat"] or "OTHER"] = item["cats"].get(nr["cat"] or "OTHER", 0) + (b or 1)
+
+        productive_cats = {
+            "Productividad y Gestion",
+            "Desarrollo y Sistemas",
+            "Comunicacion",
+            "Diseno y Creatividad",
+        }
+        distractor_cats = {"Entretenimiento y Redes"}
+
+        def _network_app_items(pid: str, basis_seconds: int) -> List[dict]:
+            """Construye top_apps desde las apps vistas en network_domains_daily (segundos proporcionales a bytes)."""
+            bucket = netapps_by_agent.get(pid) or {}
+            if not bucket:
+                return []
+            ranked = sorted(bucket.items(), key=lambda kv: (kv[0] in _BACKGROUND_FRIENDLY_APPS, -kv[1]["bytes"], -kv[1]["hits"]))
+            total_w = sum((v["bytes"] or v["hits"] or 1) for _k, v in ranked) or 1
+            total_hits = sum(v["hits"] for _k, v in ranked)
+            basis = int(basis_seconds or 0) or max(60, min(8 * 3600, total_hits * 5))
+            items = []
+            for name, v in ranked:
+                net_cat = _top_weighted(v["cats"]) or "OTHER"
+                focus_cat = _NET_TO_FOCUS_CATEGORY.get(net_cat, "Navegacion General")
+                if name in _BACKGROUND_FRIENDLY_APPS:
+                    focus_cat = "Navegacion General"
+                secs = max(1, int(round(basis * (v["bytes"] or v["hits"] or 1) / total_w)))
+                items.append({
+                    "app_name": name,
+                    "category": focus_cat,
+                    "seconds": secs,
+                    "switches_count": 0,
+                    "net_bytes": int(v["bytes"]),
+                    "source": "network",
+                })
+            return items
+
+        result = []
+        for pid in grouping["order"]:
+            info = groups[pid]
+            dev = info["primary_dev"]
+            tid = dev.get("tenant_id") or MASTER_TENANT_ID
+            s = summary_map.get(pid) or {"first_seen_at": "---", "active_seconds": 0, "idle_seconds": 0, "away_alerts_count": 0}
+            if not s.get("first_seen_at"):
+                s["first_seen_at"] = "---"
+
+            hslot = hourly_by_agent.get(pid)
+            hourly_active = list(hslot["active"]) if hslot else [0] * 24
+            hourly_idle = list(hslot["idle"]) if hslot else [0] * 24
+            switches_total = hslot["switches"] if hslot else 0
+            agent_res = sorted((res_by_agent.get(pid) or {}).values(), key=lambda x: x["seconds"], reverse=True)
+            for x in agent_res:
+                x.pop("_cat_secs", None)
+            if switches_total == 0 and agent_res:
+                switches_total = sum(x["switches_count"] for x in agent_res)
+            peak_hour = None
+            peak_val = 0
+            for h_idx, val in enumerate(hourly_active):
+                if val > peak_val:
+                    peak_val = val
+                    peak_hour = h_idx
+
+            # Apps categorizadas (fallback a window_usage_daily y luego a apps vistas en red)
+            apps_source = "screen"
+            if agent_res:
+                app_items = agent_res
+            else:
+                app_items = [
+                    {"app_name": n, "category": "Productividad y Gestion", "seconds": secs, "switches_count": 0}
+                    for n, secs in sorted((apps_by_agent.get(pid) or {}).items(), key=lambda kv: kv[1], reverse=True)
+                ]
+            if not app_items or not sum(x["seconds"] for x in app_items):
+                net_items = _network_app_items(pid, int(s["active_seconds"] or 0))
+                if net_items:
+                    app_items = net_items
+                    apps_source = "network"
+            total_app_secs = sum(x["seconds"] for x in app_items)
+            denom = total_app_secs or 1
+
+            cat_totals: Dict[str, int] = {}
+            for x in app_items:
+                cat_totals[x["category"]] = cat_totals.get(x["category"], 0) + x["seconds"]
+            categories = [
+                {
+                    "category": c,
+                    "seconds": secs,
+                    "percent": round((secs * 100.0) / denom) if total_app_secs else 0,
+                }
+                for c, secs in sorted(cat_totals.items(), key=lambda kv: kv[1], reverse=True)
+            ]
+            productive_seconds = sum(v for c, v in cat_totals.items() if c in productive_cats)
+            distractor_seconds = sum(v for c, v in cat_totals.items() if c in distractor_cats)
+            neutral_seconds = max(0, total_app_secs - productive_seconds - distractor_seconds)
+            pd_sum = productive_seconds + distractor_seconds
+            focus_score = round(productive_seconds * 100.0 / pd_sum) if pd_sum > 0 else None
+            if apps_source == "network" and not int(s["active_seconds"] or 0):
+                focus_score = None  # sin tiempo en pantalla real no se infiere enfoque
+
+            top_apps = []
+            for item in app_items[:6]:
+                pct = round((item["seconds"] * 100.0) / denom)
+                entry = {
+                    "app_name": item["app_name"],
+                    "seconds": item["seconds"],
+                    "percent": max(1, pct),
+                    "category": item["category"],
+                    "switches_count": item["switches_count"],
+                }
+                if item.get("source") == "network":
+                    entry["source"] = "network"
+                    entry["net_bytes"] = item.get("net_bytes", 0)
+                top_apps.append(entry)
+
+            net_rx, net_tx = net_by_agent.get(pid, (0, 0))
+
+            result.append({
+                "agent_id": pid,
+                "member_agent_ids": list(info["member_agent_ids"]),
+                "sessions_count": info["sessions_count"],
+                "session_users": list(info["session_users"]),
+                "alias": dev.get("alias"),
+                "hostname": dev.get("hostname"),
+                "username": info["username"],
+                "local_ip": dev.get("local_ip") or "",
+                "tenant_id": tid,
+                "tenant_name": tenant_names.get(tid, tid),
+                "is_online": bool(info["is_online"]),
+                "last_seen_at": info["last_seen_at"],
+                "date": target_date,
+                "first_seen_at": s["first_seen_at"],
+                "active_seconds": s["active_seconds"],
+                "idle_seconds": s["idle_seconds"],
+                "away_alerts_count": s["away_alerts_count"],
+                "top_apps": top_apps,
+                "apps_source": apps_source,
+                "hourly_active": hourly_active,
+                "hourly_idle": hourly_idle,
+                "switches_count": switches_total,
+                "peak_hour": peak_hour,
+                "categories": categories,
+                "productive_seconds": productive_seconds,
+                "distractor_seconds": distractor_seconds,
+                "neutral_seconds": neutral_seconds,
+                "focus_score": focus_score,
+                "net_rx_bytes": net_rx,
+                "net_tx_bytes": net_tx,
+                "net_total_bytes": net_rx + net_tx,
+            })
+        return result
 
     def add_chat_message(
         self,
@@ -2254,12 +2727,15 @@ class DatabaseManager:
                 if allowed_tenant_id:
                     dev_clauses.append("tenant_id = ?")
                     dev_params.append(allowed_tenant_id)
-                if agent_id and agent_id != "ALL":
-                    dev_clauses.append("agent_id = ?")
-                    dev_params.append(agent_id)
                 where_dev = f"WHERE {' AND '.join(dev_clauses)}" if dev_clauses else ""
-                dev_rows = conn.execute(f"SELECT agent_id, alias FROM devices {where_dev} ORDER BY alias ASC", dev_params).fetchall()
-                valid_ids = [r["agent_id"] for r in dev_rows]
+                all_dev_rows = conn.execute(f"SELECT * FROM devices {where_dev} ORDER BY alias ASC", dev_params).fetchall()
+                if agent_id and agent_id != "ALL":
+                    grp = _group_physical_devices(all_dev_rows)
+                    p_id = grp["alias_to_primary_id"].get(agent_id, agent_id)
+                    p_info = grp["groups"].get(p_id)
+                    valid_ids = list(p_info["member_agent_ids"]) if p_info else [agent_id]
+                else:
+                    valid_ids = [r["agent_id"] for r in all_dev_rows]
                 if not valid_ids:
                     return {
                         "date": base_str, "period": "7d" if is_7d else "day", "agent_id": agent_id,

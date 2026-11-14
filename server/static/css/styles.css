@@ -4872,6 +4872,8 @@ body {
 .dash-user-chip { display: inline-block; margin-right: 3px; padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 700; background: var(--bg-elevated); color: var(--text-primary); }
 .dash-user-more { font-size: 10px; font-weight: 800; color: var(--text-muted); }
 .dash-td-traffic { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dash-td-screen { display: block; font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+.dash-sessions-badge { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; background: rgba(99, 102, 241, 0.14); color: #6366f1; white-space: nowrap; }
 .dash-td-pct { white-space: nowrap; }
 .dash-pct-bar { display: inline-block; width: 54px; height: 6px; border-radius: 3px; background: var(--bg-elevated); overflow: hidden; vertical-align: middle; margin-right: 6px; }
 .dash-pct-fill { display: block; height: 100%; border-radius: 3px; background: var(--accent-primary); }

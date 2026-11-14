@@ -4886,6 +4886,12 @@
     }).join('');
   }
 
+  // Agentes en vivo de un equipo fisico consolidado (varias sesiones / usuarios del SO)
+  function netLiveMembers(c) {
+    const ids = (c && Array.isArray(c.member_agent_ids) && c.member_agent_ids.length) ? c.member_agent_ids : [c && c.agent_id];
+    return ids.map((id) => state.agents.get(id)).filter(Boolean);
+  }
+
   function renderNetworkHosts() {
     if (!netHostsGrid) return;
     const data = netState.summary;
@@ -4904,8 +4910,10 @@
       clients.sort((a, b) => (b.total_bytes || 0) - (a.total_bytes || 0));
     } else if (netState.hostSortBy === 'speed') {
       const speed = (c) => {
-        const live = state.agents.get(c.agent_id);
-        return ((live ? live.rx_kbps : c.rx_kbps) || 0) + ((live ? live.tx_kbps : c.tx_kbps) || 0);
+        const lives = netLiveMembers(c);
+        return lives.length
+          ? lives.reduce((sum, a) => sum + (a.rx_kbps || 0) + (a.tx_kbps || 0), 0)
+          : (c.rx_kbps || 0) + (c.tx_kbps || 0);
       };
       clients.sort((a, b) => speed(b) - speed(a));
     } else if (netState.hostSortBy === 'name') {
@@ -4916,10 +4924,10 @@
     const selected = netSelectedHost();
 
     netHostsGrid.innerHTML = clients.map((c) => {
-      const liveAg = state.agents.get(c.agent_id);
-      const online = !!liveAg || c.is_online;
-      const rxk = liveAg ? liveAg.rx_kbps : (c.rx_kbps || 0);
-      const txk = liveAg ? liveAg.tx_kbps : (c.tx_kbps || 0);
+      const lives = netLiveMembers(c);
+      const online = lives.length > 0 || c.is_online;
+      const rxk = lives.length ? lives.reduce((sum, a) => sum + (a.rx_kbps || 0), 0) : (c.rx_kbps || 0);
+      const txk = lives.length ? lives.reduce((sum, a) => sum + (a.tx_kbps || 0), 0) : (c.tx_kbps || 0);
       const pct = Math.max(3, Math.round(((c.total_bytes || 0) / maxTotal) * 100));
       const dot = online ? '<span class="status-dot dot-emerald"></span>' : '<span class="status-dot dot-gray"></span>';
       const isSel = c.agent_id === selected;
@@ -4928,7 +4936,7 @@
       return `<div class="net-host-card ${isSel ? 'selected' : ''}" data-agent-id="${escapeHtml(c.agent_id)}">
         <div class="net-host-card-head">
           <div class="net-host-card-identity">
-            <div class="net-host-card-alias">${dot} <span>${escapeHtml(c.alias)}</span></div>
+            <div class="net-host-card-alias">${dot} <span>${escapeHtml(c.alias)}</span> ${dashSessionsBadgeHtml(c)}</div>
             <div class="net-host-card-sub">${escapeHtml(c.hostname || '')}${c.username ? ' · ' + escapeHtml(c.username) : ''}</div>
           </div>
           <span class="badge-pill ${online ? '' : 'muted-badge'}">${online ? 'En Línea' : 'Offline'}</span>
@@ -6173,6 +6181,7 @@
       const kinds = new Set();
       if (c.primary_iface) kinds.add(netIfaceKind(c.primary_iface));
       (c.interfaces || []).forEach((it) => kinds.add(netIfaceKind(it.kind)));
+      (c.top_flows || []).forEach((f) => { if (f.iface_kind) kinds.add(netIfaceKind(f.iface_kind)); });
       if (!kinds.has(dashState.filterIfaceKind)) return false;
     }
     if (dashState.filterProtoL7 !== 'ALL') {
@@ -6186,7 +6195,8 @@
     if (dashState.filterDomain !== 'ALL') {
       const svc = dashState.filterDomain.toLowerCase();
       const hasD = (c.top_domain || '').toLowerCase() === svc
-        || (c.top_apps || []).some((a) => String(a.app_name || '').toLowerCase() === svc);
+        || (c.top_apps || []).some((a) => String(a.app_name || '').toLowerCase() === svc)
+        || (c.top_flows || []).some((f) => String(f.domain || '').toLowerCase() === svc || String(f.app_name || '').toLowerCase() === svc);
       if (!hasD) return false;
     }
     return true;
@@ -6227,7 +6237,9 @@
       const cur = dashState.filterAgentId;
       let html = '<option value="ALL">Todos los colaboradores</option>';
       cols.forEach((c) => {
-        const lbl = c.username && c.username !== '---' ? `${c.alias} (${c.username})` : (c.alias || c.hostname || c.agent_id);
+        const base = c.alias || c.hostname || c.agent_id;
+        const badge = dashSessionsBadgeText(c);
+        const lbl = badge ? `${base} [${badge}]` : (c.username && c.username !== '---' ? `${base} (${c.username})` : base);
         html += `<option value="${escapeHtml(c.agent_id)}">${escapeHtml(lbl)}</option>`;
       });
       dashFilterAgent.innerHTML = html;
@@ -6248,7 +6260,8 @@
       const cur = dashProtoScope.value || 'ALL';
       let html = '<option value="ALL">Global (toda la flota)</option>';
       cols.forEach((c) => {
-        html += `<option value="${escapeHtml(c.agent_id)}">${escapeHtml(c.alias || c.hostname || c.agent_id)}</option>`;
+        const badge = dashSessionsBadgeText(c);
+        html += `<option value="${escapeHtml(c.agent_id)}">${escapeHtml((c.alias || c.hostname || c.agent_id) + (badge ? ` [${badge}]` : ''))}</option>`;
       });
       dashProtoScope.innerHTML = html;
       dashProtoScope.value = Array.from(dashProtoScope.options).some((o) => o.value === cur) ? cur : 'ALL';
@@ -6424,66 +6437,116 @@
     return '#dc2626';
   }
 
+  function dashSessionsBadgeText(c) {
+    const n = Number(c && c.sessions_count) || 0;
+    if (n <= 1) return '';
+    const users = (c.session_users && c.session_users.length) ? c.session_users.join(' / ') : (c.username || '');
+    return `${n} usuarios${users ? `: ${users}` : ''}`;
+  }
+
+  function dashSessionsBadgeHtml(c) {
+    const txt = dashSessionsBadgeText(c);
+    return txt ? `<span class="dash-sessions-badge" title="Equipo físico con varias sesiones de usuario">${escapeHtml(txt)}</span>` : '';
+  }
+
+  function dashFlowBytes(f) {
+    return ((Number(f.rx_bytes) || 0) + (Number(f.tx_bytes) || 0)) || (Number(f.estimated_bytes) || 0) || 1;
+  }
+
+  function dashFlowCatColor(f) {
+    return NET_CATEGORY_COLORS[String(f.category_code || 'OTHER').toUpperCase()] || '#94a3b8';
+  }
+
   function dashBuildTopoPaths(mode, cols) {
     const paths = [];
     cols.forEach((c) => {
       const aid = c.agent_id;
+      const badge = dashSessionsBadgeText(c);
       const agentSeg = {
         col: 0, key: `d:agent:${aid}`, label: c.alias || c.hostname || aid,
-        sub: c.is_online ? 'En línea' : 'Offline', color: dashStatusColor(c),
+        sub: `${c.is_online ? 'En línea' : 'Offline'}${badge ? ` · ${badge}` : ''}`, color: dashStatusColor(c),
         dim: 'filterAgentId', val: aid, weight: 1,
       };
       const netW = (Number(c.net_total_bytes) || (Number(c.net_rx_bytes) || 0) + (Number(c.net_tx_bytes) || 0)) || 1;
+      const flows = (c.top_flows || []).filter((f) => f && f.domain);
+      const apps = (c.top_apps || []).filter((a) => a && a.app_name);
+      const baseKind = c.primary_iface || ((c.interfaces || [])[0] || {}).kind || '';
+      const ifSegOf = (kindRaw, w) => {
+        const kind = netIfaceKind(kindRaw || baseKind || 'OTHER');
+        return { col: 1, key: `d:iface:${kind}`, label: netIfaceLabel(kind), sub: 'Interfaz', color: netIfaceColor(kind), dim: 'filterIfaceKind', val: kind, weight: w };
+      };
+      const domSegOf = (dom, col, w) => ({ col, key: `d:dom:${String(dom).toLowerCase()}`, label: dom, sub: 'Destino', color: '#0ea5e9', dim: 'filterDomain', val: dom, weight: w });
       if (mode === 'cross4') {
-        const kind = netIfaceKind(c.primary_iface || ((c.interfaces || [])[0] || {}).kind || 'OTHER');
-        const ifSeg = { col: 1, key: `d:iface:${kind}`, label: netIfaceLabel(kind), sub: 'Interfaz', color: netIfaceColor(kind), dim: 'filterIfaceKind', val: kind, weight: netW };
-        const app = (c.top_apps || [])[0];
-        const appName = app ? (app.app_name || 'App') : 'Sin app';
-        const appCat = app ? (app.category || '') : '';
-        const appSeg = { col: 2, key: `d:app:${appName.toLowerCase()}`, label: appName, sub: appCat, color: getCategoryColor(appCat), dim: 'filterCategory', val: appCat, weight: app ? (Number(app.seconds) || 1) : 1 };
-        const dom = c.top_domain || 'Sin dominio';
-        const domSeg = { col: 3, key: `d:dom:${dom.toLowerCase()}`, label: dom, sub: 'Destino', color: '#0ea5e9', dim: 'filterDomain', val: dom, weight: netW };
-        paths.push([agentSeg, ifSeg, appSeg, domSeg]);
-      } else if (mode === 'proto4') {
-        const kind = netIfaceKind(c.primary_iface || ((c.interfaces || [])[0] || {}).kind || 'OTHER');
-        const ifSeg = { col: 1, key: `d:iface:${kind}`, label: netIfaceLabel(kind), sub: 'Interfaz', color: netIfaceColor(kind), dim: 'filterIfaceKind', val: kind, weight: netW };
-        const dom = c.top_domain || 'Sin dominio';
-        const protos = (c.protocols_l7 || c.top_protocols || []).slice(0, 3);
-        if (!protos.length) {
-          const pSeg = { col: 2, key: 'd:proto:Desconocido', label: 'Desconocido', sub: 'Protocolo', color: netProtoColor('Desconocido'), dim: 'filterProtoL7', val: 'Desconocido', weight: 1 };
-          const domSeg = { col: 3, key: `d:dom:${dom.toLowerCase()}`, label: dom, sub: 'Destino', color: '#0ea5e9', dim: 'filterDomain', val: dom, weight: 1 };
-          paths.push([agentSeg, ifSeg, pSeg, domSeg]);
-        } else {
-          protos.forEach((p) => {
-            const name = netProtoLabel(p.proto_l7);
-            const w = (Number(p.bytes) || 0) || 1;
-            const pSeg = { col: 2, key: `d:proto:${name}`, label: name, sub: 'Protocolo', color: netProtoColor(name), dim: 'filterProtoL7', val: name, weight: w };
-            const domSeg = { col: 3, key: `d:dom:${dom.toLowerCase()}`, label: dom, sub: 'Destino', color: '#0ea5e9', dim: 'filterDomain', val: dom, weight: w };
-            paths.push([agentSeg, ifSeg, pSeg, domSeg]);
+        if (flows.length) {
+          flows.slice(0, 4).forEach((f) => {
+            const w = dashFlowBytes(f);
+            const appName = f.app_name || 'Servicios del Sistema';
+            const appSeg = { col: 2, key: `d:app:${appName.toLowerCase()}`, label: appName, sub: f.category || '', color: dashFlowCatColor(f), dim: 'filterDomain', val: appName, weight: w };
+            paths.push([agentSeg, ifSegOf(f.iface_kind, w), appSeg, domSegOf(f.domain, 3, w)]);
           });
+        } else if (apps.length) {
+          apps.slice(0, 4).forEach((a) => {
+            const w = Number(a.seconds) || 1;
+            const appSeg = { col: 2, key: `d:app:${a.app_name.toLowerCase()}`, label: a.app_name, sub: a.category || '', color: getCategoryColor(a.category), dim: 'filterDomain', val: a.app_name, weight: w };
+            const segs = [agentSeg, ifSegOf(baseKind, w), appSeg];
+            if (c.top_domain) segs.push(domSegOf(c.top_domain, 3, w));
+            paths.push(segs);
+          });
+        } else if (baseKind) {
+          paths.push([agentSeg, ifSegOf(baseKind, netW)]);
+        } else {
+          paths.push([agentSeg]);
+        }
+      } else if (mode === 'proto4') {
+        if (flows.length) {
+          flows.slice(0, 5).forEach((f) => {
+            const w = dashFlowBytes(f);
+            const name = netProtoLabel(f.proto_l7);
+            const pSeg = { col: 2, key: `d:proto:${name}`, label: name, sub: 'Protocolo', color: netProtoColor(name), dim: 'filterProtoL7', val: name, weight: w };
+            paths.push([agentSeg, ifSegOf(f.iface_kind, w), pSeg, domSegOf(f.domain, 3, w)]);
+          });
+        } else {
+          const protos = (c.protocols_l7 || c.top_protocols || []).slice(0, 3);
+          if (protos.length) {
+            protos.forEach((p) => {
+              const name = netProtoLabel(p.proto_l7);
+              const w = (Number(p.bytes) || 0) || 1;
+              const pSeg = { col: 2, key: `d:proto:${name}`, label: name, sub: 'Protocolo', color: netProtoColor(name), dim: 'filterProtoL7', val: name, weight: w };
+              const segs = [agentSeg, ifSegOf(baseKind, w), pSeg];
+              if (c.top_domain) segs.push(domSegOf(c.top_domain, 3, w));
+              paths.push(segs);
+            });
+          } else {
+            paths.push(baseKind ? [agentSeg, ifSegOf(baseKind, netW)] : [agentSeg]);
+          }
         }
       } else if (mode === 'prod') {
-        const apps = (c.top_apps || []).slice(0, 5);
-        if (!apps.length) {
-          const catSeg = { col: 1, key: 'd:cat:Sin actividad', label: 'Sin actividad', sub: '', color: '#64748b', dim: 'filterCategory', val: '', weight: 1 };
-          const appSeg = { col: 2, key: 'd:app:sin app', label: 'Sin app', sub: '', color: '#64748b', dim: 'filterCategory', val: '', weight: 1 };
-          paths.push([agentSeg, catSeg, appSeg]);
-        } else {
-          apps.forEach((a) => {
-            const cat = a.category || 'Otros';
-            const w = (Number(a.seconds) || 1);
+        if (apps.length) {
+          apps.slice(0, 5).forEach((a) => {
+            const cat = a.category || 'Navegacion General';
+            const w = Number(a.seconds) || 1;
             const catSeg = { col: 1, key: `d:cat:${cat}`, label: cat, sub: 'Categoría', color: getCategoryColor(cat), dim: 'filterCategory', val: cat, weight: w };
-            const appName = a.app_name || 'App';
-            const appSeg = { col: 2, key: `d:app:${appName.toLowerCase()}`, label: appName, sub: formatAccumulatedTime(w), color: getCategoryColor(cat), dim: 'filterCategory', val: cat, weight: w };
+            const sub = a.source === 'network'
+              ? `${Number(a.seconds) ? `${formatAccumulatedTime(Number(a.seconds))} est. · ` : ''}${formatBytes(Number(a.net_bytes) || 0)} red`
+              : formatAccumulatedTime(w);
+            const appSeg = { col: 2, key: `d:app:${a.app_name.toLowerCase()}`, label: a.app_name, sub, color: getCategoryColor(cat), dim: 'filterCategory', val: cat, weight: w };
             paths.push([agentSeg, catSeg, appSeg]);
           });
+        } else {
+          paths.push([agentSeg]);
         }
       } else if (mode === 'asn') {
-        const dom = c.top_domain || 'Sin dominio';
-        const prov = dashProviderGuess(dom);
-        const provSeg = { col: 1, key: `d:prov:${prov}`, label: prov, sub: 'Proveedor / ASN', color: '#6366f1', dim: '', val: '', weight: netW };
-        const domSeg = { col: 2, key: `d:dom:${dom.toLowerCase()}`, label: dom, sub: 'Destino', color: '#0ea5e9', dim: 'filterDomain', val: dom, weight: netW };
-        paths.push([agentSeg, provSeg, domSeg]);
+        const list = flows.length ? flows.slice(0, 5) : (c.top_domain ? [{ domain: c.top_domain, rx_bytes: netW }] : []);
+        if (list.length) {
+          list.forEach((f) => {
+            const w = dashFlowBytes(f);
+            const prov = dashProviderGuess(f.domain);
+            const provSeg = { col: 1, key: `d:prov:${prov}`, label: prov, sub: 'Proveedor / ASN', color: '#6366f1', dim: '', val: '', weight: w };
+            paths.push([agentSeg, provSeg, domSegOf(f.domain, 2, w)]);
+          });
+        } else {
+          paths.push([agentSeg]);
+        }
       }
     });
     return paths;
@@ -6636,7 +6699,7 @@
   // ---- MF-13: Inspector de Interfaces por Equipo ----
   function renderDashInterfacesPanel() {
     if (!dashInterfacesBody) return;
-    const cols = dashFilteredCollaborators().filter((c) => (c.interfaces || []).length);
+    const cols = dashFilteredCollaborators().filter((c) => (c.interfaces || []).length || c.primary_iface);
     if (!cols.length) {
       dashInterfacesBody.innerHTML = '<span class="muted-text">Ningún equipo reportó interfaces de red para la selección actual.</span>';
       return;
@@ -6649,7 +6712,7 @@
         const col = netIfaceColor(k);
         return `<button type="button" class="dash-iface-row" data-dash-iface="${escapeHtml(k)}" style="--iface-color:${col}" title="Filtrar el Dashboard por interfaz ${escapeHtml(netIfaceLabel(k))}">
           <span class="dash-iface-dot"></span>
-          <span class="dash-iface-name">${escapeHtml(it.iface || '')}</span>
+          <span class="dash-iface-name">${escapeHtml(it.inferred ? (it.label || it.iface || '') : (it.iface || ''))}</span>
           <span class="dash-iface-kind">${escapeHtml(k)}</span>
           <span class="dash-iface-ip">${escapeHtml(it.ip || '---')}</span>
           <span class="dash-iface-figs">&darr; ${formatBytes(it.rx_bytes || 0)} / &uarr; ${formatBytes(it.tx_bytes || 0)}</span>
@@ -6658,6 +6721,7 @@
       return `<div class="dash-iface-card">
         <div class="dash-iface-card-head">
           <span class="dash-iface-card-name">${escapeHtml(c.alias || c.hostname || c.agent_id)}</span>
+          ${dashSessionsBadgeHtml(c)}
           <span class="dash-iface-card-sub">${escapeHtml(c.username || '')}</span>
         </div>
         <div class="dash-iface-list">${ifaces || '<span class="muted-text">Sin interfaces con tráfico.</span>'}</div>
@@ -6670,48 +6734,55 @@
   function renderDashServicesTable() {
     if (!dashServicesTableBody) return;
     const services = (dashState.data && dashState.data.top_services) || [];
-    const cols = dashCollaborators();
-    const totalBytes = services.reduce((s, x) => s + (Number(x.net_bytes) || 0), 0) || 1;
     const q = (dashState.searchQuery || '').trim().toLowerCase();
-    const rows = services.map((svc) => {
-      const name = svc.service || '';
-      const lname = name.toLowerCase();
-      const users = cols.filter((c) => (c.top_domain || '').toLowerCase() === lname
-        || (c.top_apps || []).some((a) => String(a.app_name || '').toLowerCase() === lname));
-      let app = '';
-      let category = '';
-      users.some((c) => (c.top_apps || []).some((a) => {
-        if (String(a.app_name || '').toLowerCase() === lname) { app = a.app_name; category = a.category || ''; return true; }
-        return false;
-      }));
-      if (!category && users.length) {
-        const topApp = (users[0].top_apps || [])[0];
-        if (topApp) { app = app || topApp.app_name; category = topApp.category || ''; }
-      }
-      const protoSrc = users.length ? (users[0].protocols_l7 || users[0].top_protocols || []) : [];
-      const proto = protoSrc.length ? netProtoLabel(protoSrc[0].proto_l7) : 'Desconocido';
-      const iface = users.length ? netIfaceKind(users[0].primary_iface || ((users[0].interfaces || [])[0] || {}).kind) : 'OTHER';
-      const ifaceClient = users.length ? (users[0].alias || users[0].hostname || users[0].agent_id) : '---';
-      return { name, app, category, proto, iface, ifaceClient, users, netBytes: Number(svc.net_bytes) || 0, pct: Math.round((100 * (Number(svc.net_bytes) || 0)) / totalBytes) };
-    }).filter((r) => !q || r.name.toLowerCase().includes(q) || (r.app || '').toLowerCase().includes(q) || (r.category || '').toLowerCase().includes(q));
-
-    if (!rows.length) {
+    const agentF = dashState.filterAgentId;
+    const visible = services.filter((svc) => {
+      const users = Array.isArray(svc.users) ? svc.users : [];
+      if (agentF !== 'ALL' && !users.some((u) => u.agent_id === agentF)) return false;
+      if (!q) return true;
+      const hay = `${svc.service || ''} ${svc.app_name || ''} ${svc.category || ''} ${svc.proto_l7 || ''} ${svc.iface_client || ''} ${users.map((u) => `${u.alias || ''} ${u.username || ''}`).join(' ')}`.toLowerCase();
+      return hay.includes(q);
+    });
+    if (!visible.length) {
       dashServicesTableBody.innerHTML = `<tr><td colspan="8" class="dash-services-empty">Sin servicios para la selección actual.</td></tr>`;
       return;
     }
-    dashServicesTableBody.innerHTML = rows.map((r) => {
-      const active = dashState.filterDomain.toLowerCase() === r.name.toLowerCase();
-      const rx = Math.round(r.netBytes * 0.85);
-      const tx = r.netBytes - rx;
-      return `<tr class="dash-service-row ${active ? 'is-active' : ''}" data-dash-service="${escapeHtml(r.name)}">
-        <td class="dash-td-service"><span class="dash-service-name">${escapeHtml(r.name)}</span></td>
-        <td>${escapeHtml(r.app || '---')}</td>
-        <td>${r.category ? `<span class="dash-cat-pill" style="--cat-color:${getCategoryColor(r.category)}">${escapeHtml(r.category)}</span>` : '---'}</td>
-        <td>${netProtoBadgeHtml(r.proto)}</td>
-        <td><span class="dash-iface-cell">${escapeHtml(r.ifaceClient)} &rarr; ${escapeHtml(netIfaceLabel(r.iface))}</span></td>
-        <td class="dash-td-users">${r.users.length ? r.users.slice(0, 3).map((u) => `<span class="dash-user-chip" title="${escapeHtml(u.alias || u.agent_id)}">${escapeHtml(topoTrunc(u.alias || u.hostname || u.agent_id, 10))}</span>`).join('') + (r.users.length > 3 ? `<span class="dash-user-more">+${r.users.length - 3}</span>` : '') : '---'}</td>
-        <td class="dash-td-traffic">&darr; ${formatBytes(rx)} / &uarr; ${formatBytes(tx)}</td>
-        <td class="dash-td-pct"><span class="dash-pct-bar"><span class="dash-pct-fill" style="width:${Math.max(2, r.pct)}%"></span></span><span class="dash-pct-num">${r.pct}%</span></td>
+    const totalBytes = visible.reduce((s, x) => s + (Number(x.net_bytes) || 0), 0) || 1;
+    dashServicesTableBody.innerHTML = visible.map((svc) => {
+      const name = svc.service || svc.app_name || '';
+      const app = svc.app_name || name;
+      const category = svc.category || 'Otros';
+      const catCode = String(svc.category_code || '').toUpperCase();
+      const catColor = catCode ? (NET_CATEGORY_COLORS[catCode] || '#94a3b8') : getCategoryColor(category);
+      const proto = netProtoLabel(svc.proto_l7);
+      const protoHtml = (svc.proto_l7 && !NET_PROTO_COLORS[svc.proto_l7])
+        ? `<span class="proto-badge" style="--proto-color:#64748b" title="Protocolo L7: ${escapeHtml(svc.proto_l7)}"><span class="proto-badge-dot"></span>${escapeHtml(svc.proto_l7)}</span>`
+        : netProtoBadgeHtml(proto);
+      const kind = netIfaceKind(svc.iface_kind || 'OTHER');
+      const users = Array.isArray(svc.users) ? svc.users : [];
+      const ifaceClient = svc.iface_client || (users[0] ? `${users[0].alias || users[0].agent_id} · ${netIfaceLabel(kind)}` : netIfaceLabel(kind));
+      const rx = Number(svc.rx_bytes) || 0;
+      const tx = Number(svc.tx_bytes) || 0;
+      const netBytes = Number(svc.net_bytes) || (rx + tx);
+      const screen = Number(svc.screen_seconds) || 0;
+      const pct = Math.round((100 * netBytes) / totalBytes);
+      const active = dashState.filterDomain.toLowerCase() === name.toLowerCase();
+      const trafficHtml = netBytes > 0
+        ? `&darr; ${formatBytes(rx)} / &uarr; ${formatBytes(tx)}${screen ? `<span class="dash-td-screen">${formatAccumulatedTime(screen)} en pantalla</span>` : ''}`
+        : `<span class="dash-td-screen">${screen ? `${formatAccumulatedTime(screen)} en pantalla` : 'Solo uso local'}</span>`;
+      const usersHtml = users.slice(0, 3).map((u) => {
+        const t = `${u.alias || u.agent_id}${u.username ? ` (${u.username})` : ''}${u.bytes ? ` · ${formatBytes(u.bytes)}` : ''}`;
+        return `<span class="dash-user-chip" title="${escapeHtml(t)}">${escapeHtml(topoTrunc(u.alias || u.agent_id, 12))}</span>`;
+      }).join('') + (users.length > 3 ? `<span class="dash-user-more">+${users.length - 3}</span>` : '');
+      return `<tr class="dash-service-row ${active ? 'is-active' : ''}" data-dash-service="${escapeHtml(name)}">
+        <td class="dash-td-service"><span class="dash-service-name">${escapeHtml(name)}</span></td>
+        <td>${escapeHtml(app)}</td>
+        <td><span class="dash-cat-pill" style="--cat-color:${catColor}">${escapeHtml(category)}</span></td>
+        <td>${protoHtml}</td>
+        <td><span class="dash-iface-cell" style="--iface-color:${netIfaceColor(kind)}">${escapeHtml(ifaceClient)}</span></td>
+        <td class="dash-td-users">${usersHtml}</td>
+        <td class="dash-td-traffic">${trafficHtml}</td>
+        <td class="dash-td-pct"><span class="dash-pct-bar"><span class="dash-pct-fill" style="width:${Math.max(2, pct)}%"></span></span><span class="dash-pct-num">${pct}%</span></td>
       </tr>`;
     }).join('');
   }
