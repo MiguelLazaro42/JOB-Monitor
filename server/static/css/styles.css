@@ -862,92 +862,154 @@ body {
 }
 
 /* ========================================================================= */
-/* TARJETAS MULTI-SESIÓN CON PESTAÑAS (WINDOWS MULTI-USUARIO)                */
+/* TARJETAS MULTI-CUENTA / MULTI-SESIÓN INTEGRADAS EN EL CUERPO DE LA TARJETA */
 /* ========================================================================= */
-.card-session-tabs-bar {
+.card-accounts-box {
   display: flex;
   align-items: center;
-  gap: 5px;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 5px 8px;
+  margin-top: 2px;
+  border-radius: 7px;
   background: var(--bg-subtle);
-  border-bottom: 1px solid var(--border-color);
-  padding: 6px 10px;
-  overflow-x: auto;
+  border: 1px solid var(--border-color);
 }
 
-.card-session-meta-chip {
+.card-accounts-box.is-live-multi {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  padding: 6px 8px;
+}
+
+.card-accounts-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.card-accounts-count {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.14);
+  color: #059669;
+}
+
+.card-accounts-label {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
   color: var(--text-secondary);
-  padding: 2px 6px;
-  background: rgba(19, 52, 71, 0.06);
-  border-radius: 5px;
-  margin-right: 2px;
   white-space: nowrap;
 }
 
-.session-tab-btn {
+.card-users-row {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.card-user-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: #ffffff;
+  color: var(--text-primary);
+}
+
+.card-user-pill.is-active-session {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.35);
+  color: #065f46;
+}
+
+.card-user-pill.is-active-session small {
+  font-size: 9.5px;
+  font-weight: 700;
+  opacity: 0.85;
+}
+
+.card-user-pill.is-idle-account {
+  background: rgba(100, 116, 139, 0.08);
+  color: var(--text-secondary);
+}
+
+.card-session-switcher {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.card-session-switch-btn {
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   gap: 6px;
   border: 1px solid var(--border-color);
   background: #ffffff;
   color: var(--text-secondary);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
-  padding: 3px 9px;
-  border-radius: 7px;
+  padding: 4px 8px;
+  border-radius: 6px;
   cursor: pointer;
   transition: all 0.14s ease;
-  white-space: nowrap;
 }
 
-.session-tab-btn:hover {
+.card-session-switch-btn:hover {
   background: var(--bg-elevated);
   color: var(--sitai-navy);
 }
 
-.session-tab-btn.active {
+.card-session-switch-btn.active {
   background: var(--sitai-navy);
   border-color: var(--sitai-navy);
   color: #ffffff;
-  box-shadow: 0 1px 4px rgba(19, 52, 71, 0.18);
 }
 
-.session-tab-btn.active .indicator-dot {
-  box-shadow: 0 0 0 1.5px #ffffff;
-}
-
-.session-tab-pill-bg {
+.switch-role-pill {
   font-size: 9.5px;
-  padding: 1px 4px;
+  padding: 1px 5px;
   border-radius: 4px;
+  font-weight: 700;
+  background: rgba(16, 185, 129, 0.15);
+  color: #047857;
+}
+
+.switch-role-pill.is-bg {
   background: rgba(245, 158, 11, 0.16);
   color: #b45309;
-  font-weight: 700;
 }
 
-.session-tab-btn.active .session-tab-pill-bg {
+.card-session-switch-btn.active .switch-role-pill {
   background: rgba(255, 255, 255, 0.22);
   color: #ffffff;
 }
 
-.multi-session-badge {
-  background: rgba(59, 130, 246, 0.85);
-  backdrop-filter: blur(4px);
-  color: #ffffff;
-  font-family: var(--font-display);
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 6px;
-  border-radius: 6px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+.multi-user-inline-pill {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.12);
+  color: #2563eb;
+  margin-left: 4px;
 }
 
 /* Monitor 16:9 en la parte superior de la tarjeta */

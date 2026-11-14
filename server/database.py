@@ -908,14 +908,46 @@ class DatabaseManager:
             finally:
                 conn.close()
 
+    @staticmethod
+    def _physical_member_ids(conn, agent_id: str) -> List[str]:
+        """Devuelve todos los agent_id del mismo equipo fisico que `agent_id` (incluido el propio).
+        Se limita al tenant del equipo, igual que la agrupacion del Dashboard."""
+        if not agent_id or agent_id == "ALL":
+            return [agent_id] if agent_id else []
+        row = conn.execute("SELECT tenant_id FROM devices WHERE agent_id = ?", (agent_id,)).fetchone()
+        if not row:
+            return [agent_id]
+        devices = conn.execute(
+            "SELECT * FROM devices WHERE COALESCE(tenant_id, ?) = ? ORDER BY alias ASC",
+            (MASTER_TENANT_ID, row["tenant_id"] or MASTER_TENANT_ID),
+        ).fetchall()
+        grp = _group_physical_devices(devices)
+        p_id = grp["alias_to_primary_id"].get(agent_id)
+        info = grp["groups"].get(p_id) if p_id else None
+        members = list(info["member_agent_ids"]) if info else []
+        if agent_id not in members:
+            members.insert(0, agent_id)
+        return members
+
+    def get_physical_member_ids(self, agent_id: str) -> List[str]:
+        """Version publica (con lock) de `_physical_member_ids`."""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                return self._physical_member_ids(conn, agent_id)
+            finally:
+                conn.close()
+
     def set_device_tenant(self, agent_id: str, tenant_id: str):
         clean_tid = (tenant_id or MASTER_TENANT_ID).strip()
         with self._lock:
             conn = self._get_conn()
             try:
+                member_ids = self._physical_member_ids(conn, agent_id)
+                ph = ",".join("?" for _ in member_ids)
                 conn.execute(
-                    "UPDATE devices SET tenant_id = ? WHERE agent_id = ?",
-                    (clean_tid, agent_id),
+                    f"UPDATE devices SET tenant_id = ? WHERE agent_id IN ({ph})",
+                    (clean_tid, *member_ids),
                 )
                 conn.commit()
             finally:
@@ -944,21 +976,27 @@ class DatabaseManager:
         with self._lock:
             conn = self._get_conn()
             try:
-                conn.execute("DELETE FROM devices WHERE agent_id = ?", (agent_id,))
-                conn.execute("DELETE FROM device_logs WHERE agent_id = ?", (agent_id,))
-                conn.execute("DELETE FROM daily_activity_summary WHERE agent_id = ?", (agent_id,))
-                conn.execute("DELETE FROM window_usage_daily WHERE agent_id = ?", (agent_id,))
-                conn.execute("DELETE FROM screen_time_hourly WHERE agent_id = ?", (agent_id,))
-                conn.execute("DELETE FROM resource_usage_daily WHERE agent_id = ?", (agent_id,))
-                conn.execute("DELETE FROM chat_messages WHERE agent_id = ?", (agent_id,))
-                conn.execute("DELETE FROM network_usage_daily WHERE agent_id = ?", (agent_id,))
-                conn.execute("DELETE FROM network_domains_daily WHERE agent_id = ?", (agent_id,))
+                member_ids = self._physical_member_ids(conn, agent_id)
+                ph = ",".join("?" for _ in member_ids)
+                for tbl in (
+                    "devices",
+                    "device_logs",
+                    "daily_activity_summary",
+                    "window_usage_daily",
+                    "screen_time_hourly",
+                    "resource_usage_daily",
+                    "chat_messages",
+                    "network_usage_daily",
+                    "network_domains_daily",
+                ):
+                    conn.execute(f"DELETE FROM {tbl} WHERE agent_id IN ({ph})", member_ids)
                 if revoke:
-                    conn.execute(
+                    conn.executemany(
                         "INSERT OR REPLACE INTO revoked_devices (agent_id, revoked_at, reason) VALUES (?, ?, 'autodestroy')",
-                        (agent_id, now_str),
+                        [(mid, now_str) for mid in member_ids],
                     )
                 conn.commit()
+                return member_ids
             finally:
                 conn.close()
 
@@ -1037,15 +1075,18 @@ class DatabaseManager:
         with self._lock:
             conn = self._get_conn()
             try:
+                member_ids = self._physical_member_ids(conn, agent_id)
+                ph = ",".join("?" for _ in member_ids)
                 conn.execute(
-                    "UPDATE devices SET alias = ? WHERE agent_id = ?",
-                    (new_alias, agent_id),
+                    f"UPDATE devices SET alias = ? WHERE agent_id IN ({ph})",
+                    (new_alias, *member_ids),
                 )
                 conn.execute(
-                    "UPDATE device_logs SET alias = ? WHERE agent_id = ?",
-                    (new_alias, agent_id),
+                    f"UPDATE device_logs SET alias = ? WHERE agent_id IN ({ph})",
+                    (new_alias, *member_ids),
                 )
                 conn.commit()
+                return member_ids
             finally:
                 conn.close()
 
@@ -1063,13 +1104,22 @@ class DatabaseManager:
                     rows = conn.execute(
                         "SELECT * FROM devices ORDER BY is_online DESC, alias ASC"
                     ).fetchall()
+                grp = _group_physical_devices(rows)
                 result = []
-                for r in rows:
-                    d = dict(r)
+                for pid in grp["order"]:
+                    info = grp["groups"][pid]
+                    d = dict(info["primary_dev"])
                     tid = d.get("tenant_id") or MASTER_TENANT_ID
                     d["tenant_id"] = tid
                     d["tenant_name"] = tenant_names.get(tid, tid)
+                    d["username"] = info["username"] or d.get("username") or "---"
+                    d["is_online"] = 1 if info["is_online"] else 0
+                    d["last_seen_at"] = info["last_seen_at"] or d.get("last_seen_at") or "---"
+                    d["sessions_count"] = info["sessions_count"]
+                    d["session_users"] = info["session_users"]
+                    d["member_agent_ids"] = info["member_agent_ids"]
                     result.append(d)
+                result.sort(key=lambda x: (-int(x.get("is_online") or 0), str(x.get("alias") or "").lower()))
                 return result
             finally:
                 conn.close()
@@ -1313,9 +1363,10 @@ class DatabaseManager:
             clauses.append("agent_id IN (SELECT agent_id FROM devices WHERE tenant_id = ?)")
             params.append(allowed_tenant_id)
 
+        log_member_ids: List[str] = []
         if agent_id and agent_id != "ALL":
-            clauses.append("agent_id = ?")
-            params.append(agent_id)
+            log_member_ids = [agent_id]
+            clauses.append("__AGENT_FILTER__")
 
         if category and category != "ALL":
             clauses.append("category = ?")
@@ -1326,14 +1377,21 @@ class DatabaseManager:
             clauses.append("(message LIKE ? OR alias LIKE ? OR hostname LIKE ? OR username LIKE ?)")
             params.extend([q, q, q, q])
 
-        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        sql = f"SELECT * FROM device_logs {where_sql} ORDER BY id DESC LIMIT ?"
-        params.append(max(1, min(2000, int(limit))))
-
         with self._lock:
             conn = self._get_conn()
             try:
-                rows = conn.execute(sql, params).fetchall()
+                if log_member_ids:
+                    # Bitacora de equipo fisico: incluir todas las cuentas de usuario de la misma PC
+                    log_member_ids = self._physical_member_ids(conn, agent_id)
+                    ph = ",".join("?" for _ in log_member_ids)
+                    idx = clauses.index("__AGENT_FILTER__")
+                    clauses[idx] = f"agent_id IN ({ph})"
+                    # Insertar parametros en la posicion correcta (despues del filtro de tenant, si existe)
+                    insert_at = 1 if allowed_tenant_id else 0
+                    params[insert_at:insert_at] = log_member_ids
+                where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+                sql = f"SELECT * FROM device_logs {where_sql} ORDER BY id DESC LIMIT ?"
+                rows = conn.execute(sql, [*params, max(1, min(2000, int(limit)))]).fetchall()
                 return [dict(r) for r in rows]
             finally:
                 conn.close()

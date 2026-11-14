@@ -512,12 +512,18 @@
   function buildOfflineWallItems() {
     const offlineList = [];
     (state.knownDevices || []).forEach((dev) => {
-      if (!state.agents.has(dev.agent_id)) {
+      const memberIds = Array.isArray(dev.member_agent_ids) && dev.member_agent_ids.length
+        ? dev.member_agent_ids
+        : [dev.agent_id];
+      const hasOnlineMember = memberIds.some((id) => state.agents.has(id));
+      if (!hasOnlineMember) {
         offlineList.push({
           agent_id: dev.agent_id,
           alias: dev.alias || dev.hostname || dev.agent_id,
           hostname: dev.hostname || 'Equipo registrado',
           username: dev.username || '---',
+          session_users: Array.isArray(dev.session_users) ? dev.session_users : (dev.username ? [dev.username] : []),
+          sessions_count: Number(dev.sessions_count) || 1,
           local_ip: dev.local_ip || '---',
           last_seen_at: dev.last_seen_at || '---',
           tenant_id: dev.tenant_id || 'sitai-master',
@@ -643,55 +649,81 @@
         });
 
         const storedSelectedId = state.selectedSessionTabs.get(groupKey);
-        const activeItem = groupItems.find((it) => it.agent_id === storedSelectedId) || groupItems[0];
+        const activeItem = groupItems.find((it) => it.agent_id === storedSelectedId && !it.is_offline_card)
+          || groupItems.find((it) => !it.is_offline_card)
+          || groupItems[0];
         const ag = activeItem;
 
-        const isMultiSession = groupItems.length > 1;
+        // Recopilar todos los usuarios únicos conocidos de este equipo físico
+        const knownDevMatch = (state.knownDevices || []).find(
+          (kd) => computeHardwareGroupKey(kd) === groupKey || kd.agent_id === ag.agent_id
+        );
+        const allUsernamesSet = new Set();
+        if (knownDevMatch && Array.isArray(knownDevMatch.session_users)) {
+          knownDevMatch.session_users.forEach((u) => {
+            if (u && u !== '---') allUsernamesSet.add(u);
+          });
+        }
+        groupItems.forEach((it) => {
+          if (Array.isArray(it.session_users)) {
+            it.session_users.forEach((u) => {
+              if (u && u !== '---') allUsernamesSet.add(u);
+            });
+          } else if (it.username && it.username !== '---') {
+            String(it.username).split('/').map((s) => s.trim()).filter(Boolean).forEach((u) => allUsernamesSet.add(u));
+          }
+        });
+        const allUsernames = Array.from(allUsernamesSet);
+        const onlineSessions = groupItems.filter((it) => !it.is_offline_card);
+        const hasMultipleLiveSessions = onlineSessions.length > 1;
+        const hasMultipleAccounts = allUsernames.length > 1 || hasMultipleLiveSessions;
 
-        // Construir barra de pestañas superior si esta PC tiene 2 o más sesiones / usuarios
-        let sessionTabsHtml = '';
-        if (isMultiSession) {
-          const allSameAlias = groupItems.every(
-            (it) => (it.alias || '').trim().toLowerCase() === (groupItems[0].alias || '').trim().toLowerCase()
-          );
-          const tabsButtons = groupItems
+        // Bloque limpio de cuentas / sesiones integrado dentro de card-body (sin barra de pestañas confusa arriba de la pantalla)
+        let accountsBlockHtml = '';
+        if (hasMultipleLiveSessions) {
+          const switcherButtons = onlineSessions
             .map((item, idx) => {
               const isCur = item.agent_id === ag.agent_id;
               const isBg = Boolean(item.is_background_session);
-              const isOff = Boolean(item.is_offline_card);
-              let sessionLabel = item.alias || `Usuario ${idx + 1}`;
-              if (allSameAlias && item.username && item.username !== '---') {
-                sessionLabel = `Usuario: ${item.username}`;
-              } else if (item.username && item.username !== '---' && !sessionLabel.toLowerCase().includes(item.username.toLowerCase())) {
-                sessionLabel = `${sessionLabel} (${item.username})`;
-              }
-              const tabDot = isOff
-                ? 'dot-slate'
-                : (item.activity_status === 'active' ? 'dot-emerald' : (item.activity_status === 'idle' ? 'dot-amber' : 'dot-rose'));
-
-              const statePill = isOff
-                ? '<span class="session-tab-pill-bg">Off</span>'
-                : (isBg ? '<span class="session-tab-pill-bg">2ºP</span>' : '');
-
+              const uName = item.username && item.username !== '---' ? item.username : `Sesión ${idx + 1}`;
+              const tabDot = item.activity_status === 'active' ? 'dot-emerald' : (item.activity_status === 'idle' ? 'dot-amber' : 'dot-rose');
+              const roleTag = isBg ? '2º plano' : 'En pantalla';
               return `
-                <button type="button" class="session-tab-btn ${isCur ? 'active' : ''} js-switch-session-tab" data-group-key="${escapeHtml(groupKey)}" data-agent-id="${escapeHtml(item.agent_id)}" title="${escapeHtml(item.alias)} • Usuario SO: ${escapeHtml(item.username)}">
+                <button type="button" class="card-session-switch-btn ${isCur ? 'active' : ''} js-switch-session-tab" data-group-key="${escapeHtml(groupKey)}" data-agent-id="${escapeHtml(item.agent_id)}" title="Cambiar vista a la sesión de ${escapeHtml(uName)} (${roleTag})">
                   <span class="indicator-dot ${tabDot}"></span>
-                  <span>${escapeHtml(sessionLabel)}</span>
-                  ${statePill}
+                  <span class="switch-user-name">${escapeHtml(uName)}</span>
+                  <span class="switch-role-pill ${isBg ? 'is-bg' : 'is-fg'}">${roleTag}</span>
                 </button>
               `;
             })
             .join('');
-
-          sessionTabsHtml = `
-            <div class="card-session-tabs-bar">
-              <span class="card-session-meta-chip">
-                <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;">
-                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-                </svg>
-                ${groupItems.length} Usuarios
+          accountsBlockHtml = `
+            <div class="card-accounts-box is-live-multi">
+              <div class="card-accounts-header">
+                <span class="card-accounts-title">Sesiones simultáneas en este equipo</span>
+                <span class="card-accounts-count">${onlineSessions.length} activas</span>
+              </div>
+              <div class="card-session-switcher">${switcherButtons}</div>
+            </div>
+          `;
+        } else if (hasMultipleAccounts) {
+          const activeUser = !ag.is_offline_card && ag.username && ag.username !== '---' ? ag.username : null;
+          const userPills = allUsernames
+            .map((u) => {
+              const isLiveUser = activeUser && u.toLowerCase() === activeUser.toLowerCase();
+              if (isLiveUser) {
+                return `<span class="card-user-pill is-active-session" title="Sesión activa actualmente en el equipo"><span class="indicator-dot dot-emerald"></span>${escapeHtml(u)} <small>En sesión</small></span>`;
+              }
+              return `<span class="card-user-pill is-idle-account" title="Cuenta registrada en este equipo">${escapeHtml(u)}</span>`;
+            })
+            .join('');
+          accountsBlockHtml = `
+            <div class="card-accounts-box">
+              <span class="card-accounts-label">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                Cuentas en equipo (${allUsernames.length}):
               </span>
-              ${tabsButtons}
+              <div class="card-users-row">${userPills}</div>
             </div>
           `;
         }
@@ -719,10 +751,13 @@
              </details>`
           : '';
 
+        const submetaSingleUser = !hasMultipleAccounts && (allUsernames[0] || ag.username)
+          ? `${escapeHtml(allUsernames[0] || ag.username)} · `
+          : '';
+
         if (ag.is_offline_card) {
           return `
             <article class="agent-card card-offline-minimal" data-agent-id="${escapeHtml(ag.agent_id)}">
-              ${sessionTabsHtml}
               <div class="card-screen card-screen-offline">
                 <div class="screen-top-badges">
                   <span class="badge-status badge-offline-overlay">
@@ -732,7 +767,7 @@
                   ${osLabel ? `<span class="screen-mon-pill">${osLabel}</span>` : ''}
                 </div>
                 <div class="screen-offline-placeholder">
-                  <svg class="icon-md" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                  <svg class="icon-md" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
                     <rect x="2" y="3" width="20" height="14" rx="2"/>
                     <line x1="8" y1="21" x2="16" y2="21"/>
                     <line x1="12" y1="17" x2="12" y2="21"/>
@@ -750,7 +785,8 @@
                   </div>
                 </div>
 
-                <p class="card-submeta">${escapeHtml(ag.username)} · ${escapeHtml(ag.hostname)}${tenantTagHtml}</p>
+                <p class="card-submeta">${submetaSingleUser}${escapeHtml(ag.hostname)}${tenantTagHtml}</p>
+                ${accountsBlockHtml}
 
                 <div class="card-focus-bar focus-bar-offline">
                   <span class="focus-win-text">Equipo fuera de linea</span>
@@ -779,7 +815,7 @@
         const isBgSession = Boolean(ag.is_background_session);
         const placeholderHtml = isBgSession
           ? `<div class="screen-offline-placeholder" style="flex-direction:column; gap:6px; padding:12px; text-align:center;">
-               <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:22px;height:22px;opacity:0.75;">
+               <svg class="icon-sm" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:22px;height:22px;opacity:0.75;">
                  <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 8h10"/><path d="M7 12h6"/>
                </svg>
                <span>Sesión de Windows en 2º plano</span>
@@ -790,7 +826,6 @@
         const canCtrl = !state.user || state.user.can_control !== false;
         return `
           <article class="agent-card ${cardExtra}" data-agent-id="${escapeHtml(ag.agent_id)}">
-            ${sessionTabsHtml}
             <div class="card-screen js-open-viewer" data-agent-id="${escapeHtml(ag.agent_id)}" title="Clic para abrir pantalla en vivo">
               ${
                 thumbSrc
@@ -809,7 +844,6 @@
                   ${escapeHtml(meta.label)}
                 </span>
                 <div style="display:flex; gap:4px; align-items:center;">
-                  ${isMultiSession ? `<span class="multi-session-badge" title="PC con multiples sesiones">${groupItems.length}S</span>` : ''}
                   ${isBgSession ? `<span class="screen-mon-pill" title="Sesion en segundo plano">2º Plano</span>` : ''}
                   <span class="screen-mon-pill">${osLabel ? `${osLabel} · ` : ''}${monCount}M</span>
                 </div>
@@ -825,7 +859,8 @@
                 </div>
               </div>
 
-              <p class="card-submeta">${escapeHtml(ag.username)} · ${escapeHtml(ag.hostname)}${tenantTagHtml}</p>
+              <p class="card-submeta">${submetaSingleUser}${escapeHtml(ag.hostname)}${tenantTagHtml}</p>
+              ${accountsBlockHtml}
 
               <div class="card-focus-bar">
                 <span class="focus-win-text" title="${escapeHtml(ag.active_window || 'Escritorio')}">${escapeHtml(ag.active_window || 'Escritorio')}</span>
@@ -863,25 +898,44 @@
 
   function populateLogDeviceSelector() {
     const currentVal = logDeviceFilter.value || 'ALL';
-    const mapDevs = new Map();
-    state.knownDevices.forEach((d) => mapDevs.set(d.agent_id, { alias: d.alias, username: d.username, hostname: d.hostname }));
-    state.agents.forEach((a) => mapDevs.set(a.agent_id, { alias: a.alias, username: a.username, hostname: a.hostname }));
+    const groups = new Map();
 
-    const aliasCounts = new Map();
-    mapDevs.forEach((info) => {
-      const k = (info.alias || '').trim().toLowerCase();
-      aliasCounts.set(k, (aliasCounts.get(k) || 0) + 1);
-    });
+    const addDevToGroup = (d) => {
+      const hostClean = (d.hostname || '').trim().toLowerCase();
+      const ipClean = (d.local_ip || '').trim().toLowerCase();
+      const gKey = (hostClean && !['equipo registrado', 'pc-desconocida', 'unknown', '---'].includes(hostClean))
+        ? `hw__${hostClean}`
+        : `id__${d.agent_id}`;
+      if (!groups.has(gKey)) {
+        groups.set(gKey, {
+          agent_id: d.agent_id,
+          alias: d.alias || d.hostname || d.agent_id,
+          hostname: d.hostname || '',
+          users: new Set(),
+          memberIds: new Set(),
+        });
+      }
+      const g = groups.get(gKey);
+      g.memberIds.add(d.agent_id);
+      if (Array.isArray(d.member_agent_ids)) {
+        d.member_agent_ids.forEach((id) => g.memberIds.add(id));
+      }
+      if (Array.isArray(d.session_users)) {
+        d.session_users.forEach((u) => { if (u && u !== '---') g.users.add(u); });
+      } else if (d.username && d.username !== '---') {
+        String(d.username).split('/').map((s) => s.trim()).filter(Boolean).forEach((u) => g.users.add(u));
+      }
+    };
+
+    (state.knownDevices || []).forEach(addDevToGroup);
+    state.agents.forEach(addDevToGroup);
 
     let html = '<option value="ALL">Todos los equipos</option>';
-    mapDevs.forEach((info, id) => {
-      const sel = id === currentVal ? 'selected' : '';
-      const k = (info.alias || '').trim().toLowerCase();
-      const label =
-        (aliasCounts.get(k) || 0) > 1 && info.username && info.username !== '---'
-          ? `${info.alias} (${info.username})`
-          : info.alias;
-      html += `<option value="${escapeHtml(id)}" ${sel}>${escapeHtml(label)}</option>`;
+    groups.forEach((g) => {
+      const sel = (g.agent_id === currentVal || g.memberIds.has(currentVal)) ? 'selected' : '';
+      const usersStr = Array.from(g.users).join(' / ');
+      const label = usersStr ? `${g.alias} (${usersStr})` : g.alias;
+      html += `<option value="${escapeHtml(g.agent_id)}" ${sel}>${escapeHtml(label)}</option>`;
     });
     logDeviceFilter.innerHTML = html;
   }
@@ -3145,7 +3199,8 @@
           const isSuper = isSuperAdmin();
           settingsDevicesTbody.innerHTML = devList
             .map((d) => {
-              const isOnline = state.agents.has(d.agent_id);
+              const memberIds = Array.isArray(d.member_agent_ids) && d.member_agent_ids.length ? d.member_agent_ids : [d.agent_id];
+              const isOnline = memberIds.some((id) => state.agents.has(id));
               const statusBadge = isOnline
                 ? `<span class="badge-status badge-active"><span class="indicator-dot dot-emerald"></span>En línea</span>`
                 : `<span class="badge-status cat-NETWORK"><span class="indicator-dot dot-slate"></span>Desconectado</span>`;
@@ -3161,10 +3216,14 @@
                 `;
               }
 
+              const multiBadge = Number(d.sessions_count) > 1
+                ? ` <span class="multi-user-inline-pill" title="Cuentas de usuario en este equipo">${Number(d.sessions_count)} cuentas: ${escapeHtml(d.username)}</span>`
+                : ` (${escapeHtml(d.username)})`;
+
               return `
                 <tr>
                   <td><strong>${escapeHtml(d.alias || d.hostname || d.agent_id)}</strong></td>
-                  <td>${escapeHtml(d.hostname)} (${escapeHtml(d.username)})</td>
+                  <td>${escapeHtml(d.hostname)}${multiBadge}</td>
                   <td>${statusBadge}</td>
                   <td>${tenantCell}</td>
                   <td>

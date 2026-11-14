@@ -358,31 +358,39 @@ class HubManager:
         alias_clean = new_alias.strip()
         if not alias_clean:
             return
-        db.update_device_alias(agent_id, alias_clean)
-        agent = self.agents.get(agent_id)
-        if agent:
+        # El alias pertenece al equipo fisico: se aplica a todas sus cuentas de usuario (agent_id hermanos)
+        member_ids = db.update_device_alias(agent_id, alias_clean) or [agent_id]
+        logged = False
+        for mid in member_ids:
+            agent = self.agents.get(mid)
+            if not agent:
+                continue
             old_alias = agent.alias
             agent.alias = alias_clean
-            await self.send_to_agent(agent_id, {"type": "update_alias", "alias": alias_clean})
-            log_entry = db.add_log(
-                agent_id=agent.agent_id,
-                alias=agent.alias,
-                hostname=agent.hostname,
-                username=agent.username,
-                category="AUDIT",
-                message=f"Alias del equipo actualizado de '{old_alias}' a '{alias_clean}'",
-            )
-            await self.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)
+            await self.send_to_agent(mid, {"type": "update_alias", "alias": alias_clean})
+            if not logged:
+                logged = True
+                log_entry = db.add_log(
+                    agent_id=agent.agent_id,
+                    alias=agent.alias,
+                    hostname=agent.hostname,
+                    username=agent.username,
+                    category="AUDIT",
+                    message=f"Alias del equipo actualizado de '{old_alias}' a '{alias_clean}'",
+                )
+                await self.broadcast_new_log(log_entry, tenant_id=agent.tenant_id)
         await self.broadcast_agents_list()
 
     async def update_device_tenant(self, agent_id: str, new_tenant_id: str):
         clean_tid = (new_tenant_id or MASTER_TENANT_ID).strip()
+        member_ids = db.get_physical_member_ids(agent_id) or [agent_id]
         db.set_device_tenant(agent_id, clean_tid)
         tenant_names = db.get_tenant_name_map()
-        agent = self.agents.get(agent_id)
-        if agent:
-            agent.tenant_id = clean_tid
-            agent.tenant_name = tenant_names.get(clean_tid, clean_tid)
+        for mid in member_ids:
+            agent = self.agents.get(mid)
+            if agent:
+                agent.tenant_id = clean_tid
+                agent.tenant_name = tenant_names.get(clean_tid, clean_tid)
         await self.broadcast_agents_list()
 
     async def send_to_agent(self, agent_id: str, payload: dict) -> bool:
@@ -761,11 +769,20 @@ async def remove_device_endpoint(
     if requester["role"] == "sub_user":
         raise HTTPException(status_code=403, detail="Los sub-usuarios no pueden eliminar o desvincular equipos")
 
-    live_agent = hub.agents.pop(agent_id, None)
-    tid = live_agent.tenant_id if live_agent else (db.get_device_tenant(agent_id) or MASTER_TENANT_ID)
-    alias_lbl = live_agent.alias if live_agent else agent_id
+    # Quitar el equipo fisico completo: todas sus cuentas de usuario (agent_id hermanos)
+    member_ids = db.get_physical_member_ids(agent_id) or [agent_id]
+    if agent_id not in member_ids:
+        member_ids.insert(0, agent_id)
+    first_live = hub.agents.get(agent_id)
+    tid = first_live.tenant_id if first_live else (db.get_device_tenant(agent_id) or MASTER_TENANT_ID)
+    alias_lbl = first_live.alias if first_live else agent_id
 
-    if live_agent:
+    for mid in member_ids:
+        live_agent = hub.agents.pop(mid, None)
+        if not live_agent:
+            continue
+        if alias_lbl == agent_id:
+            alias_lbl = live_agent.alias
         if self_destruct:
             try:
                 await live_agent.websocket.send_json({"type": "self_destruct"})
@@ -776,16 +793,17 @@ async def remove_device_endpoint(
         except Exception:
             pass
         await hub.broadcast_to_viewers(
-            agent_id,
-            {"type": "agent_disconnected", "agent_id": agent_id},
+            mid,
+            {"type": "agent_disconnected", "agent_id": mid},
         )
 
     db.delete_device(agent_id, revoke=bool(self_destruct))
     try:
         import shutil
-        agent_cap_dir = CAPTURES_DIR / os.path.basename(agent_id)
-        if agent_cap_dir.exists() and agent_cap_dir.is_dir():
-            shutil.rmtree(agent_cap_dir, ignore_errors=True)
+        for mid in member_ids:
+            agent_cap_dir = CAPTURES_DIR / os.path.basename(mid)
+            if agent_cap_dir.exists() and agent_cap_dir.is_dir():
+                shutil.rmtree(agent_cap_dir, ignore_errors=True)
     except Exception:
         pass
     mode_lbl = "con orden de autodestrucción y revocación" if self_destruct else "desvinculado del panel"
@@ -799,7 +817,7 @@ async def remove_device_endpoint(
     )
     await hub.broadcast_new_log(log_entry, tenant_id=tid)
     await hub.broadcast_agents_list()
-    return {"ok": True, "deleted_agent_id": agent_id, "self_destruct": bool(self_destruct)}
+    return {"ok": True, "deleted_agent_id": agent_id, "deleted_agent_ids": member_ids, "self_destruct": bool(self_destruct)}
 
 
 @app.get("/api/settings/timezone")
