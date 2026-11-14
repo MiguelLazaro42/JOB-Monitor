@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=20261113-v16" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=20261113-v18" />
 </head>
 <body>
   <!-- ======================================================================= -->
@@ -479,6 +479,13 @@
       </div>
 
       <nav class="nav-tabs" aria-label="Navegación principal">
+        <button id="tab-dashboard" class="nav-tab" type="button">
+          <svg class="icon-xs" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="8" height="10" rx="1.5"/><rect x="3" y="16" width="8" height="5" rx="1.5"/>
+            <rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="11" width="7" height="10" rx="1.5"/>
+          </svg>
+          <span>Dashboard</span>
+        </button>
         <button id="tab-wall" class="nav-tab active" type="button">
           <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/>
@@ -555,6 +562,134 @@
       </div>
     </div>
   </header>
+
+  <!-- ======================================================================= -->
+  <!-- VISTA 0: CENTRO DE MANDO EJECUTIVO (DASHBOARD PRINCIPAL CROSS-FILTER)   -->
+  <!-- ======================================================================= -->
+  <section id="view-dashboard" class="main-container hidden">
+
+    <!-- Fila 0: Barra Cross-Filter Global -->
+    <div class="dash-toolbar">
+      <div class="dash-toolbar-left">
+        <div class="dash-toolbar-title">
+          <svg class="icon-sm" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="8" height="10" rx="1.5"/><rect x="3" y="16" width="8" height="5" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="11" width="7" height="10" rx="1.5"/></svg>
+          <span>Centro de Mando</span>
+        </div>
+        <input id="dash-date-picker" type="date" class="toolbar-select dash-input" aria-label="Fecha del Centro de Mando" />
+        <select id="dash-filter-agent" class="toolbar-select dash-input" aria-label="Filtrar por colaborador">
+          <option value="ALL">Todos los colaboradores</option>
+        </select>
+        <select id="dash-filter-iface" class="toolbar-select dash-input" aria-label="Filtrar por interfaz">
+          <option value="ALL">Todas las interfaces</option>
+          <option value="WIFI">Wi-Fi</option>
+          <option value="ETH">Ethernet</option>
+          <option value="VPN">VPN / Túnel</option>
+          <option value="VIRTUAL">Virtual</option>
+        </select>
+        <select id="dash-filter-proto" class="toolbar-select dash-input" aria-label="Filtrar por protocolo L7">
+          <option value="ALL">Todos los protocolos</option>
+        </select>
+      </div>
+      <div class="dash-toolbar-right">
+        <button id="btn-dash-refresh" type="button" class="btn btn-secondary btn-sm dash-btn" title="Refrescar datos del Centro de Mando">
+          <svg class="icon-sm" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          <span>Refrescar</span>
+        </button>
+        <button id="btn-dash-ota" type="button" class="btn btn-primary btn-sm dash-btn" title="Desplegar la última versión del agente a los equipos conectados">
+          <svg class="icon-sm" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v13"/><polyline points="7 7 12 2 17 7"/><path d="M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></svg>
+          <span>Actualizar Agentes (OTA)</span>
+          <span id="dash-ota-status" class="dash-ota-status hidden"></span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Cinta de filtros activos (cross-filter chips) -->
+    <div id="dash-active-filters-bar" class="dash-active-filters-bar hidden"></div>
+
+    <!-- Fila 1: 6 KPIs Ejecutivos Cruzados -->
+    <div id="dash-kpi-grid" class="dash-kpi-grid"></div>
+
+    <!-- Fila 2: Topologia (62%) + Matriz Cuadrante (38%) -->
+    <div class="dash-main-grid">
+      <div id="dash-super-topo-card" class="dash-card dash-super-topo-card">
+        <div class="dash-card-head">
+          <div class="dash-card-title">Super-Topología Interactiva</div>
+          <div class="dash-topo-modes">
+            <button type="button" class="dash-topo-mode-btn active" data-mode="cross4">Cruce Total</button>
+            <button type="button" class="dash-topo-mode-btn" data-mode="proto4">Protocolos</button>
+            <button type="button" class="dash-topo-mode-btn" data-mode="prod">Productividad</button>
+            <button type="button" class="dash-topo-mode-btn" data-mode="asn">Infraestructura</button>
+            <button id="btn-dash-topo-reset" type="button" class="dash-topo-reset-btn" title="Restaurar la disposición automática de nodos">Reorganizar</button>
+          </div>
+        </div>
+        <div class="dash-topo-legend">Arrastra cualquier nodo para reorganizar · Doble clic para soltar · Clic para filtrar el Dashboard</div>
+        <div class="dash-topo-canvas">
+          <svg id="dash-super-topo-svg" width="960" height="520" viewBox="0 0 960 520" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+      </div>
+
+      <div id="dash-quadrant-card" class="dash-card dash-quadrant-card">
+        <div class="dash-card-head">
+          <div class="dash-card-title">Productividad vs. Red</div>
+        </div>
+        <div class="dash-quadrant-canvas">
+          <svg id="dash-quadrant-svg" width="460" height="320" viewBox="0 0 460 320" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+        <div class="dash-quadrant-legend">
+          <span class="dash-quad-leg"><span class="dash-quad-dot dq-hi-lo"></span>Alto Enfoque / Bajo Tráfico</span>
+          <span class="dash-quad-leg"><span class="dash-quad-dot dq-hi-hi"></span>Alto Enfoque / Alto Tráfico</span>
+          <span class="dash-quad-leg"><span class="dash-quad-dot dq-lo-hi"></span>Bajo Enfoque / Alto Tráfico</span>
+          <span class="dash-quad-leg"><span class="dash-quad-dot dq-idle"></span>Inactivo</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Fila 3: Protocolos L4/L7 + Interfaces por equipo -->
+    <div class="dash-dual-grid">
+      <div id="dash-protocols-panel" class="dash-card dash-panel">
+        <div class="dash-card-head">
+          <div class="dash-card-title">Clasificación de Tráfico por Protocolo L4/L7</div>
+          <select id="dash-proto-scope" class="toolbar-select dash-input dash-input-sm" aria-label="Alcance del desglose de protocolos">
+            <option value="ALL">Global (toda la flota)</option>
+          </select>
+        </div>
+        <div id="dash-protocols-body" class="dash-protocols-body"></div>
+      </div>
+
+      <div id="dash-interfaces-panel" class="dash-card dash-panel">
+        <div class="dash-card-head">
+          <div class="dash-card-title">Interfaces de Red por Equipo</div>
+        </div>
+        <div id="dash-interfaces-body" class="dash-interfaces-body"></div>
+      </div>
+    </div>
+
+    <!-- Fila 4: Tabla de Servicios y Dominios Cruzados -->
+    <div id="dash-services-card" class="dash-card dash-services-card">
+      <div class="dash-card-head">
+        <div class="dash-card-title">Principales Servicios y Dominios Cruzados</div>
+        <input id="dash-service-search" type="search" class="toolbar-select dash-input dash-input-search" placeholder="Buscar servicio o dominio..." aria-label="Buscar servicio o dominio" />
+      </div>
+      <div class="dash-services-table-wrap">
+        <table class="dash-services-table">
+          <thead>
+            <tr>
+              <th>Servicio / Dominio</th>
+              <th>App / Proceso</th>
+              <th>Categoría</th>
+              <th>Protocolo L7</th>
+              <th>Interfaz de Salida</th>
+              <th>Colaboradores</th>
+              <th>Tráfico (RX/TX)</th>
+              <th>% del Total</th>
+            </tr>
+          </thead>
+          <tbody id="dash-services-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </section>
 
   <!-- ======================================================================= -->
   <!-- VISTA 1: FLUJO UNIFICADO (FILTROS KPI INTERACTIVOS + BUSCADOR + MURO)   -->
@@ -1152,6 +1287,10 @@
               <option value="time">Por Tiempo Invertido</option>
               <option value="switches">Por Cambios de Foco</option>
             </select>
+            <button id="btn-prod-topo-reset" type="button" class="btn btn-secondary btn-sm" title="Devolver todos los nodos a su posición automática">
+              <svg class="icon-sm" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+              <span>Reorganizar Nodos</span>
+            </button>
             <button id="wt-reset-btn" type="button" class="btn btn-secondary btn-sm">
               <svg class="icon-sm" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
               <span>Restablecer vista</span>
@@ -1161,6 +1300,7 @@
         <div class="wt-col-labels">
           <span>Colaboradores</span><span>Categorías</span><span>Aplicaciones Top</span>
         </div>
+        <p class="topo-drag-hint">Arrastra cualquier nodo para reorganizar · Doble clic para soltar</p>
         <div class="wt-canvas-box">
           <svg id="wt-topology-svg" class="wt-topology-svg" viewBox="0 0 1140 560" width="100%" height="560" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Grafo de productividad"></svg>
         </div>
@@ -1570,6 +1710,18 @@
         <button type="button" class="net-chip-btn" data-category="SYSTEM"><span class="net-chip-label">Sistema</span><span class="net-chip-count" data-chip-count="SYSTEM">0</span></button>
       </div>
 
+      <!-- MF-15: Chips de Protocolo L7 (nDPI) -->
+      <div class="net-proto-bar">
+        <span class="net-proto-bar-label">Protocolo L7</span>
+        <div class="net-proto-chips" id="net-proto-chips" role="toolbar" aria-label="Protocolos de tráfico L7"></div>
+      </div>
+
+      <!-- MF-15: Chips de Tipo de Interfaz de Red -->
+      <div class="net-proto-bar net-iface-bar">
+        <span class="net-proto-bar-label">Interfaz de Red</span>
+        <div class="net-proto-chips net-iface-chips" id="net-iface-filter" role="toolbar" aria-label="Tipo de interfaz de red"></div>
+      </div>
+
       <!-- Barra de herramientas de flujos -->
       <div class="panel-card net-flows-toolbar">
         <div class="net-ft-row net-ft-row-main">
@@ -1683,8 +1835,13 @@
               <option value="20">Top 20 destinos</option>
               <option value="30">Top 30 destinos</option>
             </select>
+            <button id="btn-net-topo-reset" type="button" class="btn btn-secondary btn-sm" title="Devolver todos los nodos a su posición automática">
+              <svg class="icon-sm" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+              <span>Reorganizar Nodos</span>
+            </button>
           </div>
         </div>
+        <p class="topo-drag-hint">Arrastra cualquier nodo para reorganizar · Doble clic para soltar</p>
         <div class="net-topo-stage">
           <svg id="net-topology-svg" class="net-topology-svg" viewBox="0 0 1140 580" width="100%" height="580" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Grafo de topología de red"></svg>
         </div>
@@ -1953,6 +2110,6 @@
 
   <script src="/static/js/audio.js?v=20261111-v9"></script>
   <script src="/static/js/viewer.js?v=20261111-v9"></script>
-  <script src="/static/js/app.js?v=20261113-v16"></script>
+  <script src="/static/js/app.js?v=20261113-v18"></script>
 </body>
 </html>

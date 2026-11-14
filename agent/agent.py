@@ -2307,6 +2307,101 @@ def classify_domain_ndpi(raw_domain_or_ip: str, app_name: str = "") -> tuple[str
     return match_service_domain_or_ip(raw_domain_or_ip, app_name)
 
 
+# MF-02: catálogo de IPs de resolutores DNS cifrados (DoH / DoT) conocidos
+_DOH_RESOLVER_IPS = frozenset({
+    "1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "149.112.112.112",
+    "208.67.222.222", "208.67.220.220", "94.140.14.14", "94.140.15.15",
+})
+_DOH_RESOLVER_DOMAINS = (
+    "dns.google", "cloudflare-dns.com", "dns.quad9.net", "dns.adguard.com",
+    "doh.opendns.com", "mozilla.cloudflare-dns.com", "one.one.one.one",
+)
+
+
+def classify_flow_protocol_l7(
+    l4_proto: str = "TCP",
+    local_port: int = 0,
+    remote_port: int = 0,
+    remote_ip: str = "",
+    domain: str = "",
+    proc_name: str = "",
+    iface_kind: str = "",
+) -> str:
+    """
+    MF-02: Clasificador exhaustivo de tipo de tráfico (L7) por flujo individual.
+    Cruza protocolo L4 (TCP/UDP), puertos, IP/dominio remoto, proceso e interfaz
+    para devolver una etiqueta estandarizada de protocolo/servicio.
+    """
+    proto = (l4_proto or "TCP").upper()
+    is_udp = proto == "UDP"
+    try:
+        rport = int(remote_port or 0)
+    except (TypeError, ValueError):
+        rport = 0
+    try:
+        lport = int(local_port or 0)
+    except (TypeError, ValueError):
+        lport = 0
+    ports = {rport, lport}
+    rip = (remote_ip or "").strip().lower()
+    dom = (domain or "").strip().lower().rstrip(".")
+    proc = (proc_name or "").strip().lower()
+    ikind = (iface_kind or "").strip().upper()
+
+    def _has_dom(*keys: str) -> bool:
+        return bool(dom) and any(dom == k or dom.endswith("." + k) for k in keys)
+
+    def _has_proc(*keys: str) -> bool:
+        return bool(proc) and any(k in proc for k in keys)
+
+    # DNS cifrado (DoH / DoT): puerto 853 o resolutores conocidos
+    if 853 in ports or _has_dom(*_DOH_RESOLVER_DOMAINS) or (rip in _DOH_RESOLVER_IPS and (rport in (443, 853) or lport in (443, 853))):
+        return "DoH/DoT"
+    # DNS en claro / mDNS
+    if 53 in ports or 5353 in ports:
+        return "DNS"
+    # Tor / anonimato
+    if ports & {9001, 9030, 9050, 9150} or _has_proc("tor", "obfs4proxy", "snowflake-client"):
+        return "Tor"
+    # WireGuard
+    if ports & {51820, 51821} or _has_proc("wireguard", "wg-quick") or (is_udp and ikind == "VPN" and _has_proc("wg")):
+        return "WireGuard"
+    # Tailscale / ZeroTier (Mesh VPN)
+    if ports & {41641, 9993} or _has_proc("tailscale", "ipnextension", "zerotier") or _has_dom("tailscale.com"):
+        return "Tailscale"
+    # OpenVPN / IPsec / IKEv2
+    if ports & {1194, 500, 4500} or _has_proc("openvpn", "anyconnect", "globalprotect", "forticlient", "nesessionmanager"):
+        return "OpenVPN/IPsec"
+    # SSH / SFTP
+    if ports & {22, 2222} or _has_proc("ssh", "sftp", "scp", "putty", "termius"):
+        return "SSH"
+    # RDP / Control Remoto / VNC
+    if ports & {3389, 5900, 5901, 7070, 5938} or (ports & set(range(21115, 21120))):
+        return "RDP/Remoto"
+    # SMB / Archivos LAN / AFP / NFS
+    if ports & {445, 139, 548, 2049}:
+        return "SMB/LAN"
+    # Correo (SMTP / IMAP / POP3)
+    if ports & {25, 465, 587, 993, 995, 143, 110}:
+        return "Correo"
+    # DB / Infraestructura
+    if ports & {3306, 5432, 6379, 27017, 8006, 1433, 5984}:
+        return "DB/Infra"
+    # WebRTC / Voz y Video UDP (STUN/TURN y rangos efímeros de media)
+    if is_udp:
+        if ports & {3478, 3479, 3480, 3481} or any(10000 <= p <= 60000 for p in ports if p):
+            return "WebRTC"
+        if 443 in ports:
+            return "QUIC/HTTP3"
+    # HTTPS / TLS
+    if ports & {443, 8443}:
+        return "HTTPS/TLS"
+    # HTTP sin cifrar
+    if ports & {80, 8080, 8000, 3000, 5000}:
+        return "HTTP"
+    return "Desconocido"
+
+
 class NetworkTrafficCollector:
     """
     Mini-Funciones NF-1.2, NF-1.3 y NF-1.4:
@@ -2333,6 +2428,13 @@ class NetworkTrafficCollector:
         self._pid_to_name_cache: dict[int, tuple[str, float]] = {}
         self._last_deep_scan_ts: float = 0.0
         self._cached_domain_hits: list[dict] = []
+
+        # MF-01 / MF-03: estado por interfaz de red (contadores previos y mapa IP -> interfaz)
+        self._last_iface_counters: dict[str, tuple[int, int, float]] = {}
+        self._iface_ip_map: dict[str, tuple[str, str]] = {}  # ip_local -> (iface, iface_kind)
+        self._default_iface: tuple[str, str] = ("", "OTHER")  # (iface, iface_kind) de mayor trafico
+        self._hw_port_map: dict[str, str] = {}  # macOS: device -> nombre de puerto de hardware (cacheado)
+        self._hw_port_ts: float = 0.0
 
     def _is_private_or_ignored_ip(self, ip_str: str) -> bool:
         ip = (ip_str or "").strip().lower()
@@ -2619,7 +2721,8 @@ class NetworkTrafficCollector:
         return (ip_str or "").startswith(self._GOOGLE_IP_PREFIXES)
 
     def _register_conn(self, conns: dict, remote_ip: str, proc_name: str, site_hint: Optional[tuple[str, str]], weight: int = 1,
-                       direction: str = "OUTBOUND", port: int = 443):
+                       direction: str = "OUTBOUND", port: int = 443,
+                       l4_proto: str = "TCP", local_ip: str = "", remote_port: int = 0):
         raw_dom = self._resolve_ip_to_domain(remote_ip) or remote_ip
         clean_dom, cat = classify_domain_ndpi(raw_dom, proc_name)
         # Anycast de Google: atribuir el flujo al sitio exacto que indica la ventana activa
@@ -2633,15 +2736,29 @@ class NetworkTrafficCollector:
             clean_dom, cat = site_hint
         if not clean_dom:
             return
+        # MF-03: atribución del flujo a la interfaz local (Wi-Fi / Ethernet / VPN)
+        iface, iface_kind = self._iface_for_local_ip(local_ip)
+        # MF-02: clasificación L7 del flujo
+        local_port = int(port or 0) if direction == "INBOUND" else 0
+        proto_l7 = classify_flow_protocol_l7(
+            l4_proto=l4_proto, local_port=local_port, remote_port=int(remote_port or 0),
+            remote_ip=remote_ip, domain=clean_dom, proc_name=proc_name, iface_kind=iface_kind,
+        )
         k = (clean_dom, proc_name[:40])
         if k not in conns:
             conns[k] = {"domain": clean_dom, "app_name": proc_name[:40], "category": cat, "connections": weight,
-                        "direction": direction, "port": int(port or 443)}
+                        "direction": direction, "port": int(port or 443),
+                        "proto_l7": proto_l7, "iface": iface, "iface_kind": iface_kind}
         else:
             conns[k]["connections"] += weight
             if direction == "INBOUND":
                 conns[k]["direction"] = "INBOUND"
                 conns[k]["port"] = int(port or 443)
+            # Mantener la clasificación L7 más específica (evitar sobrescribir con 'Desconocido')
+            if conns[k].get("proto_l7", "Desconocido") == "Desconocido" and proto_l7 != "Desconocido":
+                conns[k]["proto_l7"] = proto_l7
+            if not conns[k].get("iface") and iface:
+                conns[k]["iface"], conns[k]["iface_kind"] = iface, iface_kind
 
     _LOCAL_SERVICE_PORTS = frozenset({22, 80, 443, 8080, 3000, 5000, 445, 139, 3389, 5900, 7070, 5938,
                                       21115, 21116, 21117, 21118, 21119})
@@ -2655,6 +2772,201 @@ class NetworkTrafficCollector:
 
     def _is_inbound_port(self, local_port: int, listening_ports: set) -> bool:
         return local_port > 0 and (local_port in listening_ports or local_port in self._LOCAL_SERVICE_PORTS)
+
+    @staticmethod
+    def _classify_iface_kind(iface: str, hw_port: str = "") -> str:
+        name = (iface or "").lower()
+        port = (hw_port or "").lower()
+        if name.startswith(("utun", "ipsec", "ppp", "tun", "tap", "wg", "tailscale", "gpd", "nordlynx", "proton")):
+            return "VPN"
+        if name.startswith(("bridge", "vmnet", "vnic", "vboxnet", "veth", "docker", "feth", "ham")):
+            return "VIRTUAL"
+        if name.startswith(("awdl", "llw", "ap")):
+            return "OTHER"
+        if port:
+            if "wi-fi" in port or "wifi" in port or "airport" in port or "wireless" in port:
+                return "WIFI"
+            if "ethernet" in port or "lan" in port or "thunderbolt" in port or "usb" in port:
+                return "ETH"
+            if "vpn" in port or "tunnel" in port:
+                return "VPN"
+        if name.startswith("en"):
+            # Sin puerto de hardware resuelto: en0 suele ser Wi-Fi en portátiles macOS
+            return "WIFI" if name == "en0" else "ETH"
+        if name.startswith("eth"):
+            return "ETH"
+        return "OTHER"
+
+    def _refresh_macos_hw_ports(self):
+        """macOS: mapea el dispositivo (en0, en1...) a su puerto de hardware (Wi-Fi / Ethernet). Cacheado 5 min."""
+        now = time.monotonic()
+        if self._hw_port_map and (now - self._hw_port_ts) < 300.0:
+            return
+        try:
+            out = subprocess.check_output(
+                ["/usr/sbin/networksetup", "-listallhardwareports"],
+                stderr=subprocess.DEVNULL,
+                timeout=3.0,
+            ).decode("utf-8", errors="ignore")
+            cur_port = ""
+            for raw in out.splitlines():
+                line = raw.strip()
+                if line.lower().startswith("hardware port:"):
+                    cur_port = line.split(":", 1)[1].strip()
+                elif line.lower().startswith("device:"):
+                    dev = line.split(":", 1)[1].strip()
+                    if dev and cur_port:
+                        self._hw_port_map[dev] = cur_port
+            self._hw_port_ts = now
+        except Exception:
+            self._hw_port_ts = now
+
+    def _iface_label(self, iface: str, kind: str, hw_port: str = "") -> str:
+        if hw_port:
+            return f"{hw_port} ({iface})"
+        pretty = {
+            "WIFI": "Wi-Fi / LAN", "ETH": "Ethernet", "VPN": "Túnel VPN",
+            "VIRTUAL": "Interfaz Virtual", "OTHER": "Interfaz",
+        }.get(kind, "Interfaz")
+        return f"{pretty} ({iface})"
+
+    def _scan_network_interfaces(self) -> list[dict]:
+        """
+        MF-01: Inspector de interfaces de red activas por adaptador (Wi-Fi, Ethernet, VPN, Virtual).
+        Lee los contadores nativos por interfaz, calcula el diferencial RX/TX y actualiza el mapa
+        IP local -> interfaz usado por MF-03 para atribuir cada flujo a su adaptador.
+        """
+        now = time.monotonic()
+        ifaces: dict[str, dict] = {}
+
+        if IS_MAC:
+            self._refresh_macos_hw_ports()
+            try:
+                out = subprocess.check_output(
+                    ["/usr/sbin/netstat", "-ibn"],
+                    stderr=subprocess.DEVNULL,
+                    timeout=2.5,
+                ).decode("utf-8", errors="ignore")
+            except Exception:
+                out = ""
+            for line in out.splitlines()[1:]:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                name = parts[0]
+                if name.startswith(("lo", "gif", "stf")):
+                    continue
+                hw_port = self._hw_port_map.get(name, "")
+                kind = self._classify_iface_kind(name, hw_port)
+                ent = ifaces.setdefault(name, {
+                    "iface": name, "kind": kind, "hw_port": hw_port,
+                    "ip": "", "mac": "", "ibytes": 0, "obytes": 0, "_has_counters": False,
+                })
+                net_col = parts[2]
+                addr_col = parts[3] if len(parts) > 3 else ""
+                if net_col.startswith("<Link#") and len(parts) >= 10:
+                    if ":" in addr_col and addr_col.count(":") >= 2:
+                        ent["mac"] = addr_col
+                    try:
+                        ent["ibytes"] = int(parts[6])
+                        ent["obytes"] = int(parts[9])
+                        ent["_has_counters"] = True
+                    except (ValueError, IndexError):
+                        pass
+                else:
+                    if addr_col and "." in addr_col and not ent["ip"]:
+                        ent["ip"] = addr_col  # IPv4 preferida
+                    elif addr_col and ":" in addr_col and not ent["ip"]:
+                        ent["ip"] = addr_col  # IPv6 como respaldo
+
+        elif IS_WINDOWS:
+            no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            ps_cmd = (
+                "$ErrorActionPreference='SilentlyContinue';"
+                "$a=Get-NetAdapter | Where-Object {$_.Status -eq 'Up'};"
+                "$out=foreach($n in $a){"
+                "$s=Get-NetAdapterStatistics -Name $n.Name;"
+                "$ip=(Get-NetIPAddress -InterfaceIndex $n.ifIndex -AddressFamily IPv4 | Select-Object -First 1).IPAddress;"
+                "[pscustomobject]@{iface=$n.Name;mac=$n.MacAddress;type=$n.InterfaceDescription;"
+                "ib=$s.ReceivedBytes;ob=$s.SentBytes;ip=$ip}};"
+                "$out | ConvertTo-Json -Compress"
+            )
+            try:
+                raw = subprocess.check_output(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                    stderr=subprocess.DEVNULL, timeout=4.0, creationflags=no_win,
+                ).decode("utf-8", errors="ignore").strip()
+                parsed = json.loads(raw) if raw else []
+                if isinstance(parsed, dict):
+                    parsed = [parsed]
+                for a in parsed:
+                    name = str(a.get("iface") or "").strip()
+                    if not name:
+                        continue
+                    desc = str(a.get("type") or "")
+                    kind = self._classify_iface_kind(name, desc)
+                    ifaces[name] = {
+                        "iface": name, "kind": kind, "hw_port": desc,
+                        "ip": str(a.get("ip") or ""), "mac": str(a.get("mac") or "").replace("-", ":"),
+                        "ibytes": int(a.get("ib") or 0), "obytes": int(a.get("ob") or 0),
+                        "_has_counters": True,
+                    }
+            except Exception:
+                ifaces = {}
+
+        results: list[dict] = []
+        ip_map: dict[str, tuple[str, str]] = {}
+        best_default = ("", "OTHER", -1.0)
+        for name, ent in ifaces.items():
+            if not ent.get("_has_counters"):
+                continue
+            ib, ob = int(ent["ibytes"]), int(ent["obytes"])
+            prev = self._last_iface_counters.get(name)
+            self._last_iface_counters[name] = (ib, ob, now)
+            if prev and ib >= prev[0] and ob >= prev[1]:
+                elapsed = max(0.5, now - prev[2])
+                d_rx = ib - prev[0]
+                d_tx = ob - prev[1]
+            else:
+                elapsed, d_rx, d_tx = 1.0, 0, 0
+            kind = ent["kind"]
+            # Omitir ruido de interfaces Apple inalámbricas vacías
+            if name.startswith(("awdl", "llw", "ap")) and (ib + ob) == 0:
+                continue
+            rx_kbps = round((d_rx * 8.0) / (elapsed * 1000.0), 1)
+            tx_kbps = round((d_tx * 8.0) / (elapsed * 1000.0), 1)
+            if ent.get("ip"):
+                ip_map[ent["ip"]] = (name, kind)
+            score = float(d_rx + d_tx)
+            if kind in ("WIFI", "ETH", "VPN") and score > best_default[2]:
+                best_default = (name, kind, score)
+            results.append({
+                "iface": name,
+                "label": self._iface_label(name, kind, ent.get("hw_port", "")),
+                "kind": kind,
+                "ip": ent.get("ip", ""),
+                "mac": ent.get("mac", ""),
+                "is_up": True,
+                "delta_rx_bytes": int(d_rx),
+                "delta_tx_bytes": int(d_tx),
+                "rx_kbps": rx_kbps,
+                "tx_kbps": tx_kbps,
+            })
+
+        self._iface_ip_map = ip_map
+        if best_default[0]:
+            self._default_iface = (best_default[0], best_default[1])
+        results.sort(key=lambda x: x["delta_rx_bytes"] + x["delta_tx_bytes"], reverse=True)
+        return results
+
+    def _iface_for_local_ip(self, local_ip: str) -> tuple[str, str]:
+        """MF-03: atribuye un socket a su interfaz según la IP local, con respaldo a la ruta por defecto."""
+        ip = (local_ip or "").strip().strip("[]")
+        if ip and ip in self._iface_ip_map:
+            return self._iface_ip_map[ip]
+        if ip in ("", "*", "0.0.0.0", "::", "::1", "127.0.0.1"):
+            return self._default_iface
+        return self._default_iface
 
     def _scan_active_connections(self, fallback_app: str, window_title: str = "") -> list[dict]:
         """
@@ -2697,6 +3009,7 @@ class NetworkTrafficCollector:
                             if parts[3].upper() not in ("ESTABLISHED", "SYN_SENT", "TIME_WAIT"):
                                 continue
                             foreign, pid_s = parts[2], parts[4]
+                            local = parts[1]
                             if parts[3].upper() == "ESTABLISHED":
                                 lport = self._port_of(parts[1])
                                 if self._is_inbound_port(lport, listening_ports):
@@ -2729,8 +3042,11 @@ class NetworkTrafficCollector:
                         proc_name = self._pid_to_name_cache.get(pid, ("", 0.0))[0] or fallback_app or "Sistema"
                         if proc_name.lower() in ("python.exe", "pythonw.exe") and remote_port == "5080":
                             continue
+                        local_ip = (local.rsplit(":", 1)[0] if ":" in local else local).strip("[]")
                         self._register_conn(conns, remote_ip, proc_name, site_hint, direction=direction,
-                                            port=conn_port or (int(remote_port) if str(remote_port).isdigit() else 443))
+                                            port=conn_port or (int(remote_port) if str(remote_port).isdigit() else 443),
+                                            l4_proto=proto.upper(), local_ip=local_ip,
+                                            remote_port=int(remote_port) if str(remote_port).isdigit() else 0)
                     except Exception:
                         continue
 
@@ -2793,18 +3109,27 @@ class NetworkTrafficCollector:
                         continue
                     if proc_name.lower().startswith("python") and remote_port == "5080":
                         continue
+                    local_part_addr = name_col.split("->", 1)[0]
+                    local_ip = (local_part_addr.rsplit(":", 1)[0] if ":" in local_part_addr else local_part_addr).strip("[]")
                     self._register_conn(conns, remote_ip, proc_name, site_hint, direction=direction,
-                                        port=conn_port or (int(remote_port) if remote_port.isdigit() else 443))
+                                        port=conn_port or (int(remote_port) if remote_port.isdigit() else 443),
+                                        l4_proto=proto.upper(), local_ip=local_ip,
+                                        remote_port=int(remote_port) if remote_port.isdigit() else 0)
                 except Exception:
                     continue
 
         # Navegadores con ventana activa en un sitio conocido (QUIC/HTTP3 o conexiones multiplexadas en Edge/Chrome/Safari)
         if site_hint and (quic_procs or self._is_browser_name(fallback_app) or self._is_browser_name(window_title)):
             target_procs = quic_procs or {(fallback_app or "Browser")[:40]}
+            def_iface, def_kind = self._default_iface
             for pname in target_procs:
                 k = (site_hint[0], pname)
                 if k not in conns:
-                    conns[k] = {"domain": site_hint[0], "app_name": pname, "category": site_hint[1], "connections": 4}
+                    # QUIC/HTTP3 si el navegador abrió sockets UDP:443; de lo contrario HTTPS/TLS
+                    proto_l7 = "QUIC/HTTP3" if quic_procs else "HTTPS/TLS"
+                    conns[k] = {"domain": site_hint[0], "app_name": pname, "category": site_hint[1], "connections": 4,
+                                "direction": "OUTBOUND", "port": 443,
+                                "proto_l7": proto_l7, "iface": def_iface, "iface_kind": def_kind}
                 else:
                     conns[k]["connections"] += 2
 
@@ -2838,12 +3163,18 @@ class NetworkTrafficCollector:
             # Sesión Windows en segundo plano: netstat/contadores son de toda la máquina; no duplicar tráfico
             return {
                 "delta_rx_bytes": 0, "delta_tx_bytes": 0,
-                "rx_kbps": 0.0, "tx_kbps": 0.0, "domains": [],
+                "rx_kbps": 0.0, "tx_kbps": 0.0, "domains": [], "interfaces": [],
                 "packet_profile": classify_packet_profile(0.0, 0.0, 0, active_app_name, active_window_title, []),
             }
 
         rx_kbps = round((delta_rx * 8.0) / (elapsed * 1000.0), 1)
         tx_kbps = round((delta_tx * 8.0) / (elapsed * 1000.0), 1)
+
+        # MF-01/MF-03: refrescar primero el mapa de interfaces (IP local -> adaptador) para atribuir flujos
+        try:
+            interfaces = self._scan_network_interfaces()
+        except Exception:
+            interfaces = []
 
         # Escaneo en cada ciclo (sin retardo) para reflejar el sitio activo al instante
         self._last_deep_scan_ts = now
@@ -2859,9 +3190,11 @@ class NetworkTrafficCollector:
             if existing:
                 existing["connections"] = max(int(existing["connections"]), weight)
             else:
+                def_iface, def_kind = self._default_iface
                 hits.insert(0, {
                     "domain": site[0], "app_name": (active_app_name or "Navegador")[:40],
                     "category": site[1], "connections": weight,
+                    "proto_l7": "HTTPS/TLS", "iface": def_iface, "iface_kind": def_kind,
                 })
         self._cached_domain_hits = hits
 
@@ -2921,6 +3254,9 @@ class NetworkTrafficCollector:
                 "estimated_bytes": rx_i + tx_i,
                 "direction": item.get("direction", "OUTBOUND"),
                 "port": int(item.get("port", 443) or 443),
+                "proto_l7": item.get("proto_l7", "Desconocido"),
+                "iface": item.get("iface", ""),
+                "iface_kind": item.get("iface_kind", ""),
             })
 
         packet_profile = classify_packet_profile(
@@ -2938,6 +3274,7 @@ class NetworkTrafficCollector:
             "rx_kbps": rx_kbps,
             "tx_kbps": tx_kbps,
             "domains": domain_hits_payload,
+            "interfaces": interfaces,
             "packet_profile": packet_profile,
         }
 
@@ -4248,7 +4585,7 @@ class SilentRemoteAgent:
                 except Exception:
                     net_slice = {
                         "delta_rx_bytes": 0, "delta_tx_bytes": 0,
-                        "rx_kbps": 0.0, "tx_kbps": 0.0, "domains": [],
+                        "rx_kbps": 0.0, "tx_kbps": 0.0, "domains": [], "interfaces": [],
                     }
                 self._last_net_slice = net_slice
 
@@ -4271,6 +4608,7 @@ class SilentRemoteAgent:
                             "session_background": is_bg,
                             "log_events": log_events,
                             "network": net_slice,
+                            "interfaces": net_slice.get("interfaces", []),
                         }
                         thumb_stride = 15 if idle_secs >= 180 else 3
                         if tick % thumb_stride == 1:
@@ -4349,6 +4687,58 @@ class SilentRemoteAgent:
             return None
         acc["domains"] = list(acc["domains"].values())
         return acc
+
+    async def handle_ota_self_update(self, ws, data: dict):
+        """
+        MF-04: Actualización remota en caliente (OTA). Recibe el nuevo agent.py en base64,
+        valida el hash (si se envía) y que compile, lo escribe en disco (ruta activa y bundle
+        .app en macOS si existe), confirma con 'ota_ack' y reinicia el proceso con os._exit(0)
+        para que el Watchdog/launchd lo relance con el código nuevo.
+        """
+        try:
+            code_b64 = str(data.get("code_b64") or data.get("agent_py_b64") or "").strip()
+            expected_sha = str(data.get("sha256") or "").strip().lower()
+            if not code_b64:
+                await ws.send(json.dumps({"type": "ota_ack", "ok": False, "error": "sin contenido"}))
+                return
+            code_bytes = base64.b64decode(code_b64)
+            if expected_sha:
+                actual_sha = hashlib.sha256(code_bytes).hexdigest()
+                if actual_sha != expected_sha:
+                    await ws.send(json.dumps({"type": "ota_ack", "ok": False, "error": "hash no coincide"}))
+                    return
+            code_str = code_bytes.decode("utf-8")
+            # Validar que el código compila antes de reemplazar nada
+            compile(code_str, "agent.py", "exec")
+
+            targets = [Path(__file__).resolve()]
+            app_bundle = Path("/Applications/JOB-Monitor Agent.app/Contents/Resources/agent.py")
+            if IS_MAC and app_bundle.exists() and app_bundle.resolve() not in targets:
+                targets.append(app_bundle.resolve())
+            written = []
+            for tgt in targets:
+                try:
+                    bak = tgt.with_suffix(tgt.suffix + ".bak")
+                    if tgt.exists():
+                        try:
+                            bak.write_bytes(tgt.read_bytes())
+                        except Exception:
+                            pass
+                    tgt.write_text(code_str, encoding="utf-8")
+                    written.append(str(tgt))
+                except Exception:
+                    continue
+
+            ok = bool(written)
+            await ws.send(json.dumps({"type": "ota_ack", "ok": ok, "written": written}))
+            if ok:
+                await asyncio.sleep(0.4)
+                os._exit(0)
+        except Exception as e:
+            try:
+                await ws.send(json.dumps({"type": "ota_ack", "ok": False, "error": str(e)[:200]}))
+            except Exception:
+                pass
 
     def handle_self_destruct(self):
         """
@@ -4714,6 +5104,8 @@ class SilentRemoteAgent:
                                                 pass
                                 elif mtype == "self_destruct":
                                     self.handle_self_destruct()
+                                elif mtype == "ota_update":
+                                    await self.handle_ota_self_update(ws, data)
                                 elif mtype == "ping":
                                     await ws.send(json.dumps({"type": "pong"}))
                     finally:

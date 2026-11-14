@@ -446,6 +446,7 @@ class HubManager:
             "today_rx_bytes": agent.today_rx_bytes,
             "today_tx_bytes": agent.today_tx_bytes,
             "recent_domains": agent.recent_domains,
+            "interfaces": agent.interfaces,
         }
         dead = []
         for ws in list(self.admins):
@@ -1459,6 +1460,226 @@ async def get_network_summary(
     return {"ok": True, **summary}
 
 
+@app.get("/api/command-dashboard")
+async def get_command_dashboard(
+    request: Request,
+    date: Optional[str] = Query(None, description="Fecha YYYY-MM-DD"),
+    tenant_id: Optional[str] = Query(None, description="Filtro opcional de tenant para Super Admin"),
+):
+    """
+    MF-07: Endpoint unificado del Centro de Mando. Cruza en una sola respuesta el estado en vivo
+    de la flota, la matriz de productividad + red por colaborador, los servicios principales, el
+    desglose de protocolos L7 e interfaces de red, y los eventos recientes de bitácora.
+    """
+    user = verify_admin_access(request)
+    if user["role"] == "superadmin":
+        allowed_tid = (tenant_id or "").strip() if (tenant_id and tenant_id != "ALL") else None
+    else:
+        allowed_tid = user["tenant_id"]
+
+    metrics = db.get_daily_metrics(date_str=date, allowed_tenant_id=allowed_tid)
+    net_summary = db.get_network_dashboard_summary(date_str=date, allowed_tenant_id=allowed_tid)
+    recent_events = db.query_logs(agent_id="ALL", category="ALL", search_q="", limit=20, allowed_tenant_id=allowed_tid)
+
+    net_by_agent = {c["agent_id"]: c for c in net_summary.get("clients", [])}
+
+    # 1. Estado en vivo de la flota
+    is_super = user["role"] == "superadmin"
+    live_agents = [
+        a for a in hub.agents.values()
+        if is_super or a.tenant_id == allowed_tid
+    ]
+    online_ids = {a.agent_id for a in live_agents}
+    status_counts = {"active": 0, "idle": 0, "away": 0}
+    for a in live_agents:
+        status_counts[a.activity_status] = status_counts.get(a.activity_status, 0) + 1
+    known_devices = db.get_all_known_devices(allowed_tenant_id=allowed_tid)
+    multi_session = sum(1 for a in live_agents if "-S" in a.agent_id)
+    recent_thumbs = [
+        {"agent_id": a.agent_id, "alias": a.alias, "thumbnail": a.thumbnail_b64, "activity_status": a.activity_status}
+        for a in sorted(live_agents, key=lambda x: x.last_seen, reverse=True)[:8]
+        if a.thumbnail_b64
+    ]
+    fleet = {
+        "total_devices": len(known_devices),
+        "online": len(online_ids),
+        "active": status_counts.get("active", 0),
+        "idle": status_counts.get("idle", 0),
+        "away": status_counts.get("away", 0),
+        "offline": sum(1 for d in known_devices if d["agent_id"] not in online_ids),
+        "multi_session": multi_session,
+        "recent_thumbnails": recent_thumbs,
+    }
+
+    # 2. Matriz Productividad + Red por colaborador
+    collaborators_matrix = []
+    for m in metrics:
+        aid = m["agent_id"]
+        live = hub.agents.get(aid)
+        nc = net_by_agent.get(aid, {})
+        top_protos = (nc.get("protocols_l7") or [])[:4]
+        collaborators_matrix.append({
+            "agent_id": aid,
+            "alias": m["alias"],
+            "hostname": m["hostname"],
+            "username": m["username"],
+            "tenant_id": m["tenant_id"],
+            "tenant_name": m["tenant_name"],
+            "is_online": bool(live),
+            "activity_status": live.activity_status if live else "offline",
+            "active_seconds": m["active_seconds"],
+            "idle_seconds": m["idle_seconds"],
+            "focus_score": m["focus_score"],
+            "switches_count": m["switches_count"],
+            "top_apps": (m.get("top_apps") or [])[:5],
+            "net_rx_bytes": m.get("net_rx_bytes", 0),
+            "net_tx_bytes": m.get("net_tx_bytes", 0),
+            "rx_kbps": live.rx_kbps if live else 0.0,
+            "tx_kbps": live.tx_kbps if live else 0.0,
+            "primary_iface": nc.get("primary_iface", ""),
+            "top_protocols": top_protos,
+            "protocols_l7": nc.get("protocols_l7", []),
+            "interfaces": nc.get("interfaces", []),
+            "net_total_bytes": nc.get("total_bytes", 0),
+            "keystrokes_total": nc.get("keystrokes_total", 0),
+            "top_domain": nc.get("top_domain", ""),
+        })
+
+    # 3. Servicios principales: cruce de Tiempo en Pantalla + Tráfico de Red + Teclas
+    services: Dict[str, dict] = {}
+    for m in metrics:
+        for app in (m.get("top_apps") or []):
+            name = str(app.get("app_name") or "").strip()
+            if not name:
+                continue
+            s = services.setdefault(name.lower(), {"service": name, "screen_seconds": 0, "net_bytes": 0, "keystrokes": 0})
+            s["screen_seconds"] += int(app.get("seconds") or 0)
+            s["keystrokes"] += int(app.get("keystrokes_count") or 0)
+    for dom in (net_summary.get("top_domains") or []):
+        name = str(dom.get("domain") or "").strip()
+        if not name:
+            continue
+        s = services.setdefault(name.lower(), {"service": name, "screen_seconds": 0, "net_bytes": 0, "keystrokes": 0})
+        s["net_bytes"] += int(dom.get("estimated_bytes") or 0)
+    top_services = sorted(
+        services.values(), key=lambda x: (x["net_bytes"] + x["screen_seconds"] * 1024), reverse=True
+    )[:15]
+
+    # 4. Protocolos L7 e interfaces + alertas de seguridad
+    security_alerts = []
+    for p in net_summary.get("protocols_l7", []):
+        if p["proto_l7"] in ("Tor", "WireGuard", "OpenVPN/IPsec", "Tailscale") and p["bytes"] > 0:
+            security_alerts.append({"type": "protocol", "label": p["proto_l7"], "bytes": p["bytes"]})
+    if net_summary.get("inbound_flows_count", 0) > 0:
+        security_alerts.append({"type": "inbound", "label": "Flujos entrantes (INBOUND)", "count": net_summary["inbound_flows_count"]})
+
+    return {
+        "ok": True,
+        "date": net_summary.get("date"),
+        "fleet": fleet,
+        "collaborators_matrix": collaborators_matrix,
+        "top_services": top_services,
+        "protocols_breakdown": net_summary.get("protocols_l7", []),
+        "interfaces_breakdown": net_summary.get("interfaces", []),
+        "security_alerts": security_alerts,
+        "recent_events": recent_events,
+    }
+
+
+def _read_server_agent_source() -> tuple[str, str, str]:
+    """Lee agent/agent.py del servidor y devuelve (code_str, code_b64, sha256)."""
+    agent_path = config.PROJECT_ROOT / "agent" / "agent.py"
+    code_bytes = agent_path.read_bytes()
+    code_b64 = base64.b64encode(code_bytes).decode("ascii")
+    sha = hashlib.sha256(code_bytes).hexdigest()
+    return code_bytes.decode("utf-8", errors="ignore"), code_b64, sha
+
+
+@app.post("/api/agents/ota-update")
+async def ota_update_agents(request: Request):
+    """
+    MF-08: Despliega agent/agent.py (versión del servidor) a los agentes conectados en caliente.
+    Envía el mensaje nativo WS 'ota_update'; para macOS además deja el archivo en la carpeta de
+    instalación vía 'fs_upload' como respaldo para agentes con versión previa en memoria.
+    Solo superadmin o tenant_admin.
+    """
+    user = verify_admin_access(request)
+    if user["role"] not in ("superadmin", "tenant_admin"):
+        raise HTTPException(status_code=403, detail="Solo administradores pueden desplegar actualizaciones OTA")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    target_agent_id = str(body.get("agent_id") or "").strip()
+
+    try:
+        _code_str, code_b64, sha = _read_server_agent_source()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"No se pudo leer agent.py del servidor: {e}")
+
+    is_super = user["role"] == "superadmin"
+    allowed_tid = None if is_super else user["tenant_id"]
+
+    if target_agent_id:
+        targets = [a for a in hub.agents.values() if a.agent_id == target_agent_id]
+    else:
+        targets = [a for a in hub.agents.values() if is_super or a.tenant_id == allowed_tid]
+
+    ota_msg = {"type": "ota_update", "code_b64": code_b64, "sha256": sha}
+    results = []
+    for ag in targets:
+        if not is_super and ag.tenant_id != allowed_tid:
+            continue
+        native_ok = await hub.send_to_agent(ag.agent_id, ota_msg)
+        legacy_ok = False
+        # Respaldo macOS: subir agent_ota_stage.py a /tmp y actualizar en sitio todas las copias de agent.py antes de reiniciar
+        if "mac" in (ag.os_name or "").lower() or "darwin" in (ag.os_name or "").lower():
+            legacy_ok = await hub.send_to_agent(ag.agent_id, {
+                "type": "fs_upload",
+                "req_key": f"ota_{ag.agent_id[:12]}",
+                "dest_dir": "/tmp",
+                "filename": "agent_ota_stage.py",
+                "data_b64": code_b64,
+            })
+            s_key = f"ota_sh_{ag.agent_id[:12]}"
+            await hub.send_to_agent(ag.agent_id, {"type": "shell_open", "session_key": s_key, "shell_type": "sh"})
+            async def _legacy_restart(aid: str, sk: str):
+                await asyncio.sleep(1.5)
+                cmd = (
+                    "STAGE=$(ls -t /tmp/agent_ota_stage*.py 2>/dev/null | head -n 1); "
+                    "if [ -n \"$STAGE\" ] && [ -s \"$STAGE\" ]; then "
+                    "if [ -d \"$HOME/.local/share/MonitoreoEmpresa\" ]; then "
+                    "cp -f \"$STAGE\" \"$HOME/.local/share/MonitoreoEmpresa/agent.py\" 2>/dev/null; fi; "
+                    "if [ -d \"/Applications/JOB-Monitor Agent.app/Contents/Resources\" ]; then "
+                    "cp -f \"$STAGE\" \"/Applications/JOB-Monitor Agent.app/Contents/Resources/agent.py\" 2>/dev/null; "
+                    "rm -f \"/Applications/JOB-Monitor Agent.app/Contents/Resources/agent_\"*.py 2>/dev/null; fi; "
+                    "for p in $(pgrep -f 'JOBMonitorAgent|agent\\.py' 2>/dev/null); do "
+                    "f=$(lsof -p $p 2>/dev/null | awk '/agent\\.py/{print $NF; exit}'); "
+                    "if [ -n \"$f\" ] && [ -f \"$f\" ]; then cp -f \"$STAGE\" \"$f\" 2>/dev/null; fi; "
+                    "done; "
+                    "rm -f /tmp/agent_ota_stage*.py 2>/dev/null; "
+                    "(sleep 0.6 && pkill -f 'JOBMonitorAgent|agent\\.py') >/dev/null 2>&1 & "
+                    "fi\n"
+                )
+                await hub.send_to_agent(aid, {"type": "shell_input", "session_key": sk, "data": cmd})
+                await asyncio.sleep(1.2)
+                await hub.send_to_agent(aid, {"type": "shell_close", "session_key": sk})
+            asyncio.create_task(_legacy_restart(ag.agent_id, s_key))
+        results.append({
+            "agent_id": ag.agent_id,
+            "alias": ag.alias,
+            "native_push": native_ok,
+            "legacy_push": legacy_ok,
+        })
+
+    return {
+        "ok": True,
+        "sha256": sha,
+        "targets": len(results),
+        "results": results,
+    }
+
+
 @app.get("/api/network/domains")
 async def get_network_domains(
     request: Request,
@@ -1782,10 +2003,18 @@ async def _ingest_network_telemetry_slice(
                 d["packet_type"] = packet_profile["packet_label"]
                 d["confidence"] = packet_profile["confidence"]
 
+    # MF-03/MF-06: interfaces de red del equipo (pueden venir en 'network' o a nivel superior del slice)
+    interfaces = net_data.get("interfaces")
+    if not isinstance(interfaces, list):
+        interfaces = []
+    interfaces = interfaces[:40]
+
     if d_rx or d_tx or rx_kbps or tx_kbps:
         db.record_network_slice(agent_id, d_rx, d_tx, rx_kbps, tx_kbps, custom_date=custom_date)
     if domains:
         db.record_domain_activity_batch(agent_id, domains, custom_date=custom_date)
+    if interfaces:
+        db.record_network_interfaces_batch(agent_id, interfaces, custom_date=custom_date)
 
     # Métricas en vivo (las repeticiones offline no representan la velocidad actual)
     if not custom_date:
@@ -1828,6 +2057,22 @@ async def _ingest_network_telemetry_slice(
             }
             for d in domains[:15] if isinstance(d, dict) and d.get("domain")
         ]
+
+        if interfaces:
+            agent.interfaces = [
+                {
+                    "iface": str(i.get("iface") or "")[:60],
+                    "label": str(i.get("label") or "")[:120],
+                    "kind": str(i.get("kind") or i.get("iface_kind") or "OTHER").upper()[:12],
+                    "ip": str(i.get("ip") or "")[:60],
+                    "mac": str(i.get("mac") or "")[:40],
+                    "rx_kbps": float(i.get("rx_kbps") or 0.0),
+                    "tx_kbps": float(i.get("tx_kbps") or 0.0),
+                    "delta_rx_bytes": int(i.get("delta_rx_bytes") or 0),
+                    "delta_tx_bytes": int(i.get("delta_tx_bytes") or 0),
+                }
+                for i in interfaces if isinstance(i, dict) and i.get("iface")
+            ]
 
     now_mono = time.monotonic()
     if len(_network_alert_last) > 5000:

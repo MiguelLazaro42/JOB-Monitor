@@ -211,6 +211,7 @@
   const timezoneSelect = document.getElementById('timezone-select');
 
   // Pestañas y Vistas
+  const tabDashboard = document.getElementById('tab-dashboard');
   const tabWall = document.getElementById('tab-wall');
   const tabViewer = document.getElementById('tab-viewer');
   const tabActivity = document.getElementById('tab-activity');
@@ -219,6 +220,7 @@
   const tabSettings = document.getElementById('tab-settings');
   const tabViewerLabel = document.getElementById('tab-viewer-label');
 
+  const viewDashboard = document.getElementById('view-dashboard');
   const viewWall = document.getElementById('view-wall');
   const viewViewer = document.getElementById('view-viewer');
   const viewActivity = document.getElementById('view-activity');
@@ -1735,6 +1737,181 @@
     </g>`;
   }
 
+  // ---- MF-09 / MF-10: motor universal de arrastre (Drag & Drop) de nodos SVG ----
+  // Funciona sobre cualquier topologia que renderice <g class="topo-node" data-node-id="..">
+  // y aristas <path class="topo-link" data-src=".." data-dst="..">. Las posiciones fijadas
+  // se guardan en sessionStorage por vista. No requiere re-render del SVG completo.
+  function topoPinLoad(storageKey) {
+    try {
+      const raw = sessionStorage.getItem(storageKey);
+      const obj = raw ? JSON.parse(raw) : null;
+      return obj && typeof obj === 'object' ? obj : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function topoPinSave(storageKey, pins) {
+    try {
+      if (pins && Object.keys(pins).length) {
+        sessionStorage.setItem(storageKey, JSON.stringify(pins));
+      } else {
+        sessionStorage.removeItem(storageKey);
+      }
+    } catch (e) { /* storage no disponible */ }
+  }
+
+  // Posicion efectiva de un nodo: la fijada por el usuario o la calculada automaticamente.
+  function topoEffPos(node, pin) {
+    if (pin && typeof pin.x === 'number' && typeof pin.y === 'number') {
+      return { x: pin.x, y: pin.y, w: node.w, h: node.h };
+    }
+    return { x: node.x, y: node.y, w: node.w, h: node.h };
+  }
+
+  function topoGetNode(nodeMap, id) {
+    if (!nodeMap) return null;
+    return typeof nodeMap.get === 'function' ? nodeMap.get(id) : nodeMap[id];
+  }
+
+  // Recalcula el atributo d de las curvas Bezier conectadas a un nodo (o de todas si id es null).
+  function topoRecalcLinks(svgEl, nodeMap, pins, onlyNodeId) {
+    svgEl.querySelectorAll('path.topo-link').forEach((p) => {
+      const src = p.dataset.src;
+      const dst = p.dataset.dst;
+      if (!src || !dst) return;
+      if (onlyNodeId && src !== onlyNodeId && dst !== onlyNodeId) return;
+      const a = topoGetNode(nodeMap, src);
+      const b = topoGetNode(nodeMap, dst);
+      if (!a || !b) return;
+      p.setAttribute('d', topoLinkPath(topoEffPos(a, pins[src]), topoEffPos(b, pins[dst])));
+    });
+  }
+
+  // Aplica las posiciones fijadas guardadas tras cada render (respeta donde el usuario dejo cada nodo).
+  function topoApplyPins(svgEl, nodeMap, storageKey) {
+    const pins = topoPinLoad(storageKey);
+    svgEl.querySelectorAll('g.topo-node[data-node-id]').forEach((g) => {
+      const id = g.dataset.nodeId;
+      const node = topoGetNode(nodeMap, id);
+      const pin = pins[id];
+      if (node && pin && typeof pin.x === 'number' && typeof pin.y === 'number') {
+        g.setAttribute('transform', `translate(${(pin.x - node.x).toFixed(2)}, ${(pin.y - node.y).toFixed(2)})`);
+        g.classList.add('is-pinned');
+      } else {
+        g.removeAttribute('transform');
+        g.classList.remove('is-pinned');
+        if (pin) { delete pins[id]; }
+      }
+    });
+    topoRecalcLinks(svgEl, nodeMap, pins, null);
+  }
+
+  // MF-09: adjunta Drag & Drop por Pointer Events al SVG. Idempotente: puede llamarse en cada render.
+  function attachTopologyDragAndDrop(svgEl, getGraphFn, storageKey) {
+    if (!svgEl || typeof getGraphFn !== 'function') return;
+    svgEl.__topoGetGraph = getGraphFn;
+    svgEl.__topoStorageKey = storageKey;
+    const nodeMap = getGraphFn();
+    if (nodeMap) topoApplyPins(svgEl, nodeMap, storageKey);
+    if (svgEl.__topoDragBound) return;
+    svgEl.__topoDragBound = true;
+
+    const toViewBox = (evt) => {
+      const ctm = svgEl.getScreenCTM();
+      if (!ctm) return { x: 0, y: 0 };
+      const pt = svgEl.createSVGPoint();
+      pt.x = evt.clientX;
+      pt.y = evt.clientY;
+      const p = pt.matrixTransform(ctm.inverse());
+      return { x: p.x, y: p.y };
+    };
+
+    let drag = null;
+
+    svgEl.addEventListener('pointerdown', (evt) => {
+      if (evt.button != null && evt.button !== 0) return;
+      const g = evt.target.closest('g.topo-node');
+      if (!g || !g.dataset.nodeId) return;
+      const map = svgEl.__topoGetGraph();
+      const node = topoGetNode(map, g.dataset.nodeId);
+      if (!node) return;
+      const start = toViewBox(evt);
+      const pins = topoPinLoad(svgEl.__topoStorageKey);
+      const pin = pins[g.dataset.nodeId];
+      const origX = (pin && typeof pin.x === 'number') ? pin.x : node.x;
+      const origY = (pin && typeof pin.y === 'number') ? pin.y : node.y;
+      drag = { g, id: g.dataset.nodeId, node, map, pins, startX: start.x, startY: start.y, origX, origY, curX: origX, curY: origY, moved: false };
+      try { svgEl.setPointerCapture(evt.pointerId); } catch (e) { /* no-op */ }
+    });
+
+    svgEl.addEventListener('pointermove', (evt) => {
+      if (!drag) return;
+      const cur = toViewBox(evt);
+      const dx = cur.x - drag.startX;
+      const dy = cur.y - drag.startY;
+      if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+      drag.moved = true;
+      drag.g.classList.add('is-dragging');
+      const nx = drag.origX + dx;
+      const ny = drag.origY + dy;
+      drag.curX = nx;
+      drag.curY = ny;
+      drag.g.setAttribute('transform', `translate(${(nx - drag.node.x).toFixed(2)}, ${(ny - drag.node.y).toFixed(2)})`);
+      drag.pins[drag.id] = { x: nx, y: ny };
+      topoRecalcLinks(svgEl, drag.map, drag.pins, drag.id);
+    });
+
+    const endDrag = (evt) => {
+      if (!drag) return;
+      const d = drag;
+      drag = null;
+      try { svgEl.releasePointerCapture(evt.pointerId); } catch (e) { /* no-op */ }
+      if (!d.moved) return;
+      d.g.classList.remove('is-dragging');
+      d.g.classList.add('is-pinned');
+      const pins = topoPinLoad(svgEl.__topoStorageKey);
+      pins[d.id] = { x: d.curX, y: d.curY };
+      topoPinSave(svgEl.__topoStorageKey, pins);
+      svgEl.__topoJustDragged = Date.now();
+    };
+    svgEl.addEventListener('pointerup', endDrag);
+    svgEl.addEventListener('pointercancel', endDrag);
+
+    // Suprime el click de seleccion si el gesto fue un arrastre real.
+    svgEl.addEventListener('click', (evt) => {
+      if (svgEl.__topoJustDragged && (Date.now() - svgEl.__topoJustDragged) < 280) {
+        evt.stopPropagation();
+        evt.preventDefault();
+        svgEl.__topoJustDragged = 0;
+      }
+    }, true);
+
+    // MF-10: doble clic sobre un nodo fijado lo libera a su posicion automatica.
+    svgEl.addEventListener('dblclick', (evt) => {
+      const g = evt.target.closest('g.topo-node');
+      if (!g || !g.dataset.nodeId) return;
+      const pins = topoPinLoad(svgEl.__topoStorageKey);
+      if (!pins[g.dataset.nodeId]) return;
+      evt.preventDefault();
+      evt.stopPropagation();
+      delete pins[g.dataset.nodeId];
+      topoPinSave(svgEl.__topoStorageKey, pins);
+      g.classList.remove('is-pinned');
+      g.style.transition = 'transform .22s ease';
+      g.removeAttribute('transform');
+      const map = svgEl.__topoGetGraph();
+      if (map) topoRecalcLinks(svgEl, map, pins, g.dataset.nodeId);
+      setTimeout(() => { g.style.transition = ''; }, 260);
+    });
+  }
+
+  // MF-10: boton Reorganizar Nodos. Limpia las posiciones manuales y vuelve al layout automatico.
+  function resetTopologyPositions(storageKey, reRenderFn) {
+    try { sessionStorage.removeItem(storageKey); } catch (e) { /* no-op */ }
+    if (typeof reRenderFn === 'function') reRenderFn();
+  }
+
   function wtPopulateAgentSelect() {
     if (!wtAgentSelect) return;
     const cur = wtAgentSelect.value || 'ALL';
@@ -1857,16 +2034,17 @@
       if (!a || !b) return '';
       const color = l.from.startsWith('cat:') ? a.color : b.color;
       const sw = 1.5 + (14 * l.value) / maxLink;
-      return `<path class="wt-link topo-link" data-link-idx="${idx}" d="${topoLinkPath(a, b)}" stroke="${color}" stroke-width="${sw.toFixed(1)}" fill="none"><title>${escapeHtml(a.label)} - ${escapeHtml(b.label)}: ${escapeHtml(g.fmt(l.value))}</title></path>`;
+      return `<path class="wt-link topo-link" data-link-idx="${idx}" data-src="${escapeHtml(l.from)}" data-dst="${escapeHtml(l.to)}" d="${topoLinkPath(a, b)}" stroke="${color}" stroke-width="${sw.toFixed(1)}" fill="none"><title>${escapeHtml(a.label)} - ${escapeHtml(b.label)}: ${escapeHtml(g.fmt(l.value))}</title></path>`;
     }).join('');
     const colMax = (list) => list.reduce((m, n) => Math.max(m, n.value), 0);
     const nodeSvg = (list) => {
       const mx = colMax(list);
-      return list.map((n) => topoNodeSvg(n, mx, `wt-node topo-node wt-node-${n.type}`, `data-wt-key="${escapeHtml(n.key)}" tabindex="0" role="button"`)).join('');
+      return list.map((n) => topoNodeSvg(n, mx, `wt-node topo-node wt-node-${n.type}`, `data-node-id="${escapeHtml(n.key)}" data-wt-key="${escapeHtml(n.key)}" tabindex="0" role="button"`)).join('');
     };
     wtTopologySvg.innerHTML = `<g class="topo-links">${linksSvg}</g><g class="topo-nodes">${nodeSvg(g.agents)}${nodeSvg(g.cats)}${nodeSvg(g.apps)}</g>`;
     if (wtSelection && !nodeMap.has(wtSelection.key)) wtSelection = null;
     wtApplySelection();
+    attachTopologyDragAndDrop(wtTopologySvg, () => nodeMap, 'ra_topo_pos_prod');
   }
 
   function wtApplySelection() {
@@ -2748,6 +2926,7 @@
     state.currentView = target;
 
     const views = {
+      dashboard: viewDashboard,
       wall: viewWall,
       viewer: viewViewer,
       activity: viewActivity,
@@ -2756,6 +2935,7 @@
       settings: viewSettings,
     };
     const tabs = {
+      dashboard: tabDashboard,
       wall: tabWall,
       viewer: tabViewer,
       activity: tabActivity,
@@ -2769,7 +2949,9 @@
       if (tabs[k]) tabs[k].classList.toggle('active', k === target);
     });
 
-    if (target === 'activity') {
+    if (target === 'dashboard') {
+      loadCommandDashboard();
+    } else if (target === 'activity') {
       loadDailyMetrics();
     } else if (target === 'logs') {
       fetchLogsFromServer();
@@ -3484,6 +3666,10 @@
       renderWorkTopology();
     });
   }
+  const prodTopoResetBtn = document.getElementById('btn-prod-topo-reset');
+  if (prodTopoResetBtn) {
+    prodTopoResetBtn.addEventListener('click', () => resetTopologyPositions('ra_topo_pos_prod', renderWorkTopology));
+  }
   if (wtTopologySvg) {
     const wtPick = (target) => {
       const nodeEl = target.closest('.wt-node');
@@ -3749,6 +3935,134 @@
   };
   const NET_PALETTE = ['#e11d48', '#06b6d4', '#16a34a', '#8b5cf6', '#f97316', '#94a3b8'];
 
+  // MF-15/MF-16: catalogo de Protocolos L7 (debe coincidir con classify_flow_protocol_l7 del agente)
+  const NET_PROTO_COLORS = {
+    'HTTPS/TLS': '#16a34a',
+    'QUIC/HTTP3': '#0ea5e9',
+    'HTTP': '#f59e0b',
+    'DNS': '#8b5cf6',
+    'DoH/DoT': '#7c3aed',
+    'WireGuard': '#0d9488',
+    'Tailscale': '#6366f1',
+    'OpenVPN/IPsec': '#2563eb',
+    'Tor': '#9333ea',
+    'SSH': '#334155',
+    'RDP/Remoto': '#d946ef',
+    'SMB/LAN': '#ca8a04',
+    'WebRTC': '#db2777',
+    'DB/Infra': '#475569',
+    'Desconocido': '#94a3b8',
+  };
+  // Lista de chips de filtro de protocolo (orden de presentacion)
+  const NET_PROTO_CHIPS = [
+    'HTTPS/TLS', 'QUIC/HTTP3', 'HTTP', 'DNS', 'DoH/DoT', 'WireGuard', 'Tailscale',
+    'OpenVPN/IPsec', 'Tor', 'SSH', 'RDP/Remoto', 'SMB/LAN', 'WebRTC', 'Desconocido',
+  ];
+  const netProtoColor = (p) => NET_PROTO_COLORS[p] || NET_PROTO_COLORS.Desconocido;
+  const netProtoLabel = (p) => (p && NET_PROTO_COLORS[p] ? p : 'Desconocido');
+
+  // MF-16: catalogo de tipos de interfaz de red
+  const NET_IFACE_LABELS = {
+    WIFI: 'Wi-Fi', ETH: 'Ethernet', VPN: 'VPN / Túnel', VIRTUAL: 'Virtual', OTHER: 'Otra',
+  };
+  const NET_IFACE_COLORS = {
+    WIFI: '#0ea5e9', ETH: '#16a34a', VPN: '#8b5cf6', VIRTUAL: '#f59e0b', OTHER: '#94a3b8',
+  };
+  const NET_IFACE_CHIPS = ['WIFI', 'ETH', 'VPN', 'VIRTUAL'];
+  const netIfaceKind = (k) => {
+    const up = String(k || '').toUpperCase();
+    return NET_IFACE_LABELS[up] ? up : 'OTHER';
+  };
+  const netIfaceLabel = (k) => NET_IFACE_LABELS[netIfaceKind(k)];
+  const netIfaceColor = (k) => NET_IFACE_COLORS[netIfaceKind(k)];
+
+  // Badge de Protocolo L7 con su color distintivo
+  function netProtoBadgeHtml(proto) {
+    const p = netProtoLabel(proto);
+    const c = netProtoColor(p);
+    return `<span class="proto-badge" style="--proto-color:${c}" title="Protocolo L7: ${escapeHtml(p)}"><span class="proto-badge-dot"></span>${escapeHtml(p)}</span>`;
+  }
+
+  // Badge de Interfaz de Red por la que sale/entra el flujo (ej. en0 · WIFI, utun3 · VPN)
+  function netIfaceBadgeHtml(iface, kind) {
+    const name = String(iface || '').trim();
+    if (!name) return '';
+    const k = netIfaceKind(kind);
+    const c = netIfaceColor(k);
+    return `<span class="iface-badge" style="--iface-color:${c}" title="Interfaz de red: ${escapeHtml(name)} (${escapeHtml(netIfaceLabel(k))})"><span class="iface-badge-dot"></span>${escapeHtml(name)} · ${escapeHtml(k)}</span>`;
+  }
+
+  // MF-16: pills compactas de interfaces del cliente (nombre, tipo, IP, RX/TX)
+  function netIfacePillsHtml(interfaces, opts) {
+    const list = Array.isArray(interfaces) ? interfaces.filter((it) => (it.total_bytes || 0) > 0 || it.ip) : [];
+    if (!list.length) return '<span class="muted-text net-iface-empty">Sin interfaces reportadas por el agente.</span>';
+    const limit = (opts && opts.limit) || list.length;
+    return list.slice(0, limit).map((it) => {
+      const k = netIfaceKind(it.kind);
+      const c = netIfaceColor(k);
+      const ip = it.ip ? `<span class="iface-pill-ip">${escapeHtml(it.ip)}</span>` : '';
+      return `<div class="iface-pill" style="--iface-color:${c}" title="${escapeHtml(it.label || it.iface)} — ${escapeHtml(netIfaceLabel(k))}${it.ip ? ' · ' + escapeHtml(it.ip) : ''}${it.mac ? ' · ' + escapeHtml(it.mac) : ''}">
+        <span class="iface-pill-dot"></span>
+        <span class="iface-pill-name">${escapeHtml(it.iface || '')}</span>
+        <span class="iface-pill-kind">${escapeHtml(k)}</span>
+        ${ip}
+        <span class="iface-pill-traffic">&darr; ${formatBytes(it.rx_bytes || 0)} / &uarr; ${formatBytes(it.tx_bytes || 0)}</span>
+      </div>`;
+    }).join('');
+  }
+
+  // MF-16: desglose de protocolos L7 del cliente como barras proporcionales (bytes + flujos)
+  function netProtoBreakdownHtml(protocols) {
+    const list = Array.isArray(protocols) ? protocols.filter((p) => (p.bytes || 0) > 0 || (p.connections || 0) > 0) : [];
+    if (!list.length) return '<span class="muted-text net-iface-empty">Sin protocolos clasificados para este equipo.</span>';
+    const maxBytes = list.reduce((m, p) => Math.max(m, p.bytes || 0), 1);
+    return list.map((p) => {
+      const name = netProtoLabel(p.proto_l7);
+      const c = netProtoColor(name);
+      const w = Math.max(3, Math.round(((p.bytes || 0) / maxBytes) * 100));
+      const pct = typeof p.percent === 'number' ? p.percent : 0;
+      return `<div class="proto-bar-row">
+        <div class="proto-bar-head"><span class="proto-bar-name"><span class="proto-bar-dot" style="background:${c}"></span>${escapeHtml(name)}</span><span class="proto-bar-figs">${formatBytes(p.bytes || 0)} · ${(p.connections || 0).toLocaleString('es-MX')} flujos${pct ? ` · ${pct}%` : ''}</span></div>
+        <div class="proto-bar-track"><div class="proto-bar-fill" style="width:${w}%;background:${c}"></div></div>
+      </div>`;
+    }).join('');
+  }
+
+  // MF-16: chips compactos de protocolos para la tarjeta del cliente
+  function netProtoChipsCompactHtml(protocols, limit) {
+    const list = Array.isArray(protocols) ? protocols.filter((p) => (p.bytes || 0) > 0 || (p.connections || 0) > 0) : [];
+    if (!list.length) return '';
+    return list.slice(0, limit || 5).map((p) => {
+      const name = netProtoLabel(p.proto_l7);
+      return `<span class="proto-badge proto-badge-sm" style="--proto-color:${netProtoColor(name)}" title="${escapeHtml(name)}: ${formatBytes(p.bytes || 0)} · ${(p.connections || 0)} flujos"><span class="proto-badge-dot"></span>${escapeHtml(name)}</span>`;
+    }).join('');
+  }
+
+  // MF-16: detalle completo de interfaces del equipo para el drawer (nombre, tipo, IP, MAC, RX, TX, % de trafico)
+  function netIfaceDrawerHtml(interfaces) {
+    const list = Array.isArray(interfaces) ? interfaces.filter((it) => (it.total_bytes || 0) > 0 || it.ip) : [];
+    if (!list.length) return '<span class="muted-text net-iface-empty">El agente de este equipo no reportó interfaces de red todavía.</span>';
+    const totalAll = list.reduce((s, it) => s + (it.total_bytes || 0), 0) || 1;
+    return list.map((it) => {
+      const k = netIfaceKind(it.kind);
+      const c = netIfaceColor(k);
+      const pct = Math.round(((it.total_bytes || 0) / totalAll) * 100);
+      return `<div class="iface-card" style="--iface-color:${c}">
+        <div class="iface-card-head">
+          <span class="iface-card-name"><span class="iface-pill-dot"></span>${escapeHtml(it.iface || '')}</span>
+          <span class="iface-card-kind">${escapeHtml(netIfaceLabel(k))}</span>
+          <span class="iface-card-pct">${pct}% del tráfico</span>
+        </div>
+        <div class="iface-card-meta">
+          <span>IP <b>${escapeHtml(it.ip || '---')}</b></span>
+          <span>MAC <b>${escapeHtml(it.mac || '---')}</b></span>
+        </div>
+        <div class="iface-card-track"><div class="iface-card-fill" style="width:${Math.max(3, pct)}%"></div></div>
+        <div class="iface-card-figs"><span class="net-fig-rx">&darr; ${formatBytes(it.rx_bytes || 0)}</span><span class="net-fig-tx">&uarr; ${formatBytes(it.tx_bytes || 0)}</span></div>
+      </div>`;
+    }).join('');
+  }
+
   const netState = {
     summary: null,
     domains: [],
@@ -3765,6 +4079,8 @@
     hostSortBy: 'bytes',
     hostViewMode: 'cards',
     hostHistory: new Map(),
+    protoFilter: 'ALL',
+    ifaceFilter: 'ALL',
   };
 
   // Tiempo real por WebSocket: debounce de render, sincronizacion por log y respaldo HTTP relajado
@@ -4447,11 +4763,11 @@
       if (!a || !b) return '';
       const color = l.from.startsWith('grp:') ? a.color : b.color;
       const sw = 1.5 + (14 * l.value) / maxLink;
-      return `<path class="net-topo-link topo-link" data-link-idx="${idx}" d="${topoLinkPath(a, b)}" stroke="${color}" stroke-width="${sw.toFixed(1)}" fill="none"><title>${escapeHtml(a.label)} - ${escapeHtml(b.label)}: ${escapeHtml(g.fmt(l.value))}</title></path>`;
+      return `<path class="net-topo-link topo-link" data-link-idx="${idx}" data-src="${escapeHtml(l.from)}" data-dst="${escapeHtml(l.to)}" d="${topoLinkPath(a, b)}" stroke="${color}" stroke-width="${sw.toFixed(1)}" fill="none"><title>${escapeHtml(a.label)} - ${escapeHtml(b.label)}: ${escapeHtml(g.fmt(l.value))}</title></path>`;
     }).join('');
     const nodeSvg = (list) => {
       const mx = list.reduce((m, n) => Math.max(m, n.value), 0);
-      return list.map((n) => topoNodeSvg(n, mx, `net-topo-node topo-node net-topo-node-${n.type}${n.active ? ' is-live' : ''}`, `data-topo-key="${escapeHtml(n.key)}" tabindex="0" role="button"`)).join('');
+      return list.map((n) => topoNodeSvg(n, mx, `net-topo-node topo-node net-topo-node-${n.type}${n.active ? ' is-live' : ''}`, `data-node-id="${escapeHtml(n.key)}" data-topo-key="${escapeHtml(n.key)}" tabindex="0" role="button"`)).join('');
     };
     netTopologySvg.innerHTML = `<g class="topo-links">${linksSvg}</g><g class="topo-nodes">${nodeSvg(g.hosts)}${nodeSvg(g.groups)}${nodeSvg(g.dests)}</g>`;
     if (netTopoLegend) {
@@ -4465,6 +4781,7 @@
     }
     if (netTopoSelection && !nodeMap.has(netTopoSelection.key)) netTopoSelection = null;
     netTopoApplySelection();
+    attachTopologyDragAndDrop(netTopologySvg, () => nodeMap, 'ra_topo_pos_net');
   }
 
   function netTopoHandlePick(target) {
@@ -4645,6 +4962,16 @@
           <span>Sitio líder:</span> ${topDom}
         </div>
 
+        <div class="net-host-ifaces" title="Interfaces de red activas del equipo">
+          <span class="net-host-mini-k">Interfaces activas</span>
+          <div class="net-host-ifaces-list">${netIfacePillsHtml(c.interfaces, { limit: 3 })}</div>
+        </div>
+
+        ${netProtoChipsCompactHtml(c.protocols_l7, 6) ? `<div class="net-host-protos" title="Tipos de tráfico (protocolos L7) de este equipo">
+          <span class="net-host-mini-k">Tipos de tráfico</span>
+          <div class="net-host-protos-list">${netProtoChipsCompactHtml(c.protocols_l7, 6)}</div>
+        </div>` : ''}
+
         <div class="net-host-card-actions">
           <button type="button" class="btn btn-secondary btn-sm net-host-inspect-btn" data-agent-id="${escapeHtml(c.agent_id)}" style="flex:1">
             Inspeccionar Host
@@ -4757,6 +5084,16 @@
             <span><i class="dot" style="background:var(--rose)"></i>Ocio / Social: <b>${pctLeisure}%</b></span>
             <span><i class="dot" style="background:#94a3b8"></i>Otros: <b>${pctOther}%</b></span>
           </div>
+        </div>
+
+        <div class="drawer-card">
+          <div class="drawer-card-title">Interfaces de Red del Equipo (Tráfico Separado por Interfaz)</div>
+          <div class="iface-card-list">${netIfaceDrawerHtml(client ? client.interfaces : [])}</div>
+        </div>
+
+        <div class="drawer-card">
+          <div class="drawer-card-title">Distribución de Protocolos L4/L7 del Cliente</div>
+          <div class="proto-bar-list">${netProtoBreakdownHtml(client ? client.protocols_l7 : [])}</div>
         </div>
 
         <div class="drawer-card">
@@ -4882,6 +5219,8 @@
       dir: (netDirectionFilter && netDirectionFilter.value) || 'ALL',
       q: netSearchInput ? netSearchInput.value.trim().toLowerCase() : '',
       showSys: !!(netShowSysToggle && netShowSysToggle.checked),
+      proto: netState.protoFilter || 'ALL',
+      iface: netState.ifaceFilter || 'ALL',
     };
   }
 
@@ -4896,6 +5235,8 @@
     if (f.dir === 'INBOUND' && d.direction !== 'INBOUND') return false;
     if (f.dir === 'RX_HEAVY' && !((d.rx_bytes || 0) > (d.tx_bytes || 0))) return false;
     if (f.dir === 'TX_HEAVY' && !((d.tx_bytes || 0) > (d.rx_bytes || 0))) return false;
+    if (f.proto && f.proto !== 'ALL' && netProtoLabel(d.proto_l7) !== f.proto) return false;
+    if (f.iface && f.iface !== 'ALL' && netIfaceKind(d.iface_kind) !== f.iface) return false;
     return netFlowMatchesSearch(d, f.q);
   }
 
@@ -5038,7 +5379,68 @@
 
   function netHasActiveFlowFilters() {
     const f = netFlowFilterState();
-    return f.cat !== 'ALL' || f.dir !== 'ALL' || f.q !== '';
+    return f.cat !== 'ALL' || f.dir !== 'ALL' || f.q !== '' || f.proto !== 'ALL' || f.iface !== 'ALL';
+  }
+
+  // MF-15: chips interactivos de Protocolo L7 con contador de flujos y bytes
+  function netRenderProtoChips() {
+    const bar = document.getElementById('net-proto-chips');
+    if (!bar) return;
+    const f = netFlowFilterState();
+    const base = { cat: f.cat, dir: f.dir, q: f.q, showSys: f.showSys, proto: 'ALL', iface: f.iface };
+    const stats = new Map();
+    let allCount = 0;
+    let allBytes = 0;
+    netState.domains.forEach((d) => {
+      if (!netFlowMatches(d, base)) return;
+      const p = netProtoLabel(d.proto_l7);
+      const b = (Number(d.estimated_bytes) || 0) || ((Number(d.rx_bytes) || 0) + (Number(d.tx_bytes) || 0));
+      const e = stats.get(p) || { count: 0, bytes: 0 };
+      e.count += 1;
+      e.bytes += b;
+      stats.set(p, e);
+      allCount += 1;
+      allBytes += b;
+    });
+    const chip = (key, label, color, count, bytes) => `
+      <button type="button" class="net-proto-chip${netState.protoFilter === key ? ' active' : ''}${count === 0 && key !== 'ALL' ? ' net-chip-empty' : ''}" data-proto="${escapeHtml(key)}" style="--proto-color:${color}" title="${escapeHtml(label)}: ${count} flujos · ${formatBytes(bytes)}">
+        <span class="net-proto-chip-dot"></span>
+        <span class="net-proto-chip-label">${escapeHtml(label)}</span>
+        <span class="net-proto-chip-count">${count}</span>
+      </button>`;
+    let html = chip('ALL', 'Todos', 'var(--text-secondary)', allCount, allBytes);
+    NET_PROTO_CHIPS.forEach((p) => {
+      const e = stats.get(p) || { count: 0, bytes: 0 };
+      html += chip(p, p, netProtoColor(p), e.count, e.bytes);
+    });
+    bar.innerHTML = html;
+  }
+
+  // MF-15: chips de Tipo de Interfaz de Red
+  function netRenderIfaceChips() {
+    const bar = document.getElementById('net-iface-filter');
+    if (!bar) return;
+    const f = netFlowFilterState();
+    const base = { cat: f.cat, dir: f.dir, q: f.q, showSys: f.showSys, proto: f.proto, iface: 'ALL' };
+    const stats = new Map();
+    let allCount = 0;
+    netState.domains.forEach((d) => {
+      if (!netFlowMatches(d, base)) return;
+      const k = netIfaceKind(d.iface_kind);
+      stats.set(k, (stats.get(k) || 0) + 1);
+      allCount += 1;
+    });
+    const chip = (key, label, color, count) => `
+      <button type="button" class="net-iface-chip${netState.ifaceFilter === key ? ' active' : ''}" data-iface="${escapeHtml(key)}" style="--iface-color:${color}" title="${escapeHtml(label)}: ${count} flujos">
+        <span class="net-iface-chip-dot"></span>
+        <span class="net-iface-chip-label">${escapeHtml(label)}</span>
+        <span class="net-iface-chip-count">${count}</span>
+      </button>`;
+    let html = chip('ALL', 'Todas', 'var(--text-secondary)', allCount);
+    NET_IFACE_CHIPS.forEach((k) => {
+      html += chip(k, NET_IFACE_LABELS[k], netIfaceColor(k), stats.get(k) || 0);
+    });
+    bar.innerHTML = html;
   }
 
   // Conteo de flujos por chip de categoria (respeta busqueda y ruido de sistema, no la categoria activa)
@@ -5081,6 +5483,8 @@
     }
     netSyncFlowFilterUi();
     netRenderCategoryCounts();
+    netRenderProtoChips();
+    netRenderIfaceChips();
     if (!netDomainsTbody) return;
     if (!domains.length) {
       const msg = netHasActiveFlowFilters() ? 'Ningún flujo coincide con los filtros activos.' : 'Sin dominios registrados.';
@@ -5161,6 +5565,7 @@
           <td class="net-cell-dpi">
             <div class="net-stack">
               <div><span class="net-cat-pill cat-${escapeHtml(cat)}" style="--cat-color:${catColor}"><span class="net-cat-dot"></span>${escapeHtml(NET_CATEGORY_LABELS[cat] || cat)}</span></div>
+              <div class="net-dpi-row net-proto-row">${netProtoBadgeHtml(d.proto_l7)}${netIfaceBadgeHtml(d.iface, d.iface_kind)}</div>
               <div class="net-dpi-row">${pkt}${confHtml}</div>
             </div>
           </td>
@@ -5441,6 +5846,10 @@
 
   if (netTopoGroupMode) netTopoGroupMode.addEventListener('change', () => { netTopoSelection = null; renderNetworkTopology(); });
   if (netTopoLimitSelect) netTopoLimitSelect.addEventListener('change', () => { netTopoSelection = null; renderNetworkTopology(); });
+  const netTopoResetBtn = document.getElementById('btn-net-topo-reset');
+  if (netTopoResetBtn) {
+    netTopoResetBtn.addEventListener('click', () => resetTopologyPositions('ra_topo_pos_net', renderNetworkTopology));
+  }
   if (netTopologySvg) {
     netTopologySvg.addEventListener('click', (e) => netTopoHandlePick(e.target));
     netTopologySvg.addEventListener('keydown', (e) => {
@@ -5606,7 +6015,29 @@
       if (netCategoryFilter) netCategoryFilter.value = 'ALL';
       if (netDirectionFilter) netDirectionFilter.value = 'ALL';
       if (netSearchInput) netSearchInput.value = '';
+      netState.protoFilter = 'ALL';
+      netState.ifaceFilter = 'ALL';
       clearTimeout(netSearchTimer);
+      renderNetworkDomains();
+    });
+  }
+
+  // MF-15: filtros por Protocolo L7 e Interfaz (chips generados dinamicamente, delegacion de eventos)
+  const netProtoChipsBar = document.getElementById('net-proto-chips');
+  if (netProtoChipsBar) {
+    netProtoChipsBar.addEventListener('click', (ev) => {
+      const chip = ev.target.closest('.net-proto-chip');
+      if (!chip) return;
+      netState.protoFilter = chip.dataset.proto || 'ALL';
+      renderNetworkDomains();
+    });
+  }
+  const netIfaceChipsBar = document.getElementById('net-iface-filter');
+  if (netIfaceChipsBar) {
+    netIfaceChipsBar.addEventListener('click', (ev) => {
+      const chip = ev.target.closest('.net-iface-chip');
+      if (!chip) return;
+      netState.ifaceFilter = chip.dataset.iface || 'ALL';
       renderNetworkDomains();
     });
   }
@@ -5676,6 +6107,714 @@
     });
   }
 
+  // ============================================================================
+  // CENTRO DE MANDO EJECUTIVO (Dashboard Principal) - MF-11, MF-12, MF-13, MF-14
+  // Cross-filter reactivo + Super-Topologia arrastrable de 4 modos + OTA.
+  // ============================================================================
+  const dashDatePicker = document.getElementById('dash-date-picker');
+  const dashFilterAgent = document.getElementById('dash-filter-agent');
+  const dashFilterIface = document.getElementById('dash-filter-iface');
+  const dashFilterProto = document.getElementById('dash-filter-proto');
+  const dashActiveFiltersBar = document.getElementById('dash-active-filters-bar');
+  const dashKpiGrid = document.getElementById('dash-kpi-grid');
+  const dashSuperTopoSvg = document.getElementById('dash-super-topo-svg');
+  const dashQuadrantSvg = document.getElementById('dash-quadrant-svg');
+  const dashProtoScope = document.getElementById('dash-proto-scope');
+  const dashProtocolsBody = document.getElementById('dash-protocols-body');
+  const dashInterfacesBody = document.getElementById('dash-interfaces-body');
+  const dashServicesTableBody = document.getElementById('dash-services-table-body');
+  const dashServiceSearch = document.getElementById('dash-service-search');
+  const btnDashRefresh = document.getElementById('btn-dash-refresh');
+  const btnDashOta = document.getElementById('btn-dash-ota');
+  const dashOtaStatus = document.getElementById('dash-ota-status');
+  const btnDashTopoReset = document.getElementById('btn-dash-topo-reset');
+  const dashTopoModeBtns = document.querySelectorAll('.dash-topo-mode-btn');
+
+  const dashState = {
+    date: '',
+    data: null,
+    loading: false,
+    filterAgentId: 'ALL',
+    filterProtoL7: 'ALL',
+    filterIfaceKind: 'ALL',
+    filterCategory: 'ALL',
+    filterDomain: 'ALL',
+    topoMode: 'cross4',
+    searchQuery: '',
+  };
+  let dashTopoGraphState = null;
+
+  const DASH_FILTER_LABELS = {
+    filterAgentId: 'Colaborador',
+    filterIfaceKind: 'Interfaz',
+    filterProtoL7: 'Protocolo',
+    filterCategory: 'Categoría',
+    filterDomain: 'Servicio',
+  };
+
+  function dashTodayStr() {
+    return (typeof netTodayStr === 'function') ? netTodayStr() : new Date().toISOString().slice(0, 10);
+  }
+
+  function dashCollaborators() {
+    return (dashState.data && Array.isArray(dashState.data.collaborators_matrix))
+      ? dashState.data.collaborators_matrix : [];
+  }
+
+  function dashAliasOf(aid) {
+    const c = dashCollaborators().find((x) => x.agent_id === aid);
+    return c ? (c.alias || c.hostname || aid) : aid;
+  }
+
+  // Un colaborador pasa el cross-filter activo (todas las dimensiones a la vez).
+  function dashMatchFilters(c) {
+    if (dashState.filterAgentId !== 'ALL' && c.agent_id !== dashState.filterAgentId) return false;
+    if (dashState.filterIfaceKind !== 'ALL') {
+      const kinds = new Set();
+      if (c.primary_iface) kinds.add(netIfaceKind(c.primary_iface));
+      (c.interfaces || []).forEach((it) => kinds.add(netIfaceKind(it.kind)));
+      if (!kinds.has(dashState.filterIfaceKind)) return false;
+    }
+    if (dashState.filterProtoL7 !== 'ALL') {
+      const hasP = (c.protocols_l7 || c.top_protocols || []).some((p) => netProtoLabel(p.proto_l7) === dashState.filterProtoL7 && (p.bytes || 0) >= 0);
+      if (!hasP) return false;
+    }
+    if (dashState.filterCategory !== 'ALL') {
+      const hasC = (c.top_apps || []).some((a) => (a.category || '') === dashState.filterCategory);
+      if (!hasC) return false;
+    }
+    if (dashState.filterDomain !== 'ALL') {
+      const svc = dashState.filterDomain.toLowerCase();
+      const hasD = (c.top_domain || '').toLowerCase() === svc
+        || (c.top_apps || []).some((a) => String(a.app_name || '').toLowerCase() === svc);
+      if (!hasD) return false;
+    }
+    return true;
+  }
+
+  function dashFilteredCollaborators() {
+    return dashCollaborators().filter(dashMatchFilters);
+  }
+
+  async function loadCommandDashboard(opts = {}) {
+    const silent = !!opts.silent;
+    if (dashState.loading) return;
+    dashState.loading = true;
+    if (dashDatePicker && !dashDatePicker.value) dashDatePicker.value = dashTodayStr();
+    dashState.date = (dashDatePicker && dashDatePicker.value) || dashTodayStr();
+    if (!silent && btnDashRefresh) btnDashRefresh.classList.add('loading');
+    try {
+      const params = new URLSearchParams({ date: dashState.date });
+      if (state.tenantFilter && state.tenantFilter !== 'ALL') params.set('tenant_id', state.tenantFilter);
+      const res = await authFetch(`/api/command-dashboard?${params.toString()}`);
+      const data = await res.json();
+      if (data && data.ok) {
+        dashState.data = data;
+        dashPopulateSelects();
+        renderDashAll();
+      }
+    } catch (err) {
+      console.error('Error al cargar el Centro de Mando:', err);
+    } finally {
+      dashState.loading = false;
+      if (btnDashRefresh) btnDashRefresh.classList.remove('loading');
+    }
+  }
+
+  function dashPopulateSelects() {
+    const cols = dashCollaborators();
+    if (dashFilterAgent) {
+      const cur = dashState.filterAgentId;
+      let html = '<option value="ALL">Todos los colaboradores</option>';
+      cols.forEach((c) => {
+        const lbl = c.username && c.username !== '---' ? `${c.alias} (${c.username})` : (c.alias || c.hostname || c.agent_id);
+        html += `<option value="${escapeHtml(c.agent_id)}">${escapeHtml(lbl)}</option>`;
+      });
+      dashFilterAgent.innerHTML = html;
+      dashFilterAgent.value = Array.from(dashFilterAgent.options).some((o) => o.value === cur) ? cur : 'ALL';
+    }
+    if (dashFilterProto) {
+      const cur = dashState.filterProtoL7;
+      const protos = (dashState.data && dashState.data.protocols_breakdown) || [];
+      let html = '<option value="ALL">Todos los protocolos</option>';
+      protos.forEach((p) => {
+        const name = netProtoLabel(p.proto_l7);
+        html += `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`;
+      });
+      dashFilterProto.innerHTML = html;
+      dashFilterProto.value = Array.from(dashFilterProto.options).some((o) => o.value === cur) ? cur : 'ALL';
+    }
+    if (dashProtoScope) {
+      const cur = dashProtoScope.value || 'ALL';
+      let html = '<option value="ALL">Global (toda la flota)</option>';
+      cols.forEach((c) => {
+        html += `<option value="${escapeHtml(c.agent_id)}">${escapeHtml(c.alias || c.hostname || c.agent_id)}</option>`;
+      });
+      dashProtoScope.innerHTML = html;
+      dashProtoScope.value = Array.from(dashProtoScope.options).some((o) => o.value === cur) ? cur : 'ALL';
+    }
+  }
+
+  // MF-11: motor de cross-filter reactivo.
+  function setDashFilter(key, val) {
+    if (!(key in dashState)) return;
+    const cur = dashState[key];
+    const next = (cur === val) ? 'ALL' : val;
+    dashState[key] = next;
+    if (key === 'filterAgentId' && dashFilterAgent) dashFilterAgent.value = next;
+    if (key === 'filterIfaceKind' && dashFilterIface) dashFilterIface.value = next;
+    if (key === 'filterProtoL7' && dashFilterProto) dashFilterProto.value = next;
+    renderDashAll();
+  }
+
+  function clearDashFilters() {
+    dashState.filterAgentId = 'ALL';
+    dashState.filterProtoL7 = 'ALL';
+    dashState.filterIfaceKind = 'ALL';
+    dashState.filterCategory = 'ALL';
+    dashState.filterDomain = 'ALL';
+    if (dashFilterAgent) dashFilterAgent.value = 'ALL';
+    if (dashFilterIface) dashFilterIface.value = 'ALL';
+    if (dashFilterProto) dashFilterProto.value = 'ALL';
+    renderDashAll();
+  }
+
+  function renderDashAll() {
+    if (!dashState.data) return;
+    renderDashActiveFilters();
+    renderDashKpis();
+    renderDashSuperTopology();
+    renderDashQuadrantMatrix();
+    renderDashProtocolsPanel();
+    renderDashInterfacesPanel();
+    renderDashServicesTable();
+  }
+
+  function renderDashActiveFilters() {
+    if (!dashActiveFiltersBar) return;
+    const chips = [];
+    Object.keys(DASH_FILTER_LABELS).forEach((key) => {
+      const v = dashState[key];
+      if (v && v !== 'ALL') {
+        const shown = key === 'filterAgentId' ? dashAliasOf(v)
+          : key === 'filterIfaceKind' ? netIfaceLabel(v) : v;
+        chips.push(`<button type="button" class="dash-active-filter-chip" data-dash-clear-key="${key}" title="Quitar este filtro">
+          <span class="dash-chip-dim">${escapeHtml(DASH_FILTER_LABELS[key])}</span>
+          <span class="dash-chip-val">${escapeHtml(String(shown))}</span>
+          <span class="dash-chip-x">&times;</span>
+        </button>`);
+      }
+    });
+    if (!chips.length) {
+      dashActiveFiltersBar.classList.add('hidden');
+      dashActiveFiltersBar.innerHTML = '';
+      return;
+    }
+    dashActiveFiltersBar.classList.remove('hidden');
+    dashActiveFiltersBar.innerHTML = `<span class="dash-active-filters-label">Filtros activos</span>${chips.join('')}<button type="button" id="dash-clear-all-filters" class="dash-clear-all-btn">Limpiar filtros</button>`;
+  }
+
+  function dashKpiCard(opts) {
+    const spark = opts.accent ? `style="--kpi-accent:${opts.accent}"` : '';
+    const sub = opts.sub ? `<div class="dash-kpi-sub">${opts.sub}</div>` : '';
+    const foot = opts.foot ? `<div class="dash-kpi-foot">${opts.foot}</div>` : '';
+    return `<div class="dash-kpi-card ${opts.cls || ''}" ${spark}>
+      <div class="dash-kpi-label">${escapeHtml(opts.label)}</div>
+      <div class="dash-kpi-value">${opts.value}</div>
+      ${sub}${foot}
+    </div>`;
+  }
+
+  function renderDashKpis() {
+    if (!dashKpiGrid) return;
+    const data = dashState.data;
+    const fleet = data.fleet || {};
+    const cols = dashFilteredCollaborators();
+    const all = dashCollaborators();
+    const onlineCount = cols.filter((c) => c.is_online).length;
+    const totalCount = cols.length;
+    const avgFocus = totalCount ? Math.round(cols.reduce((s, c) => s + (Number(c.focus_score) || 0), 0) / totalCount) : 0;
+    const activeSec = cols.reduce((s, c) => s + (Number(c.active_seconds) || 0), 0);
+    const idleSec = cols.reduce((s, c) => s + (Number(c.idle_seconds) || 0), 0);
+    const prodPct = (activeSec + idleSec) ? Math.round((100 * activeSec) / (activeSec + idleSec)) : 0;
+    const rx = cols.reduce((s, c) => s + (Number(c.net_rx_bytes) || 0), 0);
+    const tx = cols.reduce((s, c) => s + (Number(c.net_tx_bytes) || 0), 0);
+    const protos = (data.protocols_breakdown || []).slice().sort((a, b) => (b.bytes || 0) - (a.bytes || 0));
+    const topProto = protos.length ? netProtoLabel(protos[0].proto_l7) : '---';
+    const ifaceCount = { WIFI: 0, ETH: 0, VPN: 0 };
+    cols.forEach((c) => {
+      const seen = new Set();
+      (c.interfaces || []).forEach((it) => seen.add(netIfaceKind(it.kind)));
+      if (!seen.size && c.primary_iface) seen.add(netIfaceKind(c.primary_iface));
+      seen.forEach((k) => { if (k in ifaceCount) ifaceCount[k] += 1; });
+    });
+    const alerts = data.security_alerts || [];
+    const alertCount = alerts.length;
+    const alertLabel = alertCount
+      ? alerts.slice(0, 3).map((a) => escapeHtml(a.label)).join(' · ')
+      : 'Sin alertas de seguridad';
+
+    dashKpiGrid.innerHTML = [
+      dashKpiCard({
+        label: 'Colaboradores Online', accent: '#16a34a',
+        value: `${onlineCount} <span class="dash-kpi-slash">/ ${totalCount}</span>`,
+        sub: `${fleet.active || 0} activos · ${fleet.idle || 0} inactivos · ${fleet.away || 0} ausentes`,
+      }),
+      dashKpiCard({
+        label: 'Score de Enfoque Global', accent: '#0ea5e9',
+        value: `${avgFocus}<span class="dash-kpi-unit">%</span>`,
+        sub: `Promedio de ${totalCount} colaborador(es)`,
+      }),
+      dashKpiCard({
+        label: 'Productivo vs Distracción', accent: '#8b5cf6',
+        value: `${prodPct}<span class="dash-kpi-unit">% prod.</span>`,
+        sub: `${formatAccumulatedTime(activeSec)} activo · ${formatAccumulatedTime(idleSec)} inactivo`,
+      }),
+      dashKpiCard({
+        label: 'Tráfico Total (RX / TX)', accent: '#f59e0b',
+        value: `${formatBytes(rx + tx)}`,
+        sub: `&darr; ${formatBytes(rx)} / &uarr; ${formatBytes(tx)}`,
+        foot: `Protocolo #1: <b>${escapeHtml(topProto)}</b>`,
+      }),
+      dashKpiCard({
+        label: 'Interfaces Activas', accent: '#0d9488',
+        value: `${ifaceCount.WIFI + ifaceCount.ETH + ifaceCount.VPN}`,
+        sub: `Wi-Fi ${ifaceCount.WIFI} · Eth ${ifaceCount.ETH} · VPN ${ifaceCount.VPN}`,
+      }),
+      dashKpiCard({
+        label: 'Alertas de Seguridad', accent: alertCount ? '#dc2626' : '#64748b',
+        cls: alertCount ? 'dash-kpi-alert' : '',
+        value: `${alertCount}`,
+        sub: alertLabel,
+      }),
+    ].join('');
+    void all;
+  }
+
+  // ---- MF-12: Super-Topologia conmutable de 4 modos con Drag & Drop ----
+  const DASH_TOPO_XS4 = [12, 258, 504, 750];
+  const DASH_TOPO_XS3 = [16, 365, 714];
+  const DASH_TOPO_COLW4 = 200;
+  const DASH_TOPO_COLW3 = 230;
+  const DASH_TOPO_H = 520;
+
+  function dashProviderGuess(domain) {
+    const d = String(domain || '').toLowerCase();
+    if (!d) return 'Desconocido';
+    const map = [
+      ['google', 'Google'], ['gstatic', 'Google'], ['youtube', 'Google / YouTube'],
+      ['microsoft', 'Microsoft'], ['office', 'Microsoft'], ['windows', 'Microsoft'], ['azure', 'Microsoft Azure'],
+      ['apple', 'Apple'], ['icloud', 'Apple'], ['aws', 'Amazon AWS'], ['amazon', 'Amazon'], ['cloudfront', 'Amazon AWS'],
+      ['facebook', 'Meta'], ['fbcdn', 'Meta'], ['instagram', 'Meta'], ['whatsapp', 'Meta'],
+      ['cloudflare', 'Cloudflare'], ['akamai', 'Akamai'], ['fastly', 'Fastly'],
+      ['github', 'GitHub'], ['openai', 'OpenAI'], ['chatgpt', 'OpenAI'], ['netflix', 'Netflix'],
+      ['tiktok', 'TikTok'], ['zoom', 'Zoom'], ['slack', 'Slack'], ['spotify', 'Spotify'],
+    ];
+    for (let i = 0; i < map.length; i++) { if (d.indexOf(map[i][0]) !== -1) return map[i][1]; }
+    const parts = d.split('.').filter(Boolean);
+    if (parts.length >= 2) return parts[parts.length - 2].replace(/^\w/, (m) => m.toUpperCase());
+    return d;
+  }
+
+  function dashStatusColor(c) {
+    const f = Number(c.focus_score) || 0;
+    if (!c.is_online) return '#64748b';
+    if (f >= 70) return '#16a34a';
+    if (f >= 40) return '#f59e0b';
+    return '#dc2626';
+  }
+
+  function dashBuildTopoPaths(mode, cols) {
+    const paths = [];
+    cols.forEach((c) => {
+      const aid = c.agent_id;
+      const agentSeg = {
+        col: 0, key: `d:agent:${aid}`, label: c.alias || c.hostname || aid,
+        sub: c.is_online ? 'En línea' : 'Offline', color: dashStatusColor(c),
+        dim: 'filterAgentId', val: aid, weight: 1,
+      };
+      const netW = (Number(c.net_total_bytes) || (Number(c.net_rx_bytes) || 0) + (Number(c.net_tx_bytes) || 0)) || 1;
+      if (mode === 'cross4') {
+        const kind = netIfaceKind(c.primary_iface || ((c.interfaces || [])[0] || {}).kind || 'OTHER');
+        const ifSeg = { col: 1, key: `d:iface:${kind}`, label: netIfaceLabel(kind), sub: 'Interfaz', color: netIfaceColor(kind), dim: 'filterIfaceKind', val: kind, weight: netW };
+        const app = (c.top_apps || [])[0];
+        const appName = app ? (app.app_name || 'App') : 'Sin app';
+        const appCat = app ? (app.category || '') : '';
+        const appSeg = { col: 2, key: `d:app:${appName.toLowerCase()}`, label: appName, sub: appCat, color: getCategoryColor(appCat), dim: 'filterCategory', val: appCat, weight: app ? (Number(app.seconds) || 1) : 1 };
+        const dom = c.top_domain || 'Sin dominio';
+        const domSeg = { col: 3, key: `d:dom:${dom.toLowerCase()}`, label: dom, sub: 'Destino', color: '#0ea5e9', dim: 'filterDomain', val: dom, weight: netW };
+        paths.push([agentSeg, ifSeg, appSeg, domSeg]);
+      } else if (mode === 'proto4') {
+        const kind = netIfaceKind(c.primary_iface || ((c.interfaces || [])[0] || {}).kind || 'OTHER');
+        const ifSeg = { col: 1, key: `d:iface:${kind}`, label: netIfaceLabel(kind), sub: 'Interfaz', color: netIfaceColor(kind), dim: 'filterIfaceKind', val: kind, weight: netW };
+        const dom = c.top_domain || 'Sin dominio';
+        const protos = (c.protocols_l7 || c.top_protocols || []).slice(0, 3);
+        if (!protos.length) {
+          const pSeg = { col: 2, key: 'd:proto:Desconocido', label: 'Desconocido', sub: 'Protocolo', color: netProtoColor('Desconocido'), dim: 'filterProtoL7', val: 'Desconocido', weight: 1 };
+          const domSeg = { col: 3, key: `d:dom:${dom.toLowerCase()}`, label: dom, sub: 'Destino', color: '#0ea5e9', dim: 'filterDomain', val: dom, weight: 1 };
+          paths.push([agentSeg, ifSeg, pSeg, domSeg]);
+        } else {
+          protos.forEach((p) => {
+            const name = netProtoLabel(p.proto_l7);
+            const w = (Number(p.bytes) || 0) || 1;
+            const pSeg = { col: 2, key: `d:proto:${name}`, label: name, sub: 'Protocolo', color: netProtoColor(name), dim: 'filterProtoL7', val: name, weight: w };
+            const domSeg = { col: 3, key: `d:dom:${dom.toLowerCase()}`, label: dom, sub: 'Destino', color: '#0ea5e9', dim: 'filterDomain', val: dom, weight: w };
+            paths.push([agentSeg, ifSeg, pSeg, domSeg]);
+          });
+        }
+      } else if (mode === 'prod') {
+        const apps = (c.top_apps || []).slice(0, 5);
+        if (!apps.length) {
+          const catSeg = { col: 1, key: 'd:cat:Sin actividad', label: 'Sin actividad', sub: '', color: '#64748b', dim: 'filterCategory', val: '', weight: 1 };
+          const appSeg = { col: 2, key: 'd:app:sin app', label: 'Sin app', sub: '', color: '#64748b', dim: 'filterCategory', val: '', weight: 1 };
+          paths.push([agentSeg, catSeg, appSeg]);
+        } else {
+          apps.forEach((a) => {
+            const cat = a.category || 'Otros';
+            const w = (Number(a.seconds) || 1);
+            const catSeg = { col: 1, key: `d:cat:${cat}`, label: cat, sub: 'Categoría', color: getCategoryColor(cat), dim: 'filterCategory', val: cat, weight: w };
+            const appName = a.app_name || 'App';
+            const appSeg = { col: 2, key: `d:app:${appName.toLowerCase()}`, label: appName, sub: formatAccumulatedTime(w), color: getCategoryColor(cat), dim: 'filterCategory', val: cat, weight: w };
+            paths.push([agentSeg, catSeg, appSeg]);
+          });
+        }
+      } else if (mode === 'asn') {
+        const dom = c.top_domain || 'Sin dominio';
+        const prov = dashProviderGuess(dom);
+        const provSeg = { col: 1, key: `d:prov:${prov}`, label: prov, sub: 'Proveedor / ASN', color: '#6366f1', dim: '', val: '', weight: netW };
+        const domSeg = { col: 2, key: `d:dom:${dom.toLowerCase()}`, label: dom, sub: 'Destino', color: '#0ea5e9', dim: 'filterDomain', val: dom, weight: netW };
+        paths.push([agentSeg, provSeg, domSeg]);
+      }
+    });
+    return paths;
+  }
+
+  function dashAggregateTopo(paths, numCols) {
+    const colMaps = [];
+    for (let i = 0; i < numCols; i++) colMaps.push(new Map());
+    const linkMap = new Map();
+    paths.forEach((p) => {
+      for (let i = 0; i < p.length; i++) {
+        const seg = p[i];
+        const m = colMaps[seg.col];
+        let nd = m.get(seg.key);
+        if (!nd) {
+          nd = { key: seg.key, type: seg.dim || 'node', label: seg.label, sub: seg.sub || '', color: seg.color, value: 0, dim: seg.dim, val: seg.val };
+          m.set(seg.key, nd);
+        }
+        nd.value += seg.weight || 1;
+        if (i > 0) {
+          const prev = p[i - 1];
+          const lk = `${prev.key}>${seg.key}`;
+          let l = linkMap.get(lk);
+          if (!l) { l = { from: prev.key, to: seg.key, value: 0 }; linkMap.set(lk, l); }
+          l.value += seg.weight || 1;
+        }
+      }
+    });
+    return { cols: colMaps.map((m) => Array.from(m.values())), links: Array.from(linkMap.values()) };
+  }
+
+  function renderDashSuperTopology() {
+    if (!dashSuperTopoSvg) return;
+    const mode = dashState.topoMode;
+    const cols = dashFilteredCollaborators();
+    dashTopoModeBtns.forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
+    const W = 960;
+    const H = DASH_TOPO_H;
+    if (!cols.length) {
+      dashSuperTopoSvg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" class="topo-empty-text">Sin datos para los filtros actuales.</text>`;
+      dashTopoGraphState = null;
+      return;
+    }
+    const numCols = (mode === 'cross4' || mode === 'proto4') ? 4 : 3;
+    const xs = numCols === 4 ? DASH_TOPO_XS4 : DASH_TOPO_XS3;
+    const colW = numCols === 4 ? DASH_TOPO_COLW4 : DASH_TOPO_COLW3;
+    const paths = dashBuildTopoPaths(mode, cols);
+    const graph = dashAggregateTopo(paths, numCols);
+    for (let i = 0; i < numCols; i++) {
+      topoLayoutColumn(graph.cols[i], xs[i], colW, H, 14, numCols === 4 ? 50 : 60);
+    }
+    const nodeMap = new Map();
+    graph.cols.forEach((list) => list.forEach((n) => nodeMap.set(n.key, n)));
+    dashTopoGraphState = nodeMap;
+    const maxLink = graph.links.reduce((m, l) => Math.max(m, l.value), 0) || 1;
+    const linksSvg = graph.links.map((l, idx) => {
+      const a = nodeMap.get(l.from);
+      const b = nodeMap.get(l.to);
+      if (!a || !b) return '';
+      const sw = 1.2 + (9 * l.value) / maxLink;
+      return `<path class="dash-topo-link topo-link" data-link-idx="${idx}" data-src="${escapeHtml(l.from)}" data-dst="${escapeHtml(l.to)}" d="${topoLinkPath(a, b)}" stroke="${b.color || '#64748b'}" stroke-width="${sw.toFixed(1)}" fill="none"></path>`;
+    }).join('');
+    const nodeSvg = graph.cols.map((list) => {
+      const mx = list.reduce((m, n) => Math.max(m, n.value), 0);
+      return list.map((n) => topoNodeSvg(n, mx, 'dash-topo-node topo-node', `data-node-id="${escapeHtml(n.key)}" data-dash-dim="${escapeHtml(n.dim || '')}" data-dash-val="${escapeHtml(String(n.val == null ? '' : n.val))}" tabindex="0" role="button"`)).join('');
+    }).join('');
+    dashSuperTopoSvg.innerHTML = `<g class="topo-links">${linksSvg}</g><g class="topo-nodes">${nodeSvg}</g>`;
+    attachTopologyDragAndDrop(dashSuperTopoSvg, () => dashTopoGraphState, `ra_topo_pos_dash_${mode}`);
+  }
+
+  // ---- MF-14: Matriz Cuadrante Productividad vs Red ----
+  function renderDashQuadrantMatrix() {
+    if (!dashQuadrantSvg) return;
+    const cols = dashFilteredCollaborators();
+    const W = 460;
+    const H = 320;
+    const padL = 42;
+    const padR = 16;
+    const padT = 16;
+    const padB = 34;
+    const x0 = padL;
+    const x1 = W - padR;
+    const y0 = H - padB;
+    const y1 = padT;
+    const maxBytes = cols.reduce((m, c) => Math.max(m, (Number(c.net_rx_bytes) || 0) + (Number(c.net_tx_bytes) || 0)), 0) || 1;
+    const logMax = Math.log10(maxBytes + 1) || 1;
+    const midX = (x0 + x1) / 2;
+    const midY = (y0 + y1) / 2;
+    const bgQuads = `
+      <rect x="${midX}" y="${y1}" width="${x1 - midX}" height="${midY - y1}" class="dash-quad-bg dq-bg-hi-hi"></rect>
+      <rect x="${x0}" y="${y1}" width="${midX - x0}" height="${midY - y1}" class="dash-quad-bg dq-bg-lo-hi"></rect>
+      <rect x="${midX}" y="${midY}" width="${x1 - midX}" height="${y0 - midY}" class="dash-quad-bg dq-bg-hi-lo"></rect>
+      <rect x="${x0}" y="${midY}" width="${midX - x0}" height="${y0 - midY}" class="dash-quad-bg dq-bg-idle"></rect>`;
+    const axes = `
+      <line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y0}" class="dash-quad-axis"></line>
+      <line x1="${x0}" y1="${y1}" x2="${x0}" y2="${y0}" class="dash-quad-axis"></line>
+      <line x1="${midX}" y1="${y1}" x2="${midX}" y2="${y0}" class="dash-quad-divider"></line>
+      <line x1="${x0}" y1="${midY}" x2="${x1}" y2="${midY}" class="dash-quad-divider"></line>
+      <text x="${(x0 + x1) / 2}" y="${H - 8}" text-anchor="middle" class="dash-quad-axlabel">Enfoque / Productividad (%)</text>
+      <text x="12" y="${(y0 + y1) / 2}" text-anchor="middle" transform="rotate(-90 12 ${(y0 + y1) / 2})" class="dash-quad-axlabel">Tráfico de Red</text>`;
+    const bubbles = cols.map((c) => {
+      const fx = Math.max(0, Math.min(100, Number(c.focus_score) || 0)) / 100;
+      const bytes = (Number(c.net_rx_bytes) || 0) + (Number(c.net_tx_bytes) || 0);
+      const fy = Math.log10(bytes + 1) / logMax;
+      const cx = x0 + fx * (x1 - x0);
+      const cy = y0 - fy * (y0 - y1);
+      const hours = (Number(c.active_seconds) || 0) / 3600;
+      const r = Math.max(5, Math.min(22, 5 + hours * 3));
+      const sel = dashState.filterAgentId === c.agent_id;
+      return `<g class="dash-quad-bubble ${sel ? 'is-selected' : ''}" data-dash-agent="${escapeHtml(c.agent_id)}" role="button" tabindex="0">
+        <circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r.toFixed(1)}" fill="${dashStatusColor(c)}" fill-opacity="0.72" stroke="${dashStatusColor(c)}"></circle>
+        <text x="${cx.toFixed(1)}" y="${(cy - r - 3).toFixed(1)}" text-anchor="middle" class="dash-quad-blabel">${escapeHtml(topoTrunc(c.alias || c.hostname || c.agent_id, 14))}</text>
+        <title>${escapeHtml(c.alias || c.agent_id)} — Enfoque ${Math.round(Number(c.focus_score) || 0)}% · ${formatBytes(bytes)} · ${formatAccumulatedTime(Number(c.active_seconds) || 0)}</title>
+      </g>`;
+    }).join('');
+    dashQuadrantSvg.innerHTML = `${bgQuads}${axes}${bubbles || `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" class="topo-empty-text">Sin datos.</text>`}`;
+  }
+
+  // ---- MF-13: Panel de Protocolos L4/L7 ----
+  function renderDashProtocolsPanel() {
+    if (!dashProtocolsBody) return;
+    const scope = (dashProtoScope && dashProtoScope.value) || 'ALL';
+    let protos;
+    if (scope !== 'ALL') {
+      const c = dashCollaborators().find((x) => x.agent_id === scope);
+      protos = (c && (c.protocols_l7 || c.top_protocols)) || [];
+    } else {
+      protos = (dashState.data && dashState.data.protocols_breakdown) || [];
+    }
+    const list = protos.filter((p) => (p.bytes || 0) > 0 || (p.connections || 0) > 0)
+      .slice().sort((a, b) => (b.bytes || 0) - (a.bytes || 0));
+    if (!list.length) {
+      dashProtocolsBody.innerHTML = '<span class="muted-text">Sin protocolos clasificados para la selección actual.</span>';
+      return;
+    }
+    const maxBytes = list.reduce((m, p) => Math.max(m, p.bytes || 0), 1);
+    dashProtocolsBody.innerHTML = list.map((p) => {
+      const name = netProtoLabel(p.proto_l7);
+      const col = netProtoColor(name);
+      const w = Math.max(3, Math.round(((p.bytes || 0) / maxBytes) * 100));
+      const active = dashState.filterProtoL7 === name;
+      return `<button type="button" class="dash-proto-row ${active ? 'is-active' : ''}" data-dash-proto="${escapeHtml(name)}" style="--proto-color:${col}">
+        <div class="dash-proto-head"><span class="dash-proto-name"><span class="dash-proto-dot"></span>${escapeHtml(name)}</span>
+        <span class="dash-proto-figs">${formatBytes(p.bytes || 0)} · ${(p.connections || 0).toLocaleString('es-MX')} flujos${typeof p.percent === 'number' ? ` · ${p.percent}%` : ''}</span></div>
+        <div class="dash-proto-track"><div class="dash-proto-fill" style="width:${w}%;background:${col}"></div></div>
+      </button>`;
+    }).join('');
+  }
+
+  // ---- MF-13: Inspector de Interfaces por Equipo ----
+  function renderDashInterfacesPanel() {
+    if (!dashInterfacesBody) return;
+    const cols = dashFilteredCollaborators().filter((c) => (c.interfaces || []).length);
+    if (!cols.length) {
+      dashInterfacesBody.innerHTML = '<span class="muted-text">Ningún equipo reportó interfaces de red para la selección actual.</span>';
+      return;
+    }
+    dashInterfacesBody.innerHTML = cols.map((c) => {
+      const protoChips = (typeof netProtoChipsCompactHtml === 'function')
+        ? netProtoChipsCompactHtml(c.protocols_l7 || c.top_protocols || [], 5) : '';
+      const ifaces = (c.interfaces || []).filter((it) => (it.total_bytes || 0) > 0 || it.ip).map((it) => {
+        const k = netIfaceKind(it.kind);
+        const col = netIfaceColor(k);
+        return `<button type="button" class="dash-iface-row" data-dash-iface="${escapeHtml(k)}" style="--iface-color:${col}" title="Filtrar el Dashboard por interfaz ${escapeHtml(netIfaceLabel(k))}">
+          <span class="dash-iface-dot"></span>
+          <span class="dash-iface-name">${escapeHtml(it.iface || '')}</span>
+          <span class="dash-iface-kind">${escapeHtml(k)}</span>
+          <span class="dash-iface-ip">${escapeHtml(it.ip || '---')}</span>
+          <span class="dash-iface-figs">&darr; ${formatBytes(it.rx_bytes || 0)} / &uarr; ${formatBytes(it.tx_bytes || 0)}</span>
+        </button>`;
+      }).join('');
+      return `<div class="dash-iface-card">
+        <div class="dash-iface-card-head">
+          <span class="dash-iface-card-name">${escapeHtml(c.alias || c.hostname || c.agent_id)}</span>
+          <span class="dash-iface-card-sub">${escapeHtml(c.username || '')}</span>
+        </div>
+        <div class="dash-iface-list">${ifaces || '<span class="muted-text">Sin interfaces con tráfico.</span>'}</div>
+        ${protoChips ? `<div class="dash-iface-protos">${protoChips}</div>` : ''}
+      </div>`;
+    }).join('');
+  }
+
+  // ---- MF-14: Tabla de Servicios y Dominios Cruzados ----
+  function renderDashServicesTable() {
+    if (!dashServicesTableBody) return;
+    const services = (dashState.data && dashState.data.top_services) || [];
+    const cols = dashCollaborators();
+    const totalBytes = services.reduce((s, x) => s + (Number(x.net_bytes) || 0), 0) || 1;
+    const q = (dashState.searchQuery || '').trim().toLowerCase();
+    const rows = services.map((svc) => {
+      const name = svc.service || '';
+      const lname = name.toLowerCase();
+      const users = cols.filter((c) => (c.top_domain || '').toLowerCase() === lname
+        || (c.top_apps || []).some((a) => String(a.app_name || '').toLowerCase() === lname));
+      let app = '';
+      let category = '';
+      users.some((c) => (c.top_apps || []).some((a) => {
+        if (String(a.app_name || '').toLowerCase() === lname) { app = a.app_name; category = a.category || ''; return true; }
+        return false;
+      }));
+      if (!category && users.length) {
+        const topApp = (users[0].top_apps || [])[0];
+        if (topApp) { app = app || topApp.app_name; category = topApp.category || ''; }
+      }
+      const protoSrc = users.length ? (users[0].protocols_l7 || users[0].top_protocols || []) : [];
+      const proto = protoSrc.length ? netProtoLabel(protoSrc[0].proto_l7) : 'Desconocido';
+      const iface = users.length ? netIfaceKind(users[0].primary_iface || ((users[0].interfaces || [])[0] || {}).kind) : 'OTHER';
+      const ifaceClient = users.length ? (users[0].alias || users[0].hostname || users[0].agent_id) : '---';
+      return { name, app, category, proto, iface, ifaceClient, users, netBytes: Number(svc.net_bytes) || 0, pct: Math.round((100 * (Number(svc.net_bytes) || 0)) / totalBytes) };
+    }).filter((r) => !q || r.name.toLowerCase().includes(q) || (r.app || '').toLowerCase().includes(q) || (r.category || '').toLowerCase().includes(q));
+
+    if (!rows.length) {
+      dashServicesTableBody.innerHTML = `<tr><td colspan="8" class="dash-services-empty">Sin servicios para la selección actual.</td></tr>`;
+      return;
+    }
+    dashServicesTableBody.innerHTML = rows.map((r) => {
+      const active = dashState.filterDomain.toLowerCase() === r.name.toLowerCase();
+      const rx = Math.round(r.netBytes * 0.85);
+      const tx = r.netBytes - rx;
+      return `<tr class="dash-service-row ${active ? 'is-active' : ''}" data-dash-service="${escapeHtml(r.name)}">
+        <td class="dash-td-service"><span class="dash-service-name">${escapeHtml(r.name)}</span></td>
+        <td>${escapeHtml(r.app || '---')}</td>
+        <td>${r.category ? `<span class="dash-cat-pill" style="--cat-color:${getCategoryColor(r.category)}">${escapeHtml(r.category)}</span>` : '---'}</td>
+        <td>${netProtoBadgeHtml(r.proto)}</td>
+        <td><span class="dash-iface-cell">${escapeHtml(r.ifaceClient)} &rarr; ${escapeHtml(netIfaceLabel(r.iface))}</span></td>
+        <td class="dash-td-users">${r.users.length ? r.users.slice(0, 3).map((u) => `<span class="dash-user-chip" title="${escapeHtml(u.alias || u.agent_id)}">${escapeHtml(topoTrunc(u.alias || u.hostname || u.agent_id, 10))}</span>`).join('') + (r.users.length > 3 ? `<span class="dash-user-more">+${r.users.length - 3}</span>` : '') : '---'}</td>
+        <td class="dash-td-traffic">&darr; ${formatBytes(rx)} / &uarr; ${formatBytes(tx)}</td>
+        <td class="dash-td-pct"><span class="dash-pct-bar"><span class="dash-pct-fill" style="width:${Math.max(2, r.pct)}%"></span></span><span class="dash-pct-num">${r.pct}%</span></td>
+      </tr>`;
+    }).join('');
+  }
+
+  // ---- OTA: Actualizar Agentes en caliente ----
+  async function triggerAgentsOtaUpdate(agentId = null) {
+    if (!btnDashOta) return;
+    btnDashOta.classList.add('loading');
+    if (dashOtaStatus) {
+      dashOtaStatus.classList.remove('hidden', 'dash-ota-ok', 'dash-ota-err');
+      dashOtaStatus.textContent = 'Enviando...';
+    }
+    try {
+      const res = await authFetch('/api/agents/ota-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(agentId ? { agent_id: agentId } : {}),
+      });
+      const data = await res.json();
+      if (res.ok && data && data.ok) {
+        const sent = (data.results || []).filter((r) => r.native_push || r.legacy_push).length;
+        if (dashOtaStatus) {
+          dashOtaStatus.classList.add('dash-ota-ok');
+          dashOtaStatus.textContent = `${sent}/${data.targets} enviado(s)`;
+        }
+        setTimeout(() => loadCommandDashboard({ silent: true }), 6000);
+      } else {
+        throw new Error((data && data.detail) || `HTTP ${res.status}`);
+      }
+    } catch (err) {
+      console.error('Error OTA:', err);
+      if (dashOtaStatus) {
+        dashOtaStatus.classList.add('dash-ota-err');
+        dashOtaStatus.textContent = 'Error';
+      }
+    } finally {
+      btnDashOta.classList.remove('loading');
+      if (dashOtaStatus) setTimeout(() => dashOtaStatus.classList.add('hidden'), 6000);
+    }
+  }
+
+  // ---- Wiring de eventos del Centro de Mando ----
+  if (dashDatePicker) dashDatePicker.addEventListener('change', () => loadCommandDashboard());
+  if (btnDashRefresh) btnDashRefresh.addEventListener('click', () => loadCommandDashboard());
+  if (btnDashOta) btnDashOta.addEventListener('click', () => triggerAgentsOtaUpdate(null));
+  if (dashFilterAgent) dashFilterAgent.addEventListener('change', () => { dashState.filterAgentId = dashFilterAgent.value || 'ALL'; renderDashAll(); });
+  if (dashFilterIface) dashFilterIface.addEventListener('change', () => { dashState.filterIfaceKind = dashFilterIface.value || 'ALL'; renderDashAll(); });
+  if (dashFilterProto) dashFilterProto.addEventListener('change', () => { dashState.filterProtoL7 = dashFilterProto.value || 'ALL'; renderDashAll(); });
+  if (dashProtoScope) dashProtoScope.addEventListener('change', () => renderDashProtocolsPanel());
+  if (dashServiceSearch) dashServiceSearch.addEventListener('input', () => { dashState.searchQuery = dashServiceSearch.value || ''; renderDashServicesTable(); });
+  dashTopoModeBtns.forEach((b) => b.addEventListener('click', () => { dashState.topoMode = b.dataset.mode || 'cross4'; renderDashSuperTopology(); }));
+  if (btnDashTopoReset) btnDashTopoReset.addEventListener('click', () => resetTopologyPositions(`ra_topo_pos_dash_${dashState.topoMode}`, renderDashSuperTopology));
+
+  if (dashActiveFiltersBar) {
+    dashActiveFiltersBar.addEventListener('click', (e) => {
+      const clearAll = e.target.closest('#dash-clear-all-filters');
+      if (clearAll) { clearDashFilters(); return; }
+      const chip = e.target.closest('[data-dash-clear-key]');
+      if (chip) { dashState[chip.dataset.dashClearKey] = 'ALL'; if (chip.dataset.dashClearKey === 'filterAgentId' && dashFilterAgent) dashFilterAgent.value = 'ALL'; if (chip.dataset.dashClearKey === 'filterIfaceKind' && dashFilterIface) dashFilterIface.value = 'ALL'; if (chip.dataset.dashClearKey === 'filterProtoL7' && dashFilterProto) dashFilterProto.value = 'ALL'; renderDashAll(); }
+    });
+  }
+
+  if (dashSuperTopoSvg) {
+    dashSuperTopoSvg.addEventListener('click', (e) => {
+      const g = e.target.closest('g.topo-node');
+      if (!g || !g.dataset.dashDim) return;
+      const dim = g.dataset.dashDim;
+      const val = g.dataset.dashVal;
+      if (!dim || val === '' || val == null) return;
+      setDashFilter(dim, val);
+    });
+  }
+
+  if (dashQuadrantSvg) {
+    dashQuadrantSvg.addEventListener('click', (e) => {
+      const g = e.target.closest('[data-dash-agent]');
+      if (!g) return;
+      setDashFilter('filterAgentId', g.dataset.dashAgent);
+    });
+  }
+
+  if (dashProtocolsBody) {
+    dashProtocolsBody.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-dash-proto]');
+      if (b) setDashFilter('filterProtoL7', b.dataset.dashProto);
+    });
+  }
+
+  if (dashInterfacesBody) {
+    dashInterfacesBody.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-dash-iface]');
+      if (b) setDashFilter('filterIfaceKind', b.dataset.dashIface);
+    });
+  }
+
+  if (dashServicesTableBody) {
+    dashServicesTableBody.addEventListener('click', (e) => {
+      const row = e.target.closest('[data-dash-service]');
+      if (row) setDashFilter('filterDomain', row.dataset.dashService);
+    });
+  }
+
+  if (tabDashboard) tabDashboard.addEventListener('click', () => switchView('dashboard'));
   tabWall.addEventListener('click', () => switchView('wall'));
   tabViewer.addEventListener('click', () => {
     if (state.selectedAgentId) {

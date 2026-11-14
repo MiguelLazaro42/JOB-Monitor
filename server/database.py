@@ -366,6 +366,26 @@ class DatabaseManager:
                     );
                     """
                 )
+                # MF-05: interfaces de red por adaptador (Wi-Fi, Ethernet, VPN, Virtual) por día y agente
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS network_interfaces_daily (
+                        date TEXT NOT NULL,
+                        agent_id TEXT NOT NULL,
+                        iface TEXT NOT NULL,
+                        iface_label TEXT DEFAULT '',
+                        iface_kind TEXT DEFAULT 'OTHER',
+                        ip_addr TEXT DEFAULT '',
+                        mac_addr TEXT DEFAULT '',
+                        rx_bytes INTEGER DEFAULT 0,
+                        tx_bytes INTEGER DEFAULT 0,
+                        peak_rx_kbps REAL DEFAULT 0,
+                        peak_tx_kbps REAL DEFAULT 0,
+                        last_seen_at TEXT DEFAULT '',
+                        PRIMARY KEY (date, agent_id, iface)
+                    );
+                    """
+                )
                 # Migración automática segura para agregar tenant_id a devices si no existía
                 cols = [r["name"] for r in conn.execute("PRAGMA table_info(devices)").fetchall()]
                 if "tenant_id" not in cols:
@@ -388,6 +408,10 @@ class DatabaseManager:
                     "ALTER TABLE network_domains_daily ADD COLUMN tx_bytes INTEGER DEFAULT 0",
                     "ALTER TABLE network_domains_daily ADD COLUMN direction TEXT DEFAULT 'OUTBOUND'",
                     "ALTER TABLE network_domains_daily ADD COLUMN port INTEGER DEFAULT 443",
+                    # MF-05: protocolo L7 e interfaz atribuidos a cada flujo
+                    "ALTER TABLE network_domains_daily ADD COLUMN proto_l7 TEXT DEFAULT 'HTTPS/TLS'",
+                    "ALTER TABLE network_domains_daily ADD COLUMN iface TEXT DEFAULT ''",
+                    "ALTER TABLE network_domains_daily ADD COLUMN iface_kind TEXT DEFAULT ''",
                 ):
                     try:
                         conn.execute(_ddl)
@@ -1209,6 +1233,176 @@ class DatabaseManager:
             finally:
                 conn.close()
 
+    @staticmethod
+    def _infer_proto_l7(port: int = 0, direction: str = "OUTBOUND", domain: str = "",
+                        app_name: str = "", prev_proto: str = "") -> str:
+        """
+        MF-06: Infiere el protocolo L7 en el servidor cuando el flujo proviene de un agente aún
+        no actualizado (sin proto_l7). Usa puerto, dominio y proceso como respaldo.
+        """
+        prev = (prev_proto or "").strip()
+        if prev and prev != "Desconocido":
+            return prev
+        try:
+            p = int(port or 0)
+        except (TypeError, ValueError):
+            p = 0
+        dom = (domain or "").strip().lower().rstrip(".")
+        proc = (app_name or "").strip().lower()
+        doh_domains = ("dns.google", "cloudflare-dns.com", "dns.quad9.net", "dns.adguard.com", "one.one.one.one")
+        if p == 853 or any(dom == k or dom.endswith("." + k) for k in doh_domains):
+            return "DoH/DoT"
+        if p in (53, 5353):
+            return "DNS"
+        if p in (9001, 9030, 9050, 9150) or "tor" in proc:
+            return "Tor"
+        if p in (51820, 51821) or "wireguard" in proc:
+            return "WireGuard"
+        if p in (41641, 9993) or "tailscale" in proc or "zerotier" in proc:
+            return "Tailscale"
+        if p in (1194, 500, 4500) or any(k in proc for k in ("openvpn", "anyconnect", "globalprotect", "forticlient")):
+            return "OpenVPN/IPsec"
+        if p in (22, 2222):
+            return "SSH"
+        if p in (3389, 5900, 5901, 7070, 5938) or (21115 <= p <= 21119):
+            return "RDP/Remoto"
+        if p in (445, 139, 548, 2049):
+            return "SMB/LAN"
+        if p in (25, 465, 587, 993, 995, 143, 110):
+            return "Correo"
+        if p in (3306, 5432, 6379, 27017, 8006, 1433):
+            return "DB/Infra"
+        if p in (3478, 3479, 3480, 3481):
+            return "WebRTC"
+        if p in (443, 8443):
+            return "HTTPS/TLS"
+        if p in (80, 8080, 8000, 3000, 5000):
+            return "HTTP"
+        return "Desconocido"
+
+    _VALID_IFACE_KINDS = ("WIFI", "ETH", "VPN", "VIRTUAL", "OTHER")
+
+    def record_network_interfaces_batch(
+        self,
+        agent_id: str,
+        interfaces: Optional[List[dict]] = None,
+        custom_date: Optional[str] = None,
+    ):
+        """
+        MF-06: Persiste las interfaces de red reportadas por el agente, acumulando los bytes
+        RX/TX del día y registrando el pico de velocidad, la IP, MAC y tipo por adaptador.
+        """
+        if not interfaces or not isinstance(interfaces, list):
+            return
+        now_dt = self._now_dt()
+        day = self._clean_date(custom_date) or now_dt.strftime("%Y-%m-%d")
+        now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+        rows = []
+        for it in interfaces:
+            if not isinstance(it, dict):
+                continue
+            iface = str(it.get("iface") or "").strip()[:60]
+            if not iface:
+                continue
+            kind = str(it.get("kind") or it.get("iface_kind") or "OTHER").strip().upper()[:12]
+            if kind not in self._VALID_IFACE_KINDS:
+                kind = "OTHER"
+            label = str(it.get("label") or "").strip()[:120]
+            ip_addr = str(it.get("ip") or "").strip()[:60]
+            mac_addr = str(it.get("mac") or "").strip()[:40]
+            try:
+                rx = max(0, int(it.get("delta_rx_bytes") or 0))
+                tx = max(0, int(it.get("delta_tx_bytes") or 0))
+                prx = max(0.0, float(it.get("rx_kbps") or 0.0))
+                ptx = max(0.0, float(it.get("tx_kbps") or 0.0))
+            except (TypeError, ValueError):
+                continue
+            rows.append((day, agent_id, iface, label, kind, ip_addr, mac_addr, rx, tx, prx, ptx, now_str))
+        if not rows:
+            return
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.executemany(
+                    """
+                    INSERT INTO network_interfaces_daily
+                        (date, agent_id, iface, iface_label, iface_kind, ip_addr, mac_addr,
+                         rx_bytes, tx_bytes, peak_rx_kbps, peak_tx_kbps, last_seen_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(date, agent_id, iface) DO UPDATE SET
+                        iface_label = CASE WHEN excluded.iface_label != '' THEN excluded.iface_label ELSE iface_label END,
+                        iface_kind = excluded.iface_kind,
+                        ip_addr = CASE WHEN excluded.ip_addr != '' THEN excluded.ip_addr ELSE ip_addr END,
+                        mac_addr = CASE WHEN excluded.mac_addr != '' THEN excluded.mac_addr ELSE mac_addr END,
+                        rx_bytes = rx_bytes + excluded.rx_bytes,
+                        tx_bytes = tx_bytes + excluded.tx_bytes,
+                        peak_rx_kbps = MAX(peak_rx_kbps, excluded.peak_rx_kbps),
+                        peak_tx_kbps = MAX(peak_tx_kbps, excluded.peak_tx_kbps),
+                        last_seen_at = excluded.last_seen_at
+                    """,
+                    rows,
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def record_network_telemetry_slice(
+        self,
+        agent_id: str,
+        domains_list: Optional[List[dict]] = None,
+        interfaces: Optional[List[dict]] = None,
+        custom_date: Optional[str] = None,
+    ):
+        """
+        MF-06: Punto de entrada unificado para un slice de telemetría de red: guarda los flujos
+        por dominio (con proto_l7/iface) y las interfaces de red del equipo.
+        """
+        if domains_list:
+            self.record_domain_activity_batch(agent_id, domains_list, custom_date=custom_date)
+        if interfaces:
+            self.record_network_interfaces_batch(agent_id, interfaces, custom_date=custom_date)
+
+    def get_network_interfaces_summary(
+        self, date_str: Optional[str] = None, allowed_tenant_id: Optional[str] = None,
+    ) -> Dict[str, List[dict]]:
+        """MF-06: devuelve las interfaces del día agrupadas por agent_id."""
+        day = self._clean_date(date_str) or self._now_dt().strftime("%Y-%m-%d")
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                if allowed_tenant_id:
+                    rows = conn.execute(
+                        """SELECT * FROM network_interfaces_daily
+                           WHERE date = ? AND agent_id IN (SELECT agent_id FROM devices WHERE tenant_id = ?)""",
+                        (day, allowed_tenant_id),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM network_interfaces_daily WHERE date = ?", (day,)
+                    ).fetchall()
+            finally:
+                conn.close()
+        by_agent: Dict[str, List[dict]] = {}
+        for r in rows:
+            d = dict(r)
+            total = int(d.get("rx_bytes") or 0) + int(d.get("tx_bytes") or 0)
+            by_agent.setdefault(d["agent_id"], []).append({
+                "iface": d["iface"],
+                "label": d.get("iface_label") or d["iface"],
+                "kind": d.get("iface_kind") or "OTHER",
+                "ip": d.get("ip_addr") or "",
+                "mac": d.get("mac_addr") or "",
+                "rx_bytes": int(d.get("rx_bytes") or 0),
+                "tx_bytes": int(d.get("tx_bytes") or 0),
+                "total_bytes": total,
+                "peak_rx_kbps": float(d.get("peak_rx_kbps") or 0),
+                "peak_tx_kbps": float(d.get("peak_tx_kbps") or 0),
+                "last_seen_at": d.get("last_seen_at") or "",
+            })
+        for lst in by_agent.values():
+            lst.sort(key=lambda x: x["total_bytes"], reverse=True)
+        return by_agent
+
     def record_domain_activity_batch(
         self,
         agent_id: str,
@@ -1259,8 +1453,14 @@ class DatabaseManager:
                 keys, conf = 0, 80
             ptype = str(d.get("packet_type") or d.get("last_packet_type") or "").strip()[:80]
             focus = str(d.get("focus_app") or "").strip()[:40]
+            # MF-06: proto_l7 e interfaz atribuidos por el agente; si faltan, se infieren aquí
+            proto_l7 = str(d.get("proto_l7") or "").strip()[:30]
+            if not proto_l7:
+                proto_l7 = self._infer_proto_l7(port=port, direction=direction, domain=domain, app_name=app)
+            iface = str(d.get("iface") or "").strip()[:60]
+            iface_kind = str(d.get("iface_kind") or "").strip().upper()[:12]
             rows.append((day, agent_id, domain, app, cat, hits, est, now_str, now_str, keys, ptype, focus, conf,
-                         rx_b, tx_b, direction, port))
+                         rx_b, tx_b, direction, port, proto_l7, iface, iface_kind))
         if not rows:
             return
         rows = _merge_shared_cdn_rows(rows)
@@ -1272,8 +1472,8 @@ class DatabaseManager:
                     INSERT INTO network_domains_daily
                         (date, agent_id, domain, app_name, category, hit_count, estimated_bytes, first_seen_at, last_seen_at,
                          keystrokes_count, last_packet_type, focus_app, confidence,
-                         rx_bytes, tx_bytes, direction, port)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         rx_bytes, tx_bytes, direction, port, proto_l7, iface, iface_kind)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(date, agent_id, domain, app_name) DO UPDATE SET
                         hit_count = hit_count + excluded.hit_count,
                         estimated_bytes = estimated_bytes + excluded.estimated_bytes,
@@ -1290,7 +1490,11 @@ class DatabaseManager:
                         direction = CASE WHEN excluded.direction = 'INBOUND' THEN 'INBOUND'
                                          ELSE COALESCE(network_domains_daily.direction, 'OUTBOUND') END,
                         port = CASE WHEN excluded.direction = 'INBOUND' THEN excluded.port
-                                    ELSE COALESCE(network_domains_daily.port, 443) END
+                                    ELSE COALESCE(network_domains_daily.port, 443) END,
+                        proto_l7 = CASE WHEN excluded.proto_l7 != '' AND excluded.proto_l7 != 'Desconocido'
+                                        THEN excluded.proto_l7 ELSE COALESCE(network_domains_daily.proto_l7, 'HTTPS/TLS') END,
+                        iface = CASE WHEN excluded.iface != '' THEN excluded.iface ELSE COALESCE(network_domains_daily.iface, '') END,
+                        iface_kind = CASE WHEN excluded.iface_kind != '' THEN excluded.iface_kind ELSE COALESCE(network_domains_daily.iface_kind, '') END
                     """,
                     rows,
                 )
@@ -1409,6 +1613,18 @@ class DatabaseManager:
                     """,
                     (day, recent_cutoff),
                 ).fetchall()
+                # MF-06: desglose de protocolos L7 por agente (bytes, conexiones)
+                proto_rows = conn.execute(
+                    """
+                    SELECT agent_id, COALESCE(NULLIF(proto_l7, ''), 'Desconocido') AS proto,
+                           SUM(hit_count) AS hits,
+                           SUM(CASE WHEN COALESCE(rx_bytes,0)+COALESCE(tx_bytes,0)=0 AND estimated_bytes>0
+                                    THEN estimated_bytes ELSE COALESCE(rx_bytes,0)+COALESCE(tx_bytes,0) END) AS bytes
+                    FROM network_domains_daily WHERE date = ?
+                    GROUP BY agent_id, proto
+                    """,
+                    (day,),
+                ).fetchall()
             finally:
                 conn.close()
 
@@ -1480,6 +1696,47 @@ class DatabaseManager:
             c["hits"] += r["hits"] or 0
             c["estimated_bytes"] += r["est"] or 0
 
+        # MF-06: agregación de protocolos L7 (por agente y global)
+        proto_by_agent: Dict[str, Dict[str, dict]] = {}
+        global_protocols: Dict[str, dict] = {}
+        for pr in proto_rows:
+            aid = pr["agent_id"]
+            if aid not in valid_ids:
+                continue
+            proto = pr["proto"] or "Desconocido"
+            pbytes = int(pr["bytes"] or 0)
+            phits = int(pr["hits"] or 0)
+            a_map = proto_by_agent.setdefault(aid, {})
+            pe = a_map.setdefault(proto, {"proto_l7": proto, "bytes": 0, "connections": 0})
+            pe["bytes"] += pbytes
+            pe["connections"] += phits
+            g = global_protocols.setdefault(proto, {"proto_l7": proto, "bytes": 0, "connections": 0})
+            g["bytes"] += pbytes
+            g["connections"] += phits
+
+        def _proto_list_with_pct(d: Dict[str, dict]) -> List[dict]:
+            items = sorted(d.values(), key=lambda x: x["bytes"], reverse=True)
+            tot = sum(x["bytes"] for x in items) or 1
+            for it in items:
+                it["percent"] = round(100.0 * it["bytes"] / tot, 1)
+            return items
+
+        # MF-06: interfaces de red por agente y global (consulta fuera del lock anterior)
+        iface_by_agent = self.get_network_interfaces_summary(date_str=day, allowed_tenant_id=allowed_tenant_id)
+        global_interfaces: Dict[str, dict] = {}
+        for aid, ifs in iface_by_agent.items():
+            if aid not in valid_ids:
+                continue
+            for it in ifs:
+                kind = it["kind"]
+                gi = global_interfaces.setdefault(kind, {
+                    "kind": kind, "rx_bytes": 0, "tx_bytes": 0, "total_bytes": 0, "ifaces": 0,
+                })
+                gi["rx_bytes"] += it["rx_bytes"]
+                gi["tx_bytes"] += it["tx_bytes"]
+                gi["total_bytes"] += it["total_bytes"]
+                gi["ifaces"] += 1
+
         generic_domains = {"google.com", "microsoft.com"}
         priority_cats = {"STREAMING", "SOCIAL", "MESSAGING", "AI", "GAMING", "SHOPPING", "CLOUD"}
         recent_by_agent: Dict[str, List[dict]] = {}
@@ -1528,6 +1785,9 @@ class DatabaseManager:
                 "top_domain": _recent_top(aid) or (top["domain"] if top else ""),
                 "last_packet_type": latest_pkt["ptype"] if latest_pkt else "",
                 "keystrokes_total": int(keys_total),
+                "protocols_l7": _proto_list_with_pct({k: dict(v) for k, v in proto_by_agent.get(aid, {}).items()}),
+                "interfaces": iface_by_agent.get(aid, []),
+                "primary_iface": (iface_by_agent.get(aid, [{}])[0] or {}).get("kind", "") if iface_by_agent.get(aid) else "",
             })
         clients.sort(key=lambda c: (
             -round(c["total_bytes"] / (1024 * 1024)),
@@ -1555,6 +1815,8 @@ class DatabaseManager:
             "categories": sorted(categories.values(), key=lambda x: x["estimated_bytes"], reverse=True),
             "clients": clients,
             "packet_types": sorted(packet_types.values(), key=lambda x: x["estimated_bytes"], reverse=True),
+            "protocols_l7": _proto_list_with_pct({k: dict(v) for k, v in global_protocols.items()}),
+            "interfaces": sorted(global_interfaces.values(), key=lambda x: x["total_bytes"], reverse=True),
         }
 
     def get_agent_domains_detail(
@@ -1593,6 +1855,8 @@ class DatabaseManager:
                    CASE WHEN COALESCE(n.rx_bytes, 0) + COALESCE(n.tx_bytes, 0) = 0 AND n.estimated_bytes > 0
                         THEN n.estimated_bytes - CAST(n.estimated_bytes * 0.85 AS INTEGER) ELSE COALESCE(n.tx_bytes, 0) END AS tx_bytes,
                    COALESCE(n.direction, 'OUTBOUND') AS direction, COALESCE(n.port, 443) AS port,
+                   COALESCE(NULLIF(n.proto_l7, ''), 'Desconocido') AS proto_l7,
+                   COALESCE(n.iface, '') AS iface, COALESCE(n.iface_kind, '') AS iface_kind,
                    COALESCE(d.alias, n.agent_id) AS alias, COALESCE(d.hostname, '') AS hostname,
                    COALESCE(d.username, '') AS username
             FROM network_domains_daily n
@@ -1637,6 +1901,11 @@ class DatabaseManager:
             m["tx_bytes"] = (m["tx_bytes"] or 0) + (r["tx_bytes"] or 0)
             if r["direction"] == "INBOUND":
                 m["direction"], m["port"] = "INBOUND", r["port"]
+            # Conservar la clasificación L7 más específica y la interfaz atribuida
+            if (not m.get("proto_l7") or m.get("proto_l7") == "Desconocido") and r.get("proto_l7") and r["proto_l7"] != "Desconocido":
+                m["proto_l7"] = r["proto_l7"]
+            if not m.get("iface") and r.get("iface"):
+                m["iface"], m["iface_kind"] = r["iface"], r["iface_kind"]
             m["first_seen_at"] = min(m["first_seen_at"] or "9", r["first_seen_at"] or "9")
             if (r["last_seen_at"] or "") >= (m["last_seen_at"] or "") and r["last_packet_type"]:
                 m["last_packet_type"], m["focus_app"] = r["last_packet_type"], r["focus_app"]
